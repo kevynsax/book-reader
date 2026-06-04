@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev   # installs poppler-utils; only rebuilt when this file changes
+    restart: unless-stopped
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      MONGODB_URI: mongodb://mongodb:27017/book-reader
+      QWENVL_API: ${QWENVL_API:-https://qwenvl.kevyn.com.br}
+      QWENVL_MODEL: ${QWENVL_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct-AWQ}
+      TTS_API: ${TTS_API:-https://tts.kevyn.com.br}
+      DATA_DIR: /app/data
+      KOKORO_VOICE: ${KOKORO_VOICE:-pf_dora}
+      KOKORO_SPEED: ${KOKORO_SPEED:-1.0}
+      FRONTEND_ORIGIN: http://localhost:5173
+    volumes:
+      - ./backend:/app                  # live source edits
+      - backend_modules:/app/node_modules  # isolated from host
+      - book-data:/app/data
+    depends_on:
+      - mongodb
+
+  frontend:
+    image: node:20-slim
+    restart: unless-stopped
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "5173:5173"
+    environment:
+      BACKEND_URL: http://backend:3001
+    volumes:
+      - ./frontend:/app                   # live source edits
+      - frontend_modules:/app/node_modules  # isolated from host
+
+volumes:
+  mongo-data:
+  book-data:
+  backend_modules:
+  frontend_modules:

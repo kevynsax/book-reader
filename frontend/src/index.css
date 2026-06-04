@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+:root {
+  font-family: 'Inter', sans-serif;
+}
+
+body {
+  @apply bg-gray-950 text-gray-100 min-h-screen;
+}
+
+/* Base styles applied to all variants together — Tailwind v4 forbids @apply of custom classes */
+.btn,
+.btn-primary,
+.btn-secondary,
+.btn-danger {
+  @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+}
+
+.btn-primary  { @apply bg-amber-600 hover:bg-amber-500 text-white; }
+.btn-secondary { @apply bg-gray-700 hover:bg-gray-600 text-gray-100; }
+.btn-danger   { @apply bg-red-700 hover:bg-red-600 text-white; }
+
+.card {
+  @apply bg-gray-900 rounded-xl border border-gray-800 p-6;
+}
+
+.input {
+  @apply w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent;
+}
+
+.label {
+  @apply block text-sm font-medium text-gray-300 mb-1;
+}
+
+.badge,
+.badge-uploading,
+.badge-processing,
+.badge-review,
+.badge-audio,
+.badge-complete,
+.badge-error {
+  @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+}
+
+.badge-uploading  { @apply bg-blue-900/50 text-blue-300; }
+.badge-processing { @apply bg-yellow-900/50 text-yellow-300; }
+.badge-review     { @apply bg-purple-900/50 text-purple-300; }
+.badge-audio      { @apply bg-orange-900/50 text-orange-300; }
+.badge-complete   { @apply bg-green-900/50 text-green-300; }
+.badge-error      { @apply bg-red-900/50 text-red-300; }
+
+.progress-bar {
+  @apply w-full h-2 bg-gray-800 rounded-full overflow-hidden;
+}
+
+.progress-fill {
+  @apply h-full bg-amber-500 rounded-full transition-all duration-300;
+}
