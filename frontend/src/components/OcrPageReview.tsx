@@ -116,8 +116,9 @@ export default function TextReview({ bookId, ocrPages, onTextSaved }: Props) {
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
         </svg>
       </button>
-      <span className={`font-mono text-center text-gray-500 ${large ? 'text-sm w-20' : 'text-xs w-14'}`}>
-        {idx + 1} / {processed.length}
+      <span className={`font-mono text-center text-gray-300 ${large ? 'text-sm w-28' : 'text-xs w-20'}`}>
+        p.{page.page}
+        <span className="text-gray-500"> · {idx + 1}/{processed.length}</span>
       </span>
       <button
         className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
