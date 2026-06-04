@@ -4,6 +4,7 @@ export type BookStatus =
   | 'uploading'
   | 'splitting_pages'
   | 'extracting_cover'
+  | 'reading_title'
   | 'ocr_processing'
   | 'detecting_chapters'
   | 'awaiting_chapter_review'
@@ -104,11 +105,11 @@ const OcrPageSchema = new Schema<IOcrPage>({
 
 const BookSchema = new Schema<IBook>(
   {
-    name: { type: String, required: true },
+    name: { type: String, default: '' },
     status: {
       type: String,
       enum: [
-        'uploading', 'splitting_pages', 'extracting_cover',
+        'uploading', 'splitting_pages', 'extracting_cover', 'reading_title',
         'ocr_processing', 'detecting_chapters', 'awaiting_chapter_review',
         'generating_audio', 'complete', 'error',
       ],

@@ -46,6 +46,21 @@ export const FALLBACK_VOICES = [
   'pf_dora','pm_alex','pm_santa',
 ];
 
+export const TITLE_SYSTEM_PROMPT = [
+  'You are reading the front cover of a book.',
+  'Return one valid JSON object and nothing else.',
+  'The JSON object must have this exact shape: {"title":"..."}',
+  'Put only the main book title in the title field, exactly as printed on the cover.',
+  'Do not include the subtitle, author name, publisher, edition, or series name.',
+  'If you cannot read a title, return {"title":""}.',
+  'Never add explanations, markdown fences, or any text outside the JSON object.',
+].join(' ');
+
+export const TITLE_PAGE_PROMPT = [
+  'This image is the front cover of a book.',
+  'Read the main title of the book exactly as printed.',
+].join(' ');
+
 export const TOC_SYSTEM_PROMPT = [
   'You are reading the table of contents (index/summary) page of a book.',
   'Return one valid JSON array and nothing else.',

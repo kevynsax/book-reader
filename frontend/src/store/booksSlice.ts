@@ -38,6 +38,13 @@ export const deleteBook = createAsyncThunk('books/delete', async (bookId: string
   return bookId;
 });
 
+export const renameBook = createAsyncThunk(
+  'books/rename',
+  async ({ bookId, name }: { bookId: string; name: string }) => {
+    await api.patch(`/api/books/${bookId}`, { name });
+  }
+);
+
 export const addVoice = createAsyncThunk(
   'books/addVoice',
   async ({ bookId, voice }: { bookId: string; voice: string }) => {
@@ -75,6 +82,7 @@ const booksSlice = createSlice({
       const book = state.books[idx];
 
       if (patch.updatedAt) book.updatedAt = patch.updatedAt as string;
+      if (patch.name) book.name = patch.name as string;
       if (patch.status) book.status = patch.status as Book['status'];
       if (patch.progress) book.progress = patch.progress as Progress;
       if (patch.totalPages) book.totalPages = patch.totalPages as number;

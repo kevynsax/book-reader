@@ -74,7 +74,7 @@ export default function PlayerPage() {
             />
           </div>
           <div className="space-y-2 text-sm text-gray-400 min-w-0 flex-1">
-            <p className="text-gray-200 font-medium text-base truncate">{book.name}</p>
+            <p className="text-gray-200 font-medium text-base truncate">{book.name || 'Untitled'}</p>
             {book.totalPages > 0 && <p>{book.totalPages} pages</p>}
             <VoiceManager book={book} activeVoice={activeVoice} onSelectVoice={selectVoice} editable />
             {remaining > 60 && (

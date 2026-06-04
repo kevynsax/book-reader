@@ -3,7 +3,7 @@ import path from 'path';
 import { Server as SocketServer } from 'socket.io';
 import { Book, IBook, freshTracks, trackForVoice } from '../models/Book.js';
 import { splitPdfIntoPages, findPageImagePath, getAllPagePaths, copyPageAsCover } from '../services/pdfService.js';
-import { ocrPage, detectChapters } from '../services/ocrService.js';
+import { ocrPage, detectChapters, extractBookTitle } from '../services/ocrService.js';
 import { generateAudio } from '../services/ttsService.js';
 
 function emit(io: SocketServer, book: IBook, update: Record<string, unknown>) {
@@ -82,6 +82,20 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
       book.coverImagePath = coverDest;
       await book.save();
       emit(io, book, { coverImagePath: coverDest });
+    }
+
+    // Step 2.5: Read the title from the cover unless the user already named the
+    // book. The user can correct it later in the editor.
+    if (book.coverImagePath && !book.name.trim()) {
+      await setProgress(io, book, 0, 1, 'Reading title…', 'reading_title');
+      try {
+        const title = await extractBookTitle(book.coverImagePath);
+        if (title) {
+          book.name = title;
+          await book.save();
+          emit(io, book, { name: title });
+        }
+      } catch { /* leave the name blank; the user can set it in the editor */ }
     }
 
     // Step 3: OCR all pages in the reading range

@@ -44,21 +44,10 @@ export default function Step1BookInfo({ data, onChange, onNext }: Props) {
     if (first && !filtered.includes(data.voice)) onChange({ voice: first });
   }, [lang, allVoices]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const canProceed = data.name.trim().length > 0 && data.file !== null;
+  const canProceed = data.file !== null;
 
   return (
     <div className="space-y-5">
-      <div>
-        <label className="label">Book title</label>
-        <input
-          className="input"
-          type="text"
-          placeholder="Enter book title…"
-          value={data.name}
-          onChange={e => onChange({ name: e.target.value })}
-        />
-      </div>
-
       <div>
         <label className="label">PDF file</label>
         <div

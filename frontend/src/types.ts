@@ -2,6 +2,7 @@ export type BookStatus =
   | 'uploading'
   | 'splitting_pages'
   | 'extracting_cover'
+  | 'reading_title'
   | 'ocr_processing'
   | 'detecting_chapters'
   | 'awaiting_chapter_review'

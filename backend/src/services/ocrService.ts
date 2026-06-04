@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import {
   QWENVL_API, QWENVL_MODEL, QWENVL_MAX_TOKENS,
   OCR_SYSTEM_PROMPT, OCR_PAGE_PROMPT,
+  TITLE_SYSTEM_PROMPT, TITLE_PAGE_PROMPT,
   TOC_SYSTEM_PROMPT, TOC_PAGE_PROMPT,
 } from '../config.js';
 
@@ -93,6 +94,23 @@ async function callQwen(systemPrompt: string, userContent: unknown[]): Promise<s
   const content = data?.choices?.[0]?.message?.content ?? '';
   if (typeof content !== 'string') throw new Error('Empty response from Qwen');
   return content.trim();
+}
+
+// Read the book title from the cover image. Returns '' if Qwen can't read one.
+export async function extractBookTitle(coverImagePath: string): Promise<string> {
+  const buffer = await fs.readFile(coverImagePath);
+  const dataUrl = `data:image/jpeg;base64,${buffer.toString('base64')}`;
+
+  const raw = await callQwen(TITLE_SYSTEM_PROMPT, [
+    { type: 'text', text: TITLE_PAGE_PROMPT },
+    { type: 'image_url', image_url: { url: dataUrl } },
+  ]);
+
+  const text = stripMarkdownFence(raw.trim());
+  const parsed =
+    (() => { try { return JSON.parse(text); } catch { return extractLooseJson(text); } })();
+  const title = (parsed as Record<string, unknown>)?.title;
+  return typeof title === 'string' ? title.trim() : '';
 }
 
 export async function ocrPage(imagePath: string): Promise<OcrResult> {

@@ -78,7 +78,8 @@ export function booksRouter(io: SocketServer) {
 
     const { name, summaryPage, coverPage, firstPage, lastPage, voice } = req.body as Record<string, string>;
 
-    if (!name || !summaryPage || !coverPage || !firstPage || !lastPage) {
+    // name is optional — when blank it's read from the cover during processing.
+    if (!summaryPage || !coverPage || !firstPage || !lastPage) {
       await fs.unlink(req.file.path).catch(() => {});
       return res.status(400).json({ error: 'Missing required fields' });
     }
@@ -88,7 +89,7 @@ export function booksRouter(io: SocketServer) {
 
     // Create the book document first to get the ID
     const book = await Book.create({
-      name,
+      name: name?.trim() ?? '',
       summaryPage: parseInt(summaryPage),
       coverPage: parseInt(coverPage),
       firstPage: parseInt(firstPage),
@@ -118,6 +119,22 @@ export function booksRouter(io: SocketServer) {
     processBook(bookId, io).catch(err =>
       console.error(`processBook ${bookId} failed:`, err)
     );
+  });
+
+  // Rename a book (e.g. fix a title that was auto-read from the cover)
+  router.patch('/:id', async (req, res) => {
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).json({ error: 'Not found' });
+
+    const { name } = req.body as { name?: string };
+    if (typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: 'name is required' });
+    }
+
+    book.name = name.trim();
+    await book.save();
+    io.emit('book:update', { bookId: book._id.toString(), updatedAt: book.updatedAt, name: book.name });
+    res.json({ message: 'Renamed' });
   });
 
   // Serve a page image from the book's parts folder

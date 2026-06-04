@@ -16,6 +16,7 @@ const STATUS_LABEL: Record<BookStatus, string> = {
   uploading: 'Uploading',
   splitting_pages: 'Splitting pages',
   extracting_cover: 'Extracting cover',
+  reading_title: 'Reading title',
   ocr_processing: 'Reading pages',
   detecting_chapters: 'Detecting chapters',
   awaiting_chapter_review: 'Needs review',
@@ -28,6 +29,7 @@ const STATUS_CLASS: Record<BookStatus, string> = {
   uploading: 'badge-uploading',
   splitting_pages: 'badge-processing',
   extracting_cover: 'badge-processing',
+  reading_title: 'badge-processing',
   ocr_processing: 'badge-processing',
   detecting_chapters: 'badge-processing',
   awaiting_chapter_review: 'badge-review',
@@ -101,7 +103,7 @@ export default function BookCard({ book }: { book: Book }) {
       </div>
 
       <h3 className="font-semibold text-gray-100 truncate mb-2 group-hover:text-amber-400 transition-colors">
-        {book.name}
+        {book.name || 'Untitled'}
       </h3>
 
       {/* Status badge — hidden for complete books */}

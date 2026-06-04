@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { AppDispatch, RootState } from '../store';
-import { confirmChapters, deleteBook } from '../store/booksSlice';
+import { confirmChapters, deleteBook, renameBook } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus } from '../types';
 import { chapterStatus } from '../lib/format';
@@ -16,6 +16,7 @@ const STATUS_STEPS: { status: BookStatus; label: string }[] = [
   { status: 'uploading',               label: 'Uploading' },
   { status: 'splitting_pages',         label: 'Splitting pages' },
   { status: 'extracting_cover',        label: 'Extracting cover' },
+  { status: 'reading_title',           label: 'Reading title' },
   { status: 'ocr_processing',          label: 'Reading pages' },
   { status: 'detecting_chapters',      label: 'Detecting chapters' },
   { status: 'awaiting_chapter_review', label: 'Ready for review' },
@@ -160,6 +161,56 @@ function EditableCover({ bookId, coverVersion, onClick, size = 'md' }: {
   );
 }
 
+// ── Editable book title ────────────────────────────────────────────────────
+// The title is auto-read from the cover during processing; this lets the user
+// correct it. Saves on blur / Enter, reverts on Escape.
+function EditableTitle({ book }: { book: Book }) {
+  const dispatch = useDispatch<AppDispatch>();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue]     = useState(book.name);
+
+  useEffect(() => { if (!editing) setValue(book.name); }, [book.name, editing]);
+
+  const save = () => {
+    setEditing(false);
+    const next = value.trim();
+    if (next && next !== book.name) dispatch(renameBook({ bookId: book._id, name: next }));
+    else setValue(book.name);
+  };
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        className="input w-full text-base font-medium"
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        onBlur={save}
+        onKeyDown={e => {
+          if (e.key === 'Enter') save();
+          if (e.key === 'Escape') { setValue(book.name); setEditing(false); }
+        }}
+        placeholder="Book title…"
+      />
+    );
+  }
+
+  return (
+    <button
+      className="group/title flex items-center gap-1.5 text-left min-w-0 max-w-full"
+      onClick={() => setEditing(true)}
+      title="Edit title"
+    >
+      <span className="text-gray-200 font-medium text-base truncate">{book.name || 'Untitled'}</span>
+      <svg className="w-3.5 h-3.5 text-gray-500 opacity-0 group-hover/title:opacity-100 transition-opacity shrink-0"
+        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+          d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+      </svg>
+    </button>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 export default function EditBookPage() {
   const { id }   = useParams<{ id: string }>();
@@ -222,7 +273,7 @@ export default function EditBookPage() {
             className="text-lg font-semibold text-gray-100 flex-1 truncate text-left hover:text-gray-300 transition-colors"
             onClick={() => navigate(backTo)}
           >
-            {book.name}
+            {book.name || 'Untitled'}
           </button>
           <button
             className="text-gray-500 hover:text-red-400 transition-colors"
@@ -243,7 +294,7 @@ export default function EditBookPage() {
         <div className="card flex gap-5 items-start">
           <EditableCover bookId={book._id} coverVersion={book.coverVersion ?? 0} onClick={() => setShowCoverPicker(true)} size="md" />
           <div className="space-y-2 text-sm text-gray-400 min-w-0 flex-1">
-            <p className="text-gray-200 font-medium text-base truncate">{book.name}</p>
+            <EditableTitle book={book} />
             {book.totalPages > 0 && <p>{book.totalPages} pages</p>}
             <VoiceManager book={book} editable={book.status === 'complete'} />
           </div>
