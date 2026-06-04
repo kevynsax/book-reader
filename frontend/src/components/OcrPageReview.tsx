@@ -42,7 +42,6 @@ function PageView({ bookId, page, large, onTextSaved }: PageViewProps) {
 
   return (
     <div className={`grid grid-cols-2 gap-4 ${large ? 'flex-1 min-h-0' : ''}`}>
-      {/* Image — natural height sets the row height for both columns */}
       <div className="bg-gray-800 rounded-lg overflow-hidden">
         <img
           key={page.page}
@@ -52,7 +51,6 @@ function PageView({ bookId, page, large, onTextSaved }: PageViewProps) {
           loading="lazy"
         />
       </div>
-      {/* Text column — grid stretch makes it the same height as the image column */}
       <div className="flex flex-col gap-2">
         {page.status === 'processing' ? (
           <div className="flex-1 bg-gray-800/50 rounded-lg p-3 flex items-center">
@@ -95,7 +93,6 @@ export default function TextReview({ bookId, ocrPages, onTextSaved }: Props) {
     if (!userMoved && processed.length > 0) setIdx(processed.length - 1);
   }, [processed.length, userMoved]);
 
-  // Close modal on Escape
   useEffect(() => {
     if (!fullscreen) return;
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setFullscreen(false); };
@@ -136,7 +133,6 @@ export default function TextReview({ bookId, ocrPages, onTextSaved }: Props) {
   return (
     <>
       <div className="card space-y-4">
-        {/* Header */}
         <div className="flex items-center justify-between gap-4">
           <h3 className="font-semibold text-gray-100 shrink-0">Reading pages</h3>
           <div className="flex items-center gap-2">
@@ -162,10 +158,8 @@ export default function TextReview({ bookId, ocrPages, onTextSaved }: Props) {
         <PageView bookId={bookId} page={page} onTextSaved={onTextSaved} />
       </div>
 
-      {/* Fullscreen modal */}
       {fullscreen && (
         <div className="fixed inset-0 z-50 bg-gray-950/95 backdrop-blur flex flex-col">
-          {/* Modal header */}
           <div className="flex items-center gap-4 px-6 py-4 border-b border-gray-800 shrink-0">
             <h2 className="font-semibold text-gray-100 flex-1">Reading pages</h2>
             <p className="text-xs text-gray-500">
@@ -184,7 +178,6 @@ export default function TextReview({ bookId, ocrPages, onTextSaved }: Props) {
             </button>
           </div>
 
-          {/* Modal body */}
           <div className="flex-1 min-h-0 px-6 py-4">
             <PageView bookId={bookId} page={page} large onTextSaved={onTextSaved} />
           </div>

@@ -5,9 +5,7 @@ import { fmtRemaining, trackFor } from '../lib/format';
 interface Props {
   bookId: string;
   chapters: Chapter[];
-  // Which voice to play. Only chapters whose track for this voice is ready show up.
   voice: string;
-  // Reports seconds left to hear across the whole book, kept live as it plays.
   onProgress?: (remaining: number) => void;
 }
 
@@ -22,7 +20,6 @@ function fmt(s: number): string {
 }
 
 const POS_KEY  = (id: string) => `br_pos_${id}`;
-const DUR_KEY  = (id: string, voice: string) => `br_dur_${id}_${voice}`;
 
 function loadJson<T>(key: string, fallback: T): T {
   try { return JSON.parse(localStorage.getItem(key) ?? '') ?? fallback; }
@@ -40,7 +37,6 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
 
   const readyChapters = chapters.filter(c => trackFor(c, voice)?.audioStatus === 'complete');
 
-  // Restore saved chapter index
   const [currentIdx, setCurrentIdx] = useState<number>(() => {
     const saved = loadJson<{ chapterIdx: number }>(POS_KEY(bookId), { chapterIdx: 0 });
     return Math.min(saved.chapterIdx, Math.max(0, readyChapters.length - 1));
@@ -50,26 +46,18 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
   const [speedOpen, setSpeedOpen]   = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration]     = useState(0);
-  const [durations, setDurations]   = useState<Record<number, number>>(
-    () => loadJson<Record<number, number>>(DUR_KEY(bookId, voice), {})
-  );
 
-  // Keep ref in sync for use inside event handlers (avoid stale closures)
   useEffect(() => { idxRef.current = currentIdx; }, [currentIdx]);
 
-  // Switching voice swaps the whole track set: reload its cached durations and
-  // clamp the current chapter into the (possibly shorter) ready range.
   useEffect(() => {
-    setDurations(loadJson<Record<number, number>>(DUR_KEY(bookId, voice), {}));
     setCurrentIdx(i => Math.min(i, Math.max(0, readyChapters.length - 1)));
-  }, [voice]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [voice]);
 
   const chapter  = readyChapters[currentIdx];
   const audioUrl = chapter
     ? `/api/books/${bookId}/chapters/${chapters.indexOf(chapter)}/audio?voice=${encodeURIComponent(voice)}`
     : null;
 
-  // Save position to localStorage
   const savePos = useCallback(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -81,7 +69,6 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
     } catch {}
   }, [bookId]);
 
-  // Load new chapter URL + optionally seek to saved position
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !audioUrl) return;
@@ -91,16 +78,14 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
     setCurrentTime(0);
     setDuration(0);
 
-    // Restore saved seek position for the initial chapter load only
     const saved = loadJson<{ chapterIdx: number; time: number }>(POS_KEY(bookId), { chapterIdx: 0, time: 0 });
     if (saved.chapterIdx === currentIdx && saved.time > 1) {
       seekOnLoad.current = saved.time;
     }
 
     if (playing) audio.play().catch(() => setPlaying(false));
-  }, [audioUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [audioUrl]);
 
-  // Audio event listeners
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -121,11 +106,6 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
         audio.currentTime = seekOnLoad.current;
         seekOnLoad.current = -1;
       }
-      setDurations(prev => {
-        const next = { ...prev, [idxRef.current]: d };
-        try { localStorage.setItem(DUR_KEY(bookId, voice), JSON.stringify(next)); } catch {}
-        return next;
-      });
     };
     const onTimeUpd = () => {
       setCurrentTime(audio.currentTime);
@@ -169,7 +149,6 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
     audio.currentTime = ((e.clientX - rect.left) / rect.width) * duration;
   };
 
-  // Jump forward/backward within the current chapter (seconds).
   const skip = (delta: number) => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -177,16 +156,13 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
     audio.currentTime = Math.min(max, Math.max(0, audio.currentTime + delta));
   };
 
-  // Progress metrics from localStorage durations
-  const totalDuration  = Object.values(durations).reduce((a, b) => a + b, 0);
-  const listenedInPrev = readyChapters
-    .slice(0, currentIdx)
-    .reduce((acc, _, i) => acc + (durations[i] ?? 0), 0);
+  const chapterSecs    = readyChapters.map(c => trackFor(c, voice)?.audioDurationSecs ?? 0);
+  const totalDuration  = chapterSecs.reduce((a, b) => a + b, 0);
+  const listenedInPrev = chapterSecs.slice(0, currentIdx).reduce((a, b) => a + b, 0);
   const listenedTotal  = listenedInPrev + currentTime;
   const pctListened    = totalDuration > 0 ? Math.min(100, Math.round((listenedTotal / totalDuration) * 100)) : 0;
-  const remaining      = totalDuration > 0 ? totalDuration - listenedTotal : 0;
+  const remaining      = totalDuration > 0 ? Math.max(0, totalDuration - listenedTotal) : 0;
 
-  // Surface the remaining time to the parent (cover section) as it changes.
   useEffect(() => { onProgress?.(remaining); }, [remaining, onProgress]);
 
   if (readyChapters.length === 0) return (
@@ -199,7 +175,6 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
     <div className="card space-y-4">
       <audio ref={audioRef} preload="metadata" />
 
-      {/* Chapter title + time */}
       <div className="flex items-baseline justify-between">
         <p className="text-sm font-medium text-gray-200 truncate flex-1 mr-4">
           <span className="text-gray-500">Chapter {currentIdx + 1} of {readyChapters.length} · </span>
@@ -210,14 +185,11 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
         </span>
       </div>
 
-      {/* Scrubber */}
       <div className="progress-bar cursor-pointer" onClick={seek}>
         <div className="progress-fill" style={{ width: `${pct}%` }} />
       </div>
 
-      {/* Controls */}
       <div className="flex items-center justify-center gap-2">
-        {/* Previous chapter */}
         <button className="p-1.5 text-gray-300 hover:text-amber-400 transition-colors disabled:opacity-30 disabled:hover:text-gray-300"
           onClick={() => { savePos(); setCurrentIdx(i => Math.max(0, i - 1)); }}
           disabled={currentIdx === 0}
@@ -228,7 +200,6 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
           </svg>
         </button>
 
-        {/* Back 30 seconds */}
         <button className="p-1.5 text-gray-300 hover:text-amber-400 transition-colors disabled:opacity-30 disabled:hover:text-gray-300"
           onClick={() => skip(-30)}
           title="Back 30 seconds">
@@ -239,7 +210,6 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
           </svg>
         </button>
 
-        {/* Play / Pause */}
         <button
           className="text-gray-100 hover:text-amber-400 transition-colors"
           onClick={togglePlay}>
@@ -249,7 +219,6 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
           }
         </button>
 
-        {/* Forward 30 seconds */}
         <button className="p-1.5 text-gray-300 hover:text-amber-400 transition-colors disabled:opacity-30 disabled:hover:text-gray-300"
           onClick={() => skip(30)}
           title="Forward 30 seconds">
@@ -260,7 +229,6 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
           </svg>
         </button>
 
-        {/* Next chapter */}
         <button className="p-1.5 text-gray-300 hover:text-amber-400 transition-colors disabled:opacity-30 disabled:hover:text-gray-300"
           onClick={() => { savePos(); setCurrentIdx(i => Math.min(readyChapters.length - 1, i + 1)); }}
           disabled={currentIdx >= readyChapters.length - 1}
@@ -273,7 +241,6 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
 
       </div>
 
-      {/* Speed + Chapters */}
       <div className="flex items-start justify-center gap-12">
         <button
           className="flex flex-col items-center gap-1 text-gray-200 hover:text-amber-400 transition-colors"
@@ -297,15 +264,13 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
         </button>
       </div>
 
-      {/* Listening progress — stored in browser only */}
       {totalDuration > 0 && (
         <div className="flex items-center justify-between text-xs text-gray-500 pt-1 border-t border-gray-800">
           <span>{pctListened}% listened</span>
-          {remaining > 60 && <span className="text-amber-400">{fmtRemaining(remaining)} left</span>}
+          {remaining > 60 && <span>{fmtRemaining(remaining)} left</span>}
         </div>
       )}
 
-      {/* Chapter picker popup */}
       {pickerOpen && (
         <div
           className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
@@ -333,7 +298,6 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
         </div>
       )}
 
-      {/* Speed picker popup */}
       {speedOpen && (
         <div
           className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"

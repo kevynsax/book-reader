@@ -14,14 +14,10 @@ function getSocket(): Socket {
   return socket;
 }
 
-// Ask the server to push a single book into the store (direct navigation or a freshly
-// uploaded book). The reply comes back on books:sync. Emits are buffered until connected.
 export function requestBook(bookId: string) {
   getSocket().emit('subscribe-to-book', { bookId });
 }
 
-// Newest updatedAt across the books we already have (hydrated from localStorage). The
-// server uses it to send back only what changed since; empty cache → full sync.
 function lastUpdateFromStore(): string | undefined {
   let max: string | undefined;
   for (const b of store.getState().books.books) {
@@ -52,7 +48,6 @@ export function useWebSocket() {
     s.on('books:sync', onSync);
     s.on('book:update', onUpdate);
 
-    // Already connected (socket reused across mounts): subscribe immediately.
     if (s.connected) onConnect();
 
     return () => {

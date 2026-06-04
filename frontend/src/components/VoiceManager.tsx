@@ -4,18 +4,16 @@ import { AppDispatch } from '../store';
 import { addVoice, removeVoice } from '../store/booksSlice';
 import { Book } from '../types';
 import { bookVoices, friendlyVoice, chapterStatus } from '../lib/format';
-import AddVoiceModal from './AddVoiceModal';
+import GenerateVoiceModal from './GenerateVoiceModal';
+import ConfirmDialog from './ConfirmDialog';
 
 interface Props {
   book: Book;
-  // Player mode: highlight the active voice and let the user switch playback to another.
   activeVoice?: string;
   onSelectVoice?: (voice: string) => void;
-  // Show the add/remove controls. Off during the import flow (before audio exists).
   editable?: boolean;
 }
 
-// Is this voice still rendering across the book's chapters?
 function isVoiceGenerating(book: Book, voice: string): boolean {
   return book.chapters.some(c => {
     const s = chapterStatus(c, [voice]);
@@ -26,14 +24,14 @@ function isVoiceGenerating(book: Book, voice: string): boolean {
 export default function VoiceManager({ book, activeVoice, onSelectVoice, editable }: Props) {
   const dispatch = useDispatch<AppDispatch>();
   const [showAdd, setShowAdd] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
   const voices = bookVoices(book);
   const selectable = !!onSelectVoice;
 
   const handleRemove = (e: React.MouseEvent, voice: string) => {
     e.stopPropagation();
     if (voices.length <= 1) return;
-    if (!confirm(`Remove the ${friendlyVoice(voice)} voice and its audio?`)) return;
-    dispatch(removeVoice({ bookId: book._id, voice }));
+    setRemoving(voice);
   };
 
   return (
@@ -81,10 +79,22 @@ export default function VoiceManager({ book, activeVoice, onSelectVoice, editabl
       </div>
 
       {showAdd && (
-        <AddVoiceModal
-          existing={voices}
-          onAdd={voice => { dispatch(addVoice({ bookId: book._id, voice })); setShowAdd(false); }}
+        <GenerateVoiceModal
+          bookId={book._id}
+          exclude={voices}
+          onConfirm={voice => { dispatch(addVoice({ bookId: book._id, voice })); setShowAdd(false); }}
           onClose={() => setShowAdd(false)}
+        />
+      )}
+
+      {removing && (
+        <ConfirmDialog
+          title="Remove voice?"
+          message={`The ${friendlyVoice(removing)} narration and its audio will be deleted.`}
+          confirmLabel="Remove"
+          danger
+          onConfirm={() => { dispatch(removeVoice({ bookId: book._id, voice: removing })); setRemoving(null); }}
+          onClose={() => setRemoving(null)}
         />
       )}
     </div>

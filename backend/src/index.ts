@@ -4,14 +4,17 @@ import cors from 'cors';
 import path from 'path';
 import { Server as SocketServer } from 'socket.io';
 import { connectDb } from './db.js';
-import { migrateLegacyVoices } from './models/Book.js';
+import { migrateLegacyVoices, migrateChapterStartChar } from './models/Book.js';
 import { booksRouter, registerBookSync } from './routes/books.js';
 import { PORT, FRONTEND_ORIGIN, DATA_DIR, TTS_API, FALLBACK_VOICES } from './config.js';
 import fs from 'fs/promises';
 
+process.on('unhandledRejection', err => console.error('Unhandled promise rejection:', err));
+
 async function main() {
   await connectDb();
   await migrateLegacyVoices();
+  await migrateChapterStartChar();
   await fs.mkdir(path.join(DATA_DIR, 'books'), { recursive: true });
 
   const app = express();
@@ -25,7 +28,6 @@ async function main() {
 
   app.use('/api/books', booksRouter(io));
 
-  // Proxy Kokoro voices so the frontend doesn't need to call the TTS API directly
   app.get('/api/voices', async (_req, res) => {
     try {
       const r = await fetch(`${TTS_API}/v1/audio/voices`);

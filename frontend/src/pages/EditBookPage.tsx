@@ -2,16 +2,17 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { AppDispatch, RootState } from '../store';
-import { confirmChapters, deleteBook, renameBook } from '../store/booksSlice';
+import { confirmChapters, deleteBook, renameBook, generateBook } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus } from '../types';
-import { chapterStatus } from '../lib/format';
+import { chapterStatus, bookVoices, trackFor, friendlyVoice } from '../lib/format';
 import ChapterReview, { ChapterReviewHandle } from '../components/ChapterReview';
 import TextReview from '../components/OcrPageReview';
 import CoverPickerModal from '../components/CoverPickerModal';
 import VoiceManager from '../components/VoiceManager';
+import GenerateVoiceModal from '../components/GenerateVoiceModal';
+import ConfirmDialog from '../components/ConfirmDialog';
 
-// ── Helpers ────────────────────────────────────────────────────────────────
 const STATUS_STEPS: { status: BookStatus; label: string }[] = [
   { status: 'uploading',               label: 'Uploading' },
   { status: 'splitting_pages',         label: 'Splitting pages' },
@@ -29,7 +30,6 @@ const STATUS_LABEL: Record<BookStatus, string> = Object.fromEntries(
 
 const STATUS_ORDER = STATUS_STEPS.map(s => s.status);
 
-// ── Status indicator ───────────────────────────────────────────────────────
 function StatusIndicator({ book }: { book: Book }) {
   const [open,     setOpen]     = useState(false);
   const [eta,      setEta]      = useState<string | null>(null);
@@ -41,7 +41,6 @@ function StatusIndicator({ book }: { book: Book }) {
   const ocrTotal = book.progress.total;
   const pct      = ocrTotal > 0 ? Math.round((ocrDone / ocrTotal) * 100) : 0;
 
-  // Seed ETA reference on first OCR page
   useEffect(() => {
     if (isOcr && ocrDone > 0 && !startRef.current) {
       startRef.current = { time: Date.now(), done: ocrDone };
@@ -49,7 +48,6 @@ function StatusIndicator({ book }: { book: Book }) {
     if (!isOcr) { startRef.current = null; setEta(null); }
   }, [isOcr, ocrDone]);
 
-  // Refresh ETA every 3 s while OCR is running
   useEffect(() => {
     if (!isOcr) return;
     const timer = setInterval(() => {
@@ -65,7 +63,6 @@ function StatusIndicator({ book }: { book: Book }) {
 
   return (
     <div className="card py-3 px-4 space-y-2">
-      {/* Status row */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <div className="flex items-center gap-2 shrink-0">
@@ -78,7 +75,6 @@ function StatusIndicator({ book }: { book: Book }) {
             </span>
           </div>
 
-          {/* OCR stats — immediately after the label */}
           {isOcr && ocrTotal > 0 && (
             <div className="flex items-center gap-3 text-xs text-gray-500">
               <span className="tabular-nums">{ocrDone}/{ocrTotal}</span>
@@ -98,7 +94,6 @@ function StatusIndicator({ book }: { book: Book }) {
         </button>
       </div>
 
-      {/* Horizontal progress bar (OCR only) */}
       {isOcr && ocrTotal > 0 && (
         <div className="w-full h-1 bg-gray-800 rounded-full overflow-hidden">
           <div
@@ -108,7 +103,6 @@ function StatusIndicator({ book }: { book: Book }) {
         </div>
       )}
 
-      {/* Expandable step list */}
       {open && (
         <div className="pt-2 border-t border-gray-800 space-y-2">
           {STATUS_STEPS.filter(s => s.status !== 'complete').map((step, i) => {
@@ -133,7 +127,6 @@ function StatusIndicator({ book }: { book: Book }) {
   );
 }
 
-// ── Editable cover thumbnail ───────────────────────────────────────────────
 function EditableCover({ bookId, coverVersion, onClick, size = 'md' }: {
   bookId: string; coverVersion: number; onClick: () => void; size?: 'sm' | 'md' | 'lg';
 }) {
@@ -161,9 +154,6 @@ function EditableCover({ bookId, coverVersion, onClick, size = 'md' }: {
   );
 }
 
-// ── Editable book title ────────────────────────────────────────────────────
-// The title is auto-read from the cover during processing; this lets the user
-// correct it. Saves on blur / Enter, reverts on Escape.
 function EditableTitle({ book }: { book: Book }) {
   const dispatch = useDispatch<AppDispatch>();
   const [editing, setEditing] = useState(false);
@@ -211,7 +201,74 @@ function EditableTitle({ book }: { book: Book }) {
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+const DOT_CLASS: Record<string, string> = {
+  complete:   'bg-green-500',
+  generating: 'bg-amber-400 animate-pulse',
+  stale:      'bg-amber-400',
+  error:      'bg-red-500',
+  pending:    'bg-gray-700',
+};
+
+const TRACK_LABEL: Record<string, string> = {
+  complete:   'ready',
+  generating: 'rendering…',
+  stale:      'stale',
+  error:      'error',
+  pending:    'pending',
+};
+
+const TRACK_TEXT: Record<string, string> = {
+  complete:   'text-green-400',
+  generating: 'text-amber-400',
+  stale:      'text-amber-400',
+  error:      'text-red-400',
+  pending:    'text-gray-500',
+};
+
+function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
+  const statuses   = book.chapters.map(c => trackFor(c, voice)?.audioStatus ?? 'pending');
+  const total      = statuses.length;
+  const done       = statuses.filter(s => s === 'complete').length;
+  const generating = statuses.some(s => s === 'generating');
+  const errored    = statuses.some(s => s === 'error');
+  const allDone    = total > 0 && done === total;
+
+  return (
+    <div className="rounded-lg border border-gray-800 bg-gray-900/40 overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2">
+        <span className="flex items-center gap-2 min-w-0">
+          <span className={`w-2 h-2 rounded-full shrink-0 ${
+            generating ? 'bg-amber-400 animate-pulse' : allDone ? 'bg-green-500' : errored ? 'bg-red-500' : 'bg-gray-700'
+          }`} />
+          <span className="text-gray-100 font-medium truncate">{friendlyVoice(voice)}</span>
+          <span className={`text-xs shrink-0 ${generating ? 'text-amber-400' : allDone ? 'text-green-400' : 'text-gray-500'}`}>
+            {generating ? 'generating…' : allDone ? 'done' : 'waiting'}
+          </span>
+        </span>
+        <span className="text-xs text-gray-500 tabular-nums shrink-0">{done}/{total}</span>
+      </div>
+
+      <div className="border-t border-gray-800 divide-y divide-gray-800/60 max-h-56 overflow-y-auto">
+        {book.chapters.map((c, i) => {
+          const s = statuses[i];
+          return (
+            <div key={c._id} className="flex items-center gap-2 px-3 py-1.5">
+              <span className={`w-2 h-2 rounded-full shrink-0 ${DOT_CLASS[s] ?? 'bg-gray-700'}`} />
+              <span className="text-gray-500 text-xs tabular-nums shrink-0 w-5">{i + 1}.</span>
+              <span className={`text-sm truncate flex-1 ${s === 'generating' ? 'text-amber-300' : 'text-gray-300'}`}>
+                {c.title || `Chapter ${i + 1}`}
+              </span>
+              <span className={`text-[11px] shrink-0 ${TRACK_TEXT[s] ?? 'text-gray-500'}`}>
+                {TRACK_LABEL[s] ?? s}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function EditBookPage() {
   const { id }   = useParams<{ id: string }>();
   const dispatch = useDispatch<AppDispatch>();
@@ -219,15 +276,15 @@ export default function EditBookPage() {
   const book     = useSelector((s: RootState) => s.books.books.find(b => b._id === id));
 
   const [showCoverPicker,  setShowCoverPicker]  = useState(false);
+  const [showVoiceDialog,  setShowVoiceDialog]  = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [generating,       setGenerating]       = useState(false);
   const chapterReviewRef = useRef<ChapterReviewHandle>(null);
-  // Set when the user triggers a generation, so we can auto-advance to the
-  // Player page once this book reaches the `complete` status.
   const generatedRef = useRef(false);
+  const voiceRef = useRef<string | undefined>(undefined);
 
   useEffect(() => { if (id) requestBook(id); }, [id]);
 
-  // Auto-advance to the Player after a user-triggered generation completes.
   useEffect(() => {
     if (book?.status === 'complete' && generatedRef.current) {
       generatedRef.current = false;
@@ -239,25 +296,38 @@ export default function EditBookPage() {
     return <div className="min-h-screen flex items-center justify-center"><p className="text-gray-500">Loading…</p></div>;
   }
 
-  // A finished book has a Player page to return to; anything still in the
-  // import flow goes back to the Library (the Player would only bounce here).
   const backTo = book.status === 'complete' ? `/books/${book._id}` : '/';
 
   const handleDelete = async () => {
-    if (!confirm(`Delete "${book.name}"?`)) return;
+    setShowDeleteConfirm(false);
     await dispatch(deleteBook(id!)).unwrap();
     navigate('/');
   };
 
   const handleConfirmChapters = async (chapters: { title: string; startPage: number }[]) => {
-    await dispatch(confirmChapters({ bookId: id!, chapters })).unwrap();
+    await dispatch(confirmChapters({ bookId: id!, chapters, voice: voiceRef.current })).unwrap();
+  };
+
+  const runGenerate = async (voice?: string) => {
+    setShowVoiceDialog(false);
+    setGenerating(true);
+    generatedRef.current = true;
+    try {
+      if (voice) {
+        voiceRef.current = voice;
+        await chapterReviewRef.current?.submit();
+      } else {
+        await chapterReviewRef.current?.save();
+        await dispatch(generateBook(id!)).unwrap();
+      }
+    } finally { setGenerating(false); }
   };
 
   const hasOcrPages   = book.ocrPages.length > 0;
   const hasChapters   = book.chapters.length > 0;
   const isGenerating  = book.status === 'generating_audio' || book.chapters.some(c => chapterStatus(c) === 'generating');
   const showStatus    = book.status !== 'complete' && book.status !== 'error' && !isGenerating;
-  const showGenerate  = book.status === 'awaiting_chapter_review' || book.status === 'complete';
+  const showGenerate  = (book.status === 'awaiting_chapter_review' || book.status === 'complete') && !isGenerating;
   const hasStaleAudio = book.chapters.some(c => chapterStatus(c) === 'stale');
 
   return (
@@ -278,7 +348,7 @@ export default function EditBookPage() {
           <button
             className="text-gray-500 hover:text-red-400 transition-colors"
             aria-label="Delete book"
-            onClick={handleDelete}
+            onClick={() => setShowDeleteConfirm(true)}
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -290,17 +360,17 @@ export default function EditBookPage() {
 
       <main className="max-w-3xl mx-auto px-6 py-6 space-y-5">
 
-        {/* Cover + info */}
         <div className="card flex gap-5 items-start">
           <EditableCover bookId={book._id} coverVersion={book.coverVersion ?? 0} onClick={() => setShowCoverPicker(true)} size="md" />
           <div className="space-y-2 text-sm text-gray-400 min-w-0 flex-1">
             <EditableTitle book={book} />
             {book.totalPages > 0 && <p>{book.totalPages} pages</p>}
-            <VoiceManager book={book} editable={book.status === 'complete'} />
+            {(book.status === 'complete' || book.status === 'generating_audio') && (
+              <VoiceManager book={book} editable={book.status === 'complete'} />
+            )}
           </div>
         </div>
 
-        {/* Status (import flow only) */}
         {showStatus && <StatusIndicator book={book} />}
 
         {book.status === 'error' && (
@@ -310,41 +380,29 @@ export default function EditBookPage() {
           </div>
         )}
 
-        {/* Reading pages */}
         {hasOcrPages && <TextReview bookId={book._id} ocrPages={book.ocrPages} />}
 
-        {/* Chapters */}
         {hasChapters && (
           <>
             <div className="card">
               <ChapterReview ref={chapterReviewRef} book={book} onConfirm={handleConfirmChapters} />
             </div>
 
-            {/* Audio generation progress — right before the Generate button */}
             {isGenerating && (
-              <div className="card space-y-3">
-                <h3 className="font-semibold text-gray-100">Generating audio</h3>
+              <div className="card space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-gray-100">Generating audio</h3>
+                  <span className="text-xs text-gray-500">
+                    green = ready · pulsing = rendering
+                  </span>
+                </div>
                 {book.progress.message && <p className="text-sm text-gray-400">{book.progress.message}</p>}
-                {book.chapters.map(c => {
-                  const status = chapterStatus(c);
-                  return (
-                    <div key={c._id} className="flex items-center gap-3">
-                      <div className={`w-2 h-2 rounded-full shrink-0 ${
-                        status === 'complete'   ? 'bg-green-500'
-                        : status === 'stale'      ? 'bg-amber-400'
-                        : status === 'generating' ? 'bg-amber-400 animate-pulse'
-                        : status === 'error'      ? 'bg-red-500'
-                        : 'bg-gray-700'
-                      }`} />
-                      <span className="text-sm text-gray-300 flex-1 truncate">{c.title}</span>
-                      <span className="text-xs text-gray-500 capitalize">{status}</span>
-                    </div>
-                  );
-                })}
+                {bookVoices(book).map(voice => (
+                  <VoiceGenProgress key={voice} book={book} voice={voice} />
+                ))}
               </div>
             )}
 
-            {/* Stale audio warning */}
             {hasStaleAudio && !isGenerating && (
               <div className="flex items-start gap-3 rounded-lg border border-amber-700 bg-amber-950/30 px-4 py-3">
                 <svg className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -361,12 +419,7 @@ export default function EditBookPage() {
               <button
                 className="btn-primary w-full justify-center"
                 disabled={generating}
-                onClick={async () => {
-                  setGenerating(true);
-                  generatedRef.current = true;
-                  try { await chapterReviewRef.current?.submit(); }
-                  finally { setGenerating(false); }
-                }}
+                onClick={() => book.status === 'complete' ? runGenerate() : setShowVoiceDialog(true)}
               >
                 {generating ? 'Generating…' : 'Generate'}
               </button>
@@ -378,6 +431,26 @@ export default function EditBookPage() {
 
       {showCoverPicker && (
         <CoverPickerModal book={book} onClose={() => setShowCoverPicker(false)} />
+      )}
+
+      {showVoiceDialog && (
+        <GenerateVoiceModal
+          bookId={book._id}
+          initialVoice={bookVoices(book)[0]}
+          onConfirm={runGenerate}
+          onClose={() => setShowVoiceDialog(false)}
+        />
+      )}
+
+      {showDeleteConfirm && (
+        <ConfirmDialog
+          title="Delete book?"
+          message={`"${book.name || 'Untitled'}" and all its audio will be permanently deleted.`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={handleDelete}
+          onClose={() => setShowDeleteConfirm(false)}
+        />
       )}
     </div>
   );

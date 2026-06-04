@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from 'react';
+import { useRef } from 'react';
 import { UploadFormData } from '../../types';
 
 interface Props {
@@ -7,42 +7,8 @@ interface Props {
   onNext: () => void;
 }
 
-const VOICE_LANGS = [
-  { id: 'pt', label: 'Portuguese', prefixes: ['pf', 'pm'] },
-  { id: 'en', label: 'English',    prefixes: ['af', 'am', 'bf', 'bm', 'ef', 'em'] },
-];
-
-const FALLBACK_VOICES = [
-  'af_heart','af_bella','af_nicole','af_nova','af_sarah',
-  'am_adam','am_echo','am_michael','am_onyx',
-  'pf_dora','pm_alex','pm_santa',
-];
-
-function capFirst(s: string) { return s.charAt(0).toUpperCase() + s.slice(1); }
-function voiceName(v: string) { return capFirst(v.split('_').slice(1).join(' ')); }
-
 export default function Step1BookInfo({ data, onChange, onNext }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
-  const [allVoices, setAllVoices] = useState<string[]>(FALLBACK_VOICES);
-  const [lang, setLang] = useState('pt');
-
-  useEffect(() => {
-    fetch('/api/voices')
-      .then(r => r.json())
-      .then((v: unknown) => { if (Array.isArray(v) && v.length) setAllVoices(v as string[]); })
-      .catch(() => {});
-  }, []);
-
-  const langDef = VOICE_LANGS.find(l => l.id === lang)!;
-  const filtered = allVoices.filter(v => langDef.prefixes.some(p => v.startsWith(p + '_')));
-  const female   = filtered.filter(v => v[1] === 'f');
-  const male     = filtered.filter(v => v[1] === 'm');
-
-  // Auto-select first voice when lang changes
-  useEffect(() => {
-    const first = filtered[0];
-    if (first && !filtered.includes(data.voice)) onChange({ voice: first });
-  }, [lang, allVoices]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const canProceed = data.file !== null;
 
@@ -76,28 +42,6 @@ export default function Step1BookInfo({ data, onChange, onNext }: Props) {
         </div>
         <input ref={fileRef} type="file" accept="application/pdf" className="hidden"
           onChange={e => { const f = e.target.files?.[0]; if (f) onChange({ file: f }); }} />
-      </div>
-
-      {/* Voice selection */}
-      <div>
-        <label className="label">Reading voice</label>
-        <div className="grid grid-cols-2 gap-2">
-          <select className="input" value={lang} onChange={e => setLang(e.target.value)}>
-            {VOICE_LANGS.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
-          </select>
-          <select className="input" value={data.voice} onChange={e => onChange({ voice: e.target.value })}>
-            {female.length > 0 && (
-              <optgroup label="Female">
-                {female.map(v => <option key={v} value={v}>{voiceName(v)}</option>)}
-              </optgroup>
-            )}
-            {male.length > 0 && (
-              <optgroup label="Male">
-                {male.map(v => <option key={v} value={v}>{voiceName(v)}</option>)}
-              </optgroup>
-            )}
-          </select>
-        </div>
       </div>
 
       <button className="btn-primary w-full justify-center" disabled={!canProceed} onClick={onNext}>

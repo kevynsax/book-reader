@@ -4,20 +4,11 @@ import { Server as SocketServer } from 'socket.io';
 import { Book, IBook, freshTracks, trackForVoice } from '../models/Book.js';
 import { splitPdfIntoPages, findPageImagePath, getAllPagePaths, copyPageAsCover } from '../services/pdfService.js';
 import { ocrPage, detectChapters, extractBookTitle } from '../services/ocrService.js';
+import { sanitizePageText } from '../lib/sanitize.js';
 import { generateAudio } from '../services/ttsService.js';
 
 function emit(io: SocketServer, book: IBook, update: Record<string, unknown>) {
   io.emit('book:update', { bookId: book._id.toString(), updatedAt: book.updatedAt, ...update });
-}
-
-function sanitizePageText(text: string): string {
-  const trimmed = text?.trim();
-  if (!trimmed || trimmed[0] !== '{') return trimmed ?? '';
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (typeof parsed?.content === 'string') return parsed.content.trim();
-  } catch { /* not JSON */ }
-  return trimmed;
 }
 
 function extractChapterText(
@@ -26,26 +17,17 @@ function extractChapterText(
   ocrPages: IBook['ocrPages'],
   lastPage: number,
 ): string {
-  const chapter = chapters[idx];
-  const next    = chapters[idx + 1];
+  const chapter   = chapters[idx];
+  const next      = chapters[idx + 1];
   const startPage = chapter.startPage;
-  const startChar = chapter.startChar ?? 0;
-  const endPage   = next ? next.startPage : lastPage;
-  const endChar   = next ? (next.startChar ?? 0) : -1; // -1 = end of page
+  const endPage   = next ? next.startPage - 1 : lastPage;
 
-  const pages = ocrPages
+  return ocrPages
     .filter(p => p.page >= startPage && p.page <= endPage && p.status === 'complete')
-    .sort((a, b) => a.page - b.page);
-
-  return pages.map(p => {
-    const text    = sanitizePageText(p.text);
-    const isFirst = p.page === startPage;
-    const isLast  = p.page === endPage;
-    if (isFirst && isLast) return endChar >= 0 ? text.slice(startChar, endChar) : text.slice(startChar);
-    if (isFirst) return text.slice(startChar);
-    if (isLast)  return endChar >= 0 ? text.slice(0, endChar) : text;
-    return text;
-  }).join('\n\n').trim();
+    .sort((a, b) => a.page - b.page)
+    .map(p => sanitizePageText(p.text))
+    .join('\n\n')
+    .trim();
 }
 
 async function setProgress(
@@ -67,13 +49,11 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
   if (!book) return;
 
   try {
-    // Step 1: Split PDF into page images
     await setProgress(io, book, 0, 1, 'Splitting pages…', 'splitting_pages');
     const totalPages = await splitPdfIntoPages(book.filePath, book.folderPath);
     book.totalPages = totalPages;
     await book.save();
 
-    // Step 2: Extract cover image
     await setProgress(io, book, 0, 1, 'Extracting cover…', 'extracting_cover');
     const coverSrcPath = await findPageImagePath(book.folderPath, book.coverPage);
     if (coverSrcPath) {
@@ -84,8 +64,6 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
       emit(io, book, { coverImagePath: coverDest });
     }
 
-    // Step 2.5: Read the title from the cover unless the user already named the
-    // book. The user can correct it later in the editor.
     if (book.coverImagePath && !book.name.trim()) {
       await setProgress(io, book, 0, 1, 'Reading title…', 'reading_title');
       try {
@@ -95,10 +73,10 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
           await book.save();
           emit(io, book, { name: title });
         }
-      } catch { /* leave the name blank; the user can set it in the editor */ }
+      } catch {
+      }
     }
 
-    // Step 3: OCR all pages in the reading range
     const readPages: number[] = [];
     for (let p = book.firstPage; p <= book.lastPage; p++) readPages.push(p);
 
@@ -138,8 +116,6 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
       });
     }
 
-    // Step 4: Detect chapters from the table-of-contents page, then locate each
-    // in the OCR'd reading range.
     await setProgress(io, book, 0, 1, 'Detecting chapters…', 'detecting_chapters');
     const completedPages = book.ocrPages
       .filter(p => p.status === 'complete')
@@ -153,7 +129,6 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
     book.chapters = suggestions.map(s => ({
       title: s.title,
       startPage: s.page,
-      startChar: s.startChar,
       tracks: freshTracks(book.voices),
     })) as unknown as typeof book.chapters;
 
@@ -174,17 +149,10 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
   }
 }
 
-// Absolute path of the rendered file for a (chapter, voice) pair.
 export function chapterAudioPath(audioDir: string, chapterIdx: number, voice: string): string {
   return path.join(audioDir, `chapter-${String(chapterIdx + 1).padStart(3, '0')}__${voice}.mp3`);
 }
 
-// Render every (voice, chapter) track that isn't already complete. Emits an
-// incremental `chapterUpdate` (carrying the voice) per track so the client can
-// reflect progress for the right voice. When `manageBookStatus` is set, the
-// book is flipped generating_audio → complete and book-level progress is sent;
-// otherwise the book status is left untouched (used when adding a voice to an
-// already-finished book, so its existing audio keeps playing).
 async function generateForVoices(
   book: IBook,
   io: SocketServer,
@@ -260,7 +228,6 @@ async function generateForVoices(
   }
 }
 
-// Initial import flow: render every voice the book has, driving book status.
 export async function generateBookAudio(bookId: string, io: SocketServer): Promise<void> {
   const book = await Book.findById(bookId);
   if (!book) return;
@@ -276,7 +243,6 @@ export async function generateBookAudio(bookId: string, io: SocketServer): Promi
   }
 }
 
-// Render a single newly-added voice without disturbing the finished book.
 export async function generateVoiceAudio(bookId: string, io: SocketServer, voice: string): Promise<void> {
   const book = await Book.findById(bookId);
   if (!book) return;
@@ -288,7 +254,6 @@ export async function generateVoiceAudio(bookId: string, io: SocketServer, voice
   }
 }
 
-// Re-render one chapter across every voice the book has (e.g. its text changed).
 export async function regenerateChapterAudio(bookId: string, chapterIdx: number, io: SocketServer): Promise<void> {
   const book = await Book.findById(bookId);
   if (!book) return;

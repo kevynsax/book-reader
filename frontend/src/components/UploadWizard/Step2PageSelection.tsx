@@ -33,7 +33,6 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
   const [numPages,    setNumPages]    = useState(0);
   const [rendering,   setRendering]   = useState(false);
 
-  // Load PDF — do NOT auto-set any pages, user must pick explicitly
   useEffect(() => {
     if (!data.file) return;
     data.file.arrayBuffer().then(buf =>
@@ -63,7 +62,7 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
 
     const task = page.render({ canvasContext: ctx, viewport: scaled });
     renderTaskRef.current = task;
-    try { await task.promise; } catch { /* cancelled */ } finally { setRendering(false); }
+    try { await task.promise; } catch { } finally { setRendering(false); }
   }, [pdf]);
 
   useEffect(() => { renderPage(currentPage); }, [renderPage, currentPage]);
@@ -98,7 +97,6 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
   return (
     <div className="space-y-3">
 
-      {/* Role buttons — clicking marks current page */}
       <div className="grid grid-cols-2 gap-2">
         {ROLES.map(({ role, label }) => {
           const set    = isSet(role);
@@ -125,10 +123,8 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
         })}
       </div>
 
-      {/* PDF viewer with carousel navigation */}
       <div className="relative group bg-gray-800 rounded-xl overflow-hidden">
 
-        {/* Left carousel arrow */}
         <button
           className="absolute left-0 top-0 z-20 h-full w-10 flex items-center justify-center
                      opacity-0 group-hover:opacity-100 transition-opacity
@@ -142,7 +138,6 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
           </svg>
         </button>
 
-        {/* Right carousel arrow */}
         <button
           className="absolute right-0 top-0 z-20 h-full w-10 flex items-center justify-center
                      opacity-0 group-hover:opacity-100 transition-opacity
@@ -156,19 +151,16 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
           </svg>
         </button>
 
-        {/* Rendering overlay */}
         {rendering && (
           <div className="absolute inset-0 bg-gray-800/60 flex items-center justify-center z-10">
             <span className="text-sm text-gray-400">Rendering…</span>
           </div>
         )}
 
-        {/* Canvas */}
         <div className="overflow-auto max-h-[420px] flex justify-center p-2">
           <canvas ref={canvasRef} className="max-w-full rounded" />
         </div>
 
-        {/* Page indicator + jump input — overlaid at bottom center */}
         {numPages > 0 && (
           <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10
                           bg-black/60 backdrop-blur-sm rounded-full px-3 py-1
@@ -191,7 +183,6 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
         )}
       </div>
 
-      {/* Page scrubber */}
       {numPages > 1 && (
         <input
           type="range"
@@ -204,7 +195,6 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
         />
       )}
 
-      {/* Create */}
       <div className="pt-6">
       <button
         className="btn-primary w-full justify-center"

@@ -9,8 +9,6 @@ interface BooksState {
   error: string | null;
 }
 
-// Hydrate from localStorage so the library renders instantly on reload, before the
-// WebSocket connects and syncs whatever changed since.
 const persistedBooks = loadPersistedBooks();
 const initialState: BooksState = {
   books: persistedBooks,
@@ -20,15 +18,23 @@ const initialState: BooksState = {
 
 export const updateChapters = createAsyncThunk(
   'books/updateChapters',
-  async ({ bookId, chapters }: { bookId: string; chapters: { title: string; startPage: number; startChar: number }[] }) => {
+  async ({ bookId, chapters }: { bookId: string; chapters: { title: string; startPage: number }[] }) => {
     await api.patch(`/api/books/${bookId}/chapters`, { chapters });
   }
 );
 
 export const confirmChapters = createAsyncThunk(
   'books/confirmChapters',
-  async ({ bookId, chapters }: { bookId: string; chapters: { title: string; startPage: number; startChar?: number }[] }) => {
-    await api.put(`/api/books/${bookId}/chapters`, { chapters });
+  async ({ bookId, chapters, voice }: { bookId: string; chapters: { title: string; startPage: number }[]; voice?: string }) => {
+    await api.put(`/api/books/${bookId}/chapters`, { chapters, voice });
+    return bookId;
+  }
+);
+
+export const generateBook = createAsyncThunk(
+  'books/generate',
+  async (bookId: string) => {
+    await api.post(`/api/books/${bookId}/generate`);
     return bookId;
   }
 );
@@ -63,8 +69,6 @@ const booksSlice = createSlice({
   name: 'books',
   initialState,
   reducers: {
-    // Merge a batch of books pushed by the server (books:sync). Upsert by _id so a
-    // partial reconnect sync (only books changed since lastUpdate) doesn't drop the rest.
     syncBooks(state, action: PayloadAction<Book[]>) {
       state.loading = false;
       for (const incoming of action.payload) {
@@ -87,8 +91,6 @@ const booksSlice = createSlice({
       if (patch.progress) book.progress = patch.progress as Progress;
       if (patch.totalPages) book.totalPages = patch.totalPages as number;
       if (patch.coverImagePath) {
-        // The cover file path never changes (always cover.jpg), so bump a version to
-        // force the <img> to refetch the new image.
         book.coverImagePath = patch.coverImagePath as string;
         book.coverVersion = (book.coverVersion ?? 0) + 1;
       }

@@ -42,8 +42,6 @@ export default function CoverPickerModal({ book, onClose }: Props) {
       } else if (mode === 'page') {
         await api.put(`/api/books/${book._id}/cover/page`, { page: pageNum });
       }
-      // The cover change is broadcast over the socket (book:update → coverVersion bump),
-      // which busts the <img> cache automatically.
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update cover');
@@ -68,7 +66,6 @@ export default function CoverPickerModal({ book, onClose }: Props) {
         <div className="p-5 space-y-4">
           {error && <p className="text-sm text-red-400">{error}</p>}
 
-          {/* Upload section */}
           <div>
             <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-2">Upload image</p>
             <div
@@ -94,7 +91,6 @@ export default function CoverPickerModal({ book, onClose }: Props) {
               onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
           </div>
 
-          {/* Divider */}
           {hasPages && (
             <>
               <div className="flex items-center gap-3">
@@ -103,7 +99,6 @@ export default function CoverPickerModal({ book, onClose }: Props) {
                 <div className="flex-1 h-px bg-gray-800" />
               </div>
 
-              {/* Page selector */}
               <div>
                 <div
                   className={`rounded-xl overflow-hidden border-2 transition-colors ${mode === 'page' ? 'border-amber-600' : 'border-gray-800 hover:border-gray-700'}`}
@@ -117,7 +112,6 @@ export default function CoverPickerModal({ book, onClose }: Props) {
                       className="max-h-40 w-full object-contain"
                     />
 
-                    {/* Carousel arrows */}
                     <button
                       className="absolute left-0 top-0 h-full w-8 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-gradient-to-r from-black/50 to-transparent disabled:!opacity-0"
                       onClick={e => { e.stopPropagation(); setMode('page'); setPageNum(p => Math.max(1, p - 1)); }}
@@ -146,7 +140,6 @@ export default function CoverPickerModal({ book, onClose }: Props) {
             </>
           )}
 
-          {/* Actions */}
           <div className="flex gap-3 pt-1">
             <button className="btn-secondary flex-1 justify-center" onClick={onClose}>Cancel</button>
             <button className="btn-primary flex-1 justify-center" disabled={!canSave || saving} onClick={save}>

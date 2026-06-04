@@ -8,10 +8,12 @@ import { Book, IVoiceTrack, freshTracks, trackForVoice } from '../models/Book.js
 import { DATA_DIR } from '../config.js';
 import { processBook, generateBookAudio, generateVoiceAudio, regenerateChapterAudio } from '../workers/bookProcessor.js';
 import { findPageImagePath, copyPageAsCover } from '../services/pdfService.js';
+import { synthesizeSample } from '../services/ttsService.js';
+import { sanitizePageText } from '../lib/sanitize.js';
 
 const upload = multer({
   dest: '/tmp/book-uploads/',
-  limits: { fileSize: 1024 * 1024 * 1024 }, // 1 GB
+  limits: { fileSize: 1024 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (file.mimetype === 'application/pdf') cb(null, true);
     else cb(new Error('Only PDF files are allowed'));
@@ -20,21 +22,27 @@ const upload = multer({
 
 const coverUpload = multer({
   dest: '/tmp/cover-uploads/',
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
+  limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (file.mimetype.startsWith('image/')) cb(null, true);
     else cb(new Error('Only image files are allowed'));
   },
 });
 
-function sanitizePageText(text: string): string {
-  const trimmed = text?.trim();
-  if (!trimmed || trimmed[0] !== '{') return trimmed ?? '';
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (typeof parsed?.content === 'string') return parsed.content.trim();
-  } catch { /* not JSON */ }
-  return trimmed;
+function sampleText(ocrPages: { page: number; text: string; status: string }[], firstPage: number): string {
+  const pages = ocrPages
+    .filter(p => p.status === 'complete' && p.page >= firstPage)
+    .sort((a, b) => a.page - b.page);
+
+  for (const p of pages) {
+    const paragraphs = sanitizePageText(p.text).split(/\n\n+/).map(s => s.trim()).filter(Boolean);
+    const startIdx = paragraphs.findIndex(s => s.length >= 40);
+    if (startIdx >= 0) {
+      const joined = paragraphs.slice(startIdx).join('\n\n');
+      if (joined.length >= 40) return joined.slice(0, 1500);
+    }
+  }
+  return pages.map(p => sanitizePageText(p.text)).join(' ').trim().slice(0, 1500);
 }
 
 function sanitizeBook<T extends { ocrPages?: { text: string }[] }>(book: T): T {
@@ -44,8 +52,6 @@ function sanitizeBook<T extends { ocrPages?: { text: string }[] }>(book: T): T {
   return book;
 }
 
-// Push books changed since each client's last-seen timestamp over the socket.
-// Replaces the old GET /api/books list endpoint.
 export function registerBookSync(io: SocketServer) {
   io.on('connection', socket => {
     socket.on('subscribe-to-books', async (payload: { lastUpdate?: string } = {}) => {
@@ -55,7 +61,6 @@ export function registerBookSync(io: SocketServer) {
       socket.emit('books:sync', books.map(sanitizeBook));
     });
 
-    // Pull a single book (direct navigation / just-uploaded book) into the client store.
     socket.on('subscribe-to-book', async (payload: { bookId?: string } = {}) => {
       if (!payload?.bookId) return;
       const book = await Book.findById(payload.bookId).lean().catch(() => null);
@@ -67,7 +72,6 @@ export function registerBookSync(io: SocketServer) {
 export function booksRouter(io: SocketServer) {
   const router = express.Router();
 
-  // Upload a new book
   router.post('/', (req, res, next) => {
     upload.single('file')(req, res, err => {
       if (err) return res.status(400).json({ error: err.message });
@@ -78,7 +82,6 @@ export function booksRouter(io: SocketServer) {
 
     const { name, summaryPage, coverPage, firstPage, lastPage, voice } = req.body as Record<string, string>;
 
-    // name is optional — when blank it's read from the cover during processing.
     if (!summaryPage || !coverPage || !firstPage || !lastPage) {
       await fs.unlink(req.file.path).catch(() => {});
       return res.status(400).json({ error: 'Missing required fields' });
@@ -87,7 +90,6 @@ export function booksRouter(io: SocketServer) {
     const booksDir = path.join(DATA_DIR, 'books');
     await fs.mkdir(booksDir, { recursive: true });
 
-    // Create the book document first to get the ID
     const book = await Book.create({
       name: name?.trim() ?? '',
       summaryPage: parseInt(summaryPage),
@@ -105,7 +107,6 @@ export function booksRouter(io: SocketServer) {
     const filePath = path.join(folderPath, 'original.pdf');
 
     await fs.mkdir(folderPath, { recursive: true });
-    // copyFile + unlink instead of rename — rename fails across Docker volume boundaries (EXDEV)
     await fs.copyFile(req.file.path, filePath);
     await fs.unlink(req.file.path).catch(() => {});
 
@@ -115,13 +116,11 @@ export function booksRouter(io: SocketServer) {
 
     res.json({ bookId, message: 'Book uploaded. Processing started.' });
 
-    // Fire background task without blocking the response
     processBook(bookId, io).catch(err =>
       console.error(`processBook ${bookId} failed:`, err)
     );
   });
 
-  // Rename a book (e.g. fix a title that was auto-read from the cover)
   router.patch('/:id', async (req, res) => {
     const book = await Book.findById(req.params.id);
     if (!book) return res.status(404).json({ error: 'Not found' });
@@ -137,7 +136,27 @@ export function booksRouter(io: SocketServer) {
     res.json({ message: 'Renamed' });
   });
 
-  // Serve a page image from the book's parts folder
+  router.get('/:id/sample', async (req, res) => {
+    const book = await Book.findById(req.params.id).lean();
+    if (!book) return res.status(404).json({ error: 'Not found' });
+
+    const voice = (req.query.voice as string) || book.voices[0];
+    if (!voice) return res.status(400).json({ error: 'voice is required' });
+
+    const text = sampleText(book.ocrPages, book.firstPage);
+    if (!text) return res.status(409).json({ error: 'No readable text yet' });
+
+    try {
+      const audio = await synthesizeSample(text, voice);
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(audio);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'TTS failed';
+      res.status(502).json({ error: message });
+    }
+  });
+
   router.get('/:id/pages/:pageNum', async (req, res) => {
     const book = await Book.findById(req.params.id).lean();
     if (!book) return res.status(404).json({ error: 'Not found' });
@@ -156,7 +175,6 @@ export function booksRouter(io: SocketServer) {
     }
   });
 
-  // Serve cover image
   router.get('/:id/cover', async (req, res) => {
     const book = await Book.findById(req.params.id).lean();
     if (!book?.coverImagePath || !existsSync(book.coverImagePath)) {
@@ -167,7 +185,6 @@ export function booksRouter(io: SocketServer) {
     createReadStream(book.coverImagePath).pipe(res);
   });
 
-  // Upload a new cover image
   router.put('/:id/cover', (req, res, next) => {
     coverUpload.single('image')(req, res, err => {
       if (err) return res.status(400).json({ error: err.message });
@@ -188,7 +205,6 @@ export function booksRouter(io: SocketServer) {
     res.json({ message: 'Cover updated' });
   });
 
-  // Set a split page as cover (no file upload — JSON body { page })
   router.put('/:id/cover/page', async (req, res) => {
     const book = await Book.findById(req.params.id);
     if (!book) return res.status(404).json({ error: 'Not found' });
@@ -208,77 +224,77 @@ export function booksRouter(io: SocketServer) {
     res.json({ message: 'Cover updated' });
   });
 
-  // Update chapter structure without resetting audio; auto-regen chapters whose start moved
   router.patch('/:id/chapters', async (req, res) => {
-    const book = await Book.findById(req.params.id);
-    if (!book) return res.status(404).json({ error: 'Not found' });
+    try {
+      const book = await Book.findById(req.params.id);
+      if (!book) return res.status(404).json({ error: 'Not found' });
 
-    const { chapters } = req.body as {
-      chapters: { title: string; startPage: number; startChar?: number }[];
-    };
-
-    if (!Array.isArray(chapters) || chapters.length === 0) {
-      return res.status(400).json({ error: 'chapters array is required' });
-    }
-
-    // Collect indices that need regeneration
-    const toRegen = new Set<number>();
-    for (let i = 0; i < chapters.length; i++) {
-      const existing = book.chapters[i];
-      const posChanged = !existing
-        || existing.startPage !== chapters[i].startPage
-        || (existing.startChar ?? 0) !== (chapters[i].startChar ?? 0);
-      if (posChanged) {
-        toRegen.add(i);
-        if (i > 0) toRegen.add(i - 1); // previous chapter's end boundary moved too
-      }
-    }
-
-    book.chapters = chapters.map((c, i) => {
-      const existing = book.chapters[i];
-      const needsRegen = toRegen.has(i);
-      // Carry each voice's track forward; a moved chapter marks rendered audio
-      // stale so it can be rebuilt, while untouched chapters keep their audio.
-      const tracks = book.voices.map(voice => {
-        const prev = existing ? trackForVoice(existing, voice) : undefined;
-        const hadAudio = prev?.audioStatus === 'complete';
-        return {
-          voice,
-          audioPath: prev?.audioPath,
-          audioDurationSecs: prev?.audioDurationSecs,
-          audioStatus: needsRegen ? (hadAudio ? 'stale' : 'pending') : (prev?.audioStatus ?? 'pending'),
-        };
-      });
-      return {
-        title: c.title,
-        startPage: c.startPage,
-        startChar: c.startChar ?? 0,
-        tracks,
+      const { chapters } = req.body as {
+        chapters: { title: string; startPage: number }[];
       };
-    }) as unknown as typeof book.chapters;
 
-    await book.save();
-    io.emit('book:update', { bookId: book._id.toString(), updatedAt: book.updatedAt, chapters: book.chapters });
-    res.json({ message: 'Chapters updated' });
+      if (!Array.isArray(chapters) || chapters.length === 0) {
+        return res.status(400).json({ error: 'chapters array is required' });
+      }
+
+      const toRegen = new Set<number>();
+      for (let i = 0; i < chapters.length; i++) {
+        const existing = book.chapters[i];
+        if (!existing || existing.startPage !== chapters[i].startPage) {
+          toRegen.add(i);
+          if (i > 0) toRegen.add(i - 1);
+        }
+      }
+
+      const nextChapters = chapters.map((c, i) => {
+        const existing = book.chapters[i];
+        const needsRegen = toRegen.has(i);
+        const tracks = book.voices.map(voice => {
+          const prev = existing ? trackForVoice(existing, voice) : undefined;
+          const hadAudio = prev?.audioStatus === 'complete';
+          return {
+            voice,
+            audioPath: prev?.audioPath,
+            audioDurationSecs: prev?.audioDurationSecs,
+            audioStatus: needsRegen ? (hadAudio ? 'stale' : 'pending') : (prev?.audioStatus ?? 'pending'),
+          };
+        });
+        return { title: c.title, startPage: c.startPage, tracks };
+      });
+
+      const updated = await Book.findByIdAndUpdate(
+        req.params.id,
+        { $set: { chapters: nextChapters } },
+        { new: true },
+      );
+      if (!updated) return res.status(404).json({ error: 'Not found' });
+
+      io.emit('book:update', { bookId: updated._id.toString(), updatedAt: updated.updatedAt, chapters: updated.chapters });
+      res.json({ message: 'Chapters updated' });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to update chapters';
+      res.status(500).json({ error: message });
+    }
   });
 
-  // Confirm chapters and start audio generation (initial import flow)
   router.put('/:id/chapters', async (req, res) => {
     const book = await Book.findById(req.params.id);
     if (!book) return res.status(404).json({ error: 'Not found' });
 
-    const { chapters } = req.body as {
-      chapters: { title: string; startPage: number; startChar?: number }[];
+    const { chapters, voice } = req.body as {
+      chapters: { title: string; startPage: number }[];
+      voice?: string;
     };
 
     if (!Array.isArray(chapters) || chapters.length === 0) {
       return res.status(400).json({ error: 'chapters array is required' });
     }
 
+    if (voice && voice.trim()) book.voices = [voice.trim()];
+
     book.chapters = chapters.map(c => ({
       title: c.title,
       startPage: c.startPage,
-      startChar: c.startChar ?? 0,
       tracks: freshTracks(book.voices),
     })) as unknown as typeof book.chapters;
 
@@ -290,7 +306,18 @@ export function booksRouter(io: SocketServer) {
     );
   });
 
-  // Stream audio for a chapter
+  router.post('/:id/generate', async (req, res) => {
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).json({ error: 'Not found' });
+    if (book.chapters.length === 0) return res.status(400).json({ error: 'No chapters to generate' });
+
+    res.json({ message: 'Generation started' });
+
+    generateBookAudio(book._id.toString(), io).catch(err =>
+      console.error(`generateBookAudio ${book._id} failed:`, err)
+    );
+  });
+
   router.get('/:id/chapters/:chapterIdx/audio', async (req, res) => {
     const book = await Book.findById(req.params.id).lean();
     if (!book) return res.status(404).json({ error: 'Not found' });
@@ -310,7 +337,6 @@ export function booksRouter(io: SocketServer) {
     res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('Accept-Ranges', 'bytes');
 
-    // Honor Range requests so the browser can seek (scrubber navigation).
     const range = req.headers.range;
     if (range) {
       const match = /^bytes=(\d*)-(\d*)$/.exec(range);
@@ -334,7 +360,6 @@ export function booksRouter(io: SocketServer) {
     createReadStream(audioPath).pipe(res);
   });
 
-  // Update the OCR text for a specific page (for manual editing)
   router.put('/:id/pages/:page/text', async (req, res) => {
     const book = await Book.findById(req.params.id);
     if (!book) return res.status(404).json({ error: 'Not found' });
@@ -348,7 +373,6 @@ export function booksRouter(io: SocketServer) {
 
     pageDoc.text = text;
 
-    // Mark every rendered track of every chapter that covers this page as stale
     let anyStale = false;
     for (let i = 0; i < book.chapters.length; i++) {
       const chStart = book.chapters[i].startPage;
@@ -375,7 +399,6 @@ export function booksRouter(io: SocketServer) {
     res.json({ message: 'Saved' });
   });
 
-  // Regenerate audio for a single chapter
   router.post('/:id/chapters/:idx/regenerate', async (req, res) => {
     const book = await Book.findById(req.params.id);
     if (!book) return res.status(404).json({ error: 'Not found' });
@@ -394,7 +417,6 @@ export function booksRouter(io: SocketServer) {
     );
   });
 
-  // Add a voice to a finished book and render its audio in the background.
   router.post('/:id/voices', async (req, res) => {
     const book = await Book.findById(req.params.id);
     if (!book) return res.status(404).json({ error: 'Not found' });
@@ -404,7 +426,6 @@ export function booksRouter(io: SocketServer) {
     if (book.voices.includes(voice)) return res.status(409).json({ error: 'Voice already added' });
 
     book.voices.push(voice);
-    // Give every chapter a pending track for the new voice (keep existing ones).
     for (const chapter of book.chapters) {
       if (!trackForVoice(chapter, voice)) {
         chapter.tracks.push({ voice, audioStatus: 'pending' });
@@ -424,7 +445,6 @@ export function booksRouter(io: SocketServer) {
     );
   });
 
-  // Remove a voice (and its rendered files). A book must always keep one voice.
   router.delete('/:id/voices/:voice', async (req, res) => {
     const book = await Book.findById(req.params.id);
     if (!book) return res.status(404).json({ error: 'Not found' });
@@ -433,7 +453,6 @@ export function booksRouter(io: SocketServer) {
     if (!book.voices.includes(voice)) return res.status(404).json({ error: 'Voice not found' });
     if (book.voices.length <= 1) return res.status(400).json({ error: 'A book must have at least one voice' });
 
-    // Delete the rendered files for this voice before dropping the tracks.
     for (const chapter of book.chapters) {
       const track = trackForVoice(chapter, voice);
       if (track?.audioPath) await fs.unlink(track.audioPath).catch(() => {});
@@ -451,7 +470,6 @@ export function booksRouter(io: SocketServer) {
     res.json({ message: 'Voice removed' });
   });
 
-  // Delete a book
   router.delete('/:id', async (req, res) => {
     const book = await Book.findById(req.params.id);
     if (!book) return res.status(404).json({ error: 'Not found' });

@@ -1,9 +1,11 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
 import { AppDispatch } from '../store';
 import { deleteBook } from '../store/booksSlice';
 import { Book, BookStatus } from '../types';
 import { bookVoices, trackFor } from '../lib/format';
+import ConfirmDialog from './ConfirmDialog';
 
 function formatDuration(totalSecs: number): string {
   const h = Math.floor(totalSecs / 3600);
@@ -41,11 +43,9 @@ const STATUS_CLASS: Record<BookStatus, string> = {
 export default function BookCard({ book }: { book: Book }) {
   const navigate = useNavigate();
   const dispatch = useDispatch<AppDispatch>();
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const isComplete   = book.status === 'complete';
 
-  // Time left to finish the audiobook, using the saved playback position (set by the
-  // AudioPlayer in localStorage) against the chapter durations the backend reports.
-  // Measured against the primary voice (voices[0]).
   const primaryVoice = bookVoices(book)[0] ?? '';
   const readyDurations = book.chapters
     .map(c => trackFor(c, primaryVoice))
@@ -61,13 +61,12 @@ export default function BookCard({ book }: { book: Book }) {
         .slice(0, saved.chapterIdx)
         .reduce((s, d) => s + d, 0) + (saved.time ?? 0);
     }
-  } catch { /* no saved position */ }
+  } catch { }
   const remainingSecs = Math.max(0, totalDurationSecs - listenedSecs);
 
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm(`Delete "${book.name}"?`)) return;
-    dispatch(deleteBook(book._id));
+    setShowDeleteConfirm(true);
   };
 
   return (
@@ -75,7 +74,6 @@ export default function BookCard({ book }: { book: Book }) {
       className="card cursor-pointer hover:border-gray-600 transition-colors group relative"
       onClick={() => navigate(book.status === 'complete' ? `/books/${book._id}` : `/books/${book._id}/edit`)}
     >
-      {/* Delete button — visible on hover */}
       <button
         className="absolute top-2 right-2 z-10 w-7 h-7 rounded-full bg-gray-800/80 flex items-center justify-center text-gray-500 hover:bg-red-700 hover:text-white transition-all opacity-0 group-hover:opacity-100"
         onClick={handleDelete}
@@ -106,20 +104,29 @@ export default function BookCard({ book }: { book: Book }) {
         {book.name || 'Untitled'}
       </h3>
 
-      {/* Status badge — hidden for complete books */}
       {!isComplete && (
         <div className="flex items-center justify-between mb-2">
           <span className={STATUS_CLASS[book.status]}>{STATUS_LABEL[book.status]}</span>
         </div>
       )}
 
-      {/* Time left to finish listening */}
       <p className="text-xs text-gray-500 mb-2">
         {totalDurationSecs > 0 && remainingSecs > 0 ? `${formatDuration(remainingSecs)} left` : null}
       </p>
 
       {book.status === 'error' && (
         <p className="text-xs text-red-400 truncate">{book.errorMessage}</p>
+      )}
+
+      {showDeleteConfirm && (
+        <ConfirmDialog
+          title="Delete book?"
+          message={`"${book.name || 'Untitled'}" and all its audio will be permanently deleted.`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => { setShowDeleteConfirm(false); dispatch(deleteBook(book._id)); }}
+          onClose={() => setShowDeleteConfirm(false)}
+        />
       )}
     </div>
   );

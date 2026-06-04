@@ -23,7 +23,6 @@ export interface Chapter {
   _id: string;
   title: string;
   startPage: number;
-  startChar: number;
   tracks: VoiceTrack[];
 }
 
@@ -59,8 +58,6 @@ export interface Book {
   errorMessage?: string;
   createdAt: string;
   updatedAt: string;
-  // Client-only: bumped each time a cover update arrives over the socket, to bust the
-  // <img> cache since the cover always lives at the same /cover URL.
   coverVersion?: number;
 }
 
@@ -72,15 +69,4 @@ export interface UploadFormData {
   firstPage: number;
   lastPage: number;
   voice: string;
-}
-
-export interface ReviewChapter {
-  title: string;     // chapter name, sent to backend
-  label: string;     // text that marks the start in OCR, frontend only
-  startPage: number;
-  startChar: number;
-  endPage: number;   // display only, not sent to backend
-  foundPage: number | null;
-  excerpt: string | null;
-  found: boolean;
 }

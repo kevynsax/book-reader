@@ -14,8 +14,6 @@ export type BookStatus =
 
 export type AudioStatus = 'pending' | 'stale' | 'generating' | 'complete' | 'error';
 
-// One rendered audio file per (chapter, voice). A chapter carries one track for
-// each voice the book has.
 export interface IVoiceTrack {
   voice: string;
   audioPath?: string;
@@ -27,7 +25,6 @@ export interface IChapter {
   _id: Types.ObjectId;
   title: string;
   startPage: number;
-  startChar: number;  // char offset within startPage; 0 = beginning of page
   tracks: Types.DocumentArray<IVoiceTrack & Document>;
 }
 
@@ -49,7 +46,7 @@ export interface IBook extends Document {
   firstPage: number;
   lastPage: number;
   totalPages: number;
-  voices: string[];   // at least one; voices[0] is the primary/default voice
+  voices: string[];
   chapters: Types.DocumentArray<IChapter & Document>;
   ocrPages: IOcrPage[];
   progress: { current: number; total: number; message: string };
@@ -58,7 +55,6 @@ export interface IBook extends Document {
   updatedAt: Date;
 }
 
-// Find a chapter's track for a given voice, if any.
 export function trackForVoice(
   chapter: IChapter,
   voice: string
@@ -66,7 +62,6 @@ export function trackForVoice(
   return chapter.tracks.find(t => t.voice === voice);
 }
 
-// A fresh, unrendered set of tracks for the given voices.
 export function freshTracks(voices: string[]): IVoiceTrack[] {
   return voices.map(voice => ({ voice, audioStatus: 'pending' as AudioStatus }));
 }
@@ -88,7 +83,6 @@ const VoiceTrackSchema = new Schema<IVoiceTrack>(
 const ChapterSchema = new Schema<IChapter>({
   title: { type: String, required: true },
   startPage: { type: Number, required: true },
-  startChar: { type: Number, default: 0 },
   tracks: { type: [VoiceTrackSchema], default: [] },
 });
 
@@ -138,9 +132,6 @@ const BookSchema = new Schema<IBook>(
 
 export const Book = mongoose.model<IBook>('Book', BookSchema);
 
-// One-time migration from the legacy single-`voice` shape (string field + chapter-level
-// audio fields) to `voices[]` + per-chapter `tracks[]`. Reads raw docs so non-schema
-// legacy fields survive, then rewrites them in place. Safe to run on every startup.
 export async function migrateLegacyVoices(): Promise<void> {
   const col = mongoose.connection.collection('books');
   const cursor = col.find({ voices: { $exists: false } });
@@ -165,4 +156,12 @@ export async function migrateLegacyVoices(): Promise<void> {
       { $set: { voices: [voice], chapters }, $unset: { voice: '' } }
     );
   }
+}
+
+export async function migrateChapterStartChar(): Promise<void> {
+  const col = mongoose.connection.collection('books');
+  await col.updateMany(
+    { 'chapters.startChar': { $exists: true } },
+    { $unset: { 'chapters.$[].startChar': '' } }
+  );
 }

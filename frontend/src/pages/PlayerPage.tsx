@@ -9,9 +9,6 @@ import VoiceManager from '../components/VoiceManager';
 
 const VOICE_KEY = (id: string) => `br_voice_${id}`;
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Finished view — shows only the cover section and the audio player. A book
-// that is not `complete` is redirected to the Edit page.
 export default function PlayerPage() {
   const { id }   = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -23,7 +20,6 @@ export default function PlayerPage() {
 
   useEffect(() => { if (id) requestBook(id); }, [id]);
 
-  // Keep the active voice valid as the book's voices change (add/remove/sync).
   const voices = book ? bookVoices(book) : [];
   useEffect(() => {
     if (voices.length === 0) return;
@@ -32,10 +28,9 @@ export default function PlayerPage() {
 
   const selectVoice = (v: string) => {
     setActiveVoice(v);
-    if (id) { try { localStorage.setItem(VOICE_KEY(id), v); } catch { /* ignore */ } }
+    if (id) { try { localStorage.setItem(VOICE_KEY(id), v); } catch { } }
   };
 
-  // Anything that isn't a finished book belongs on the editor.
   useEffect(() => {
     if (book && book.status !== 'complete') {
       navigate(`/books/${id}/edit`, { replace: true });
@@ -62,7 +57,6 @@ export default function PlayerPage() {
 
       <main className="max-w-3xl mx-auto px-6 py-6 space-y-5">
 
-        {/* Cover section */}
         <div className="card flex gap-5 items-start">
           <div className="w-36 aspect-[2/3] rounded-lg overflow-hidden bg-gray-800 flex items-center justify-center shrink-0">
             <img
@@ -78,12 +72,11 @@ export default function PlayerPage() {
             {book.totalPages > 0 && <p>{book.totalPages} pages</p>}
             <VoiceManager book={book} activeVoice={activeVoice} onSelectVoice={selectVoice} editable />
             {remaining > 60 && (
-              <p className="pt-1 text-amber-400">{fmtRemaining(remaining)} left</p>
+              <p className="pt-1 text-gray-400">{fmtRemaining(remaining)} left</p>
             )}
           </div>
         </div>
 
-        {/* Player */}
         <AudioPlayer bookId={book._id} chapters={book.chapters} voice={activeVoice} onProgress={setRemaining} />
 
       </main>

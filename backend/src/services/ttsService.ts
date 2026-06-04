@@ -25,6 +25,10 @@ function splitTextIntoChunks(text: string): string[] {
   return chunks;
 }
 
+export async function synthesizeSample(text: string, voice: string): Promise<Buffer> {
+  return synthesizeChunk(text.slice(0, 1500), voice, KOKORO_SPEED);
+}
+
 async function synthesizeChunk(text: string, voice: string, speed: number): Promise<Buffer> {
   const res = await fetch(`${TTS_API}/v1/audio/speech`, {
     method: 'POST',
@@ -47,11 +51,6 @@ async function synthesizeChunk(text: string, voice: string, speed: number): Prom
   return Buffer.from(arrayBuf);
 }
 
-/**
- * Synthesize `text` to an MP3 at `outputPath` and return its true duration in
- * seconds. The file is losslessly remuxed (no re-encode) so it carries an
- * accurate duration header — see {@link normalizeMp3}.
- */
 export async function generateAudio(
   text: string,
   outputPath: string,
@@ -73,7 +72,6 @@ export async function generateAudio(
       await fs.writeFile(rawPath, Buffer.concat(buffers));
     }
 
-    // Lossless remux into a single stream with a correct header, then measure.
     await normalizeMp3(rawPath, outputPath);
     return await probeDurationSecs(outputPath);
   } finally {
