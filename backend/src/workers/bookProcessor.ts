@@ -124,18 +124,22 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
       });
     }
 
-    // Step 4: Detect chapters using Qwen
+    // Step 4: Detect chapters from the table-of-contents page, then locate each
+    // in the OCR'd reading range.
     await setProgress(io, book, 0, 1, 'Detecting chapters…', 'detecting_chapters');
     const completedPages = book.ocrPages
       .filter(p => p.status === 'complete')
-      .map(p => ({ page: p.page, text: p.text }));
+      .map(p => ({ page: p.page, text: sanitizePageText(p.text) }));
 
-    const suggestions = await detectChapters(completedPages);
+    const summaryImagePath = await findPageImagePath(book.folderPath, book.summaryPage);
+    const suggestions = summaryImagePath
+      ? await detectChapters(summaryImagePath, completedPages)
+      : [];
 
     book.chapters = suggestions.map(s => ({
       title: s.title,
       startPage: s.page,
-      startChar: 0,
+      startChar: s.startChar,
       tracks: freshTracks(book.voices),
     })) as unknown as typeof book.chapters;
 

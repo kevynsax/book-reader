@@ -46,12 +46,20 @@ export const FALLBACK_VOICES = [
   'pf_dora','pm_alex','pm_santa',
 ];
 
-export const CHAPTER_SYSTEM_PROMPT = [
-  'You are analyzing OCR text from a book.',
+export const TOC_SYSTEM_PROMPT = [
+  'You are reading the table of contents (index/summary) page of a book.',
   'Return one valid JSON array and nothing else.',
   'The JSON array must have this exact shape: [{"title":"Chapter Title","page":1}]',
-  'Only include main chapter headings (e.g. Chapter 1, Part I, named chapters).',
-  'Do not include sub-sections, paragraphs, or the table of contents itself.',
-  'The page number must be the actual page where the chapter starts in the text.',
+  '"title" is the chapter or section title exactly as printed.',
+  '"page" is the integer page number printed next to that title in the contents.',
+  'Include every listed entry that has a page number, preserving their order.',
+  'Do not invent entries and do not include entries without a page number.',
+  'If the image is not a table of contents, return an empty array [].',
   'Never add explanations, markdown fences, or any text outside the JSON array.',
+].join(' ');
+
+export const TOC_PAGE_PROMPT = [
+  'This image is the table of contents / index page of a book.',
+  'Extract every chapter or section listed together with the page number shown for it.',
+  'Read titles exactly as printed and keep them in the order they appear.',
 ].join(' ');
