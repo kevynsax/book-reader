@@ -18,14 +18,14 @@ const initialState: BooksState = {
 
 export const updateChapters = createAsyncThunk(
   'books/updateChapters',
-  async ({ bookId, chapters }: { bookId: string; chapters: { title: string; startPage: number }[] }) => {
+  async ({ bookId, chapters }: { bookId: string; chapters: { title: string; startPage: number; startChar: number }[] }) => {
     await api.patch(`/api/books/${bookId}/chapters`, { chapters });
   }
 );
 
 export const confirmChapters = createAsyncThunk(
   'books/confirmChapters',
-  async ({ bookId, chapters, voice }: { bookId: string; chapters: { title: string; startPage: number }[]; voice?: string }) => {
+  async ({ bookId, chapters, voice }: { bookId: string; chapters: { title: string; startPage: number; startChar: number }[]; voice?: string }) => {
     await api.put(`/api/books/${bookId}/chapters`, { chapters, voice });
     return bookId;
   }

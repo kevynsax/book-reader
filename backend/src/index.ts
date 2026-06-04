@@ -4,7 +4,7 @@ import cors from 'cors';
 import path from 'path';
 import { Server as SocketServer } from 'socket.io';
 import { connectDb } from './db.js';
-import { migrateLegacyVoices, migrateChapterStartChar } from './models/Book.js';
+import { migrateLegacyVoices, migrateSanitizeOcrText } from './models/Book.js';
 import { booksRouter, registerBookSync } from './routes/books.js';
 import { PORT, FRONTEND_ORIGIN, DATA_DIR, TTS_API, FALLBACK_VOICES } from './config.js';
 import fs from 'fs/promises';
@@ -14,7 +14,7 @@ process.on('unhandledRejection', err => console.error('Unhandled promise rejecti
 async function main() {
   await connectDb();
   await migrateLegacyVoices();
-  await migrateChapterStartChar();
+  await migrateSanitizeOcrText();
   await fs.mkdir(path.join(DATA_DIR, 'books'), { recursive: true });
 
   const app = express();

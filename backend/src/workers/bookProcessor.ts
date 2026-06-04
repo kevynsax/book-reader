@@ -20,14 +20,23 @@ function extractChapterText(
   const chapter   = chapters[idx];
   const next      = chapters[idx + 1];
   const startPage = chapter.startPage;
-  const endPage   = next ? next.startPage - 1 : lastPage;
+  const startChar = chapter.startChar ?? 0;
+  const endPage   = next ? next.startPage : lastPage;
+  const endChar   = next ? (next.startChar ?? 0) : -1;
 
-  return ocrPages
+  const pages = ocrPages
     .filter(p => p.page >= startPage && p.page <= endPage && p.status === 'complete')
-    .sort((a, b) => a.page - b.page)
-    .map(p => sanitizePageText(p.text))
-    .join('\n\n')
-    .trim();
+    .sort((a, b) => a.page - b.page);
+
+  return pages.map(p => {
+    const text    = sanitizePageText(p.text);
+    const isFirst = p.page === startPage;
+    const isLast  = p.page === endPage;
+    if (isFirst && isLast) return endChar >= 0 ? text.slice(startChar, endChar) : text.slice(startChar);
+    if (isFirst) return text.slice(startChar);
+    if (isLast)  return endChar >= 0 ? text.slice(0, endChar) : text;
+    return text;
+  }).join('\n\n').trim();
 }
 
 async function setProgress(
@@ -129,6 +138,7 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
     book.chapters = suggestions.map(s => ({
       title: s.title,
       startPage: s.page,
+      startChar: s.startChar,
       tracks: freshTracks(book.voices),
     })) as unknown as typeof book.chapters;
 

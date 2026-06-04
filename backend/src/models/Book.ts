@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
+import { sanitizePageText } from '../lib/sanitize.js';
 
 export type BookStatus =
   | 'uploading'
@@ -25,6 +26,7 @@ export interface IChapter {
   _id: Types.ObjectId;
   title: string;
   startPage: number;
+  startChar: number;
   tracks: Types.DocumentArray<IVoiceTrack & Document>;
 }
 
@@ -83,6 +85,7 @@ const VoiceTrackSchema = new Schema<IVoiceTrack>(
 const ChapterSchema = new Schema<IChapter>({
   title: { type: String, required: true },
   startPage: { type: Number, required: true },
+  startChar: { type: Number, default: 0 },
   tracks: { type: [VoiceTrackSchema], default: [] },
 });
 
@@ -158,10 +161,15 @@ export async function migrateLegacyVoices(): Promise<void> {
   }
 }
 
-export async function migrateChapterStartChar(): Promise<void> {
+export async function migrateSanitizeOcrText(): Promise<void> {
   const col = mongoose.connection.collection('books');
-  await col.updateMany(
-    { 'chapters.startChar': { $exists: true } },
-    { $unset: { 'chapters.$[].startChar': '' } }
-  );
+  const cursor = col.find({ 'ocrPages.text': { $regex: /^\s*\{/ } });
+
+  for await (const b of cursor) {
+    const ocrPages = (b.ocrPages || []).map((p: Record<string, unknown>) => ({
+      ...p,
+      text: sanitizePageText(p.text as string),
+    }));
+    await col.updateOne({ _id: b._id }, { $set: { ocrPages } });
+  }
 }

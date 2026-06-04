@@ -6,14 +6,34 @@ import { Book } from '../types';
 
 interface Props {
   book: Book;
-  onConfirm: (chapters: { title: string; startPage: number }[]) => Promise<void>;
+  onConfirm: (chapters: { title: string; startPage: number; startChar: number }[]) => Promise<void>;
 }
 
-interface Row { title: string; startPage: number; }
+interface Row { title: string; startPage: number; label: string; }
 
 export interface ChapterReviewHandle {
   submit: () => Promise<void>;
   save: () => Promise<void>;
+}
+
+function wordAtOffset(text: string, offset: number): string {
+  const at = Math.max(0, Math.min(offset, text.length));
+  const midWord = at > 0 && /\S/.test(text[at - 1] ?? '') && /\S/.test(text[at] ?? '');
+  const rest = midWord ? text.slice(at).replace(/^\S+/, '') : text.slice(at);
+  return rest.trimStart().match(/^\S+/)?.[0] ?? '';
+}
+
+function highlight(excerpt: string, needle: string) {
+  if (!needle) return <span>{excerpt}</span>;
+  const i = excerpt.toLowerCase().indexOf(needle.toLowerCase());
+  if (i === -1) return <span>{excerpt}</span>;
+  return (
+    <>
+      {excerpt.slice(0, i)}
+      <span className="font-semibold text-green-300 bg-green-950/60 rounded px-0.5">{excerpt.slice(i, i + needle.length)}</span>
+      {excerpt.slice(i + needle.length)}
+    </>
+  );
 }
 
 const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterReview({ book, onConfirm }, ref) {
@@ -22,30 +42,42 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
   const pageText = (page: number) => book.ocrPages.find(p => p.page === page)?.text?.trim() ?? '';
 
   const [rows, setRows] = useState<Row[]>(() =>
-    book.chapters.map(c => ({ title: c.title, startPage: c.startPage }))
+    book.chapters.map(c => ({
+      title: c.title,
+      startPage: c.startPage,
+      label: wordAtOffset(pageText(c.startPage), c.startChar ?? 0),
+    }))
   );
-  const [submitting, setSubmitting] = useState(false);
-  const [error,      setError]      = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const clampPage = (p: number) =>
     Math.min(book.lastPage, Math.max(book.firstPage, Math.round(p) || book.firstPage));
 
+  const locate = (r: Row): { startChar: number; found: boolean } => {
+    const needle = r.label.trim();
+    if (!needle) return { startChar: 0, found: true };
+    const idx = pageText(r.startPage).toLowerCase().indexOf(needle.toLowerCase());
+    return { startChar: idx >= 0 ? idx : 0, found: idx >= 0 };
+  };
+
+  const toPayload = (list: Row[]) =>
+    list.filter(r => r.title.trim()).map(r => ({
+      title: r.title.trim(),
+      startPage: clampPage(r.startPage),
+      startChar: locate(r).startChar,
+    }));
+
   const persist = (list: Row[]): Promise<void> => {
-    const valid = list.filter(r => r.title.trim());
-    if (!valid.length) return Promise.resolve();
-    return dispatch(updateChapters({
-      bookId: book._id,
-      chapters: valid.map(r => ({ title: r.title.trim(), startPage: clampPage(r.startPage) })),
-    })).unwrap().catch(() => {});
+    const payload = toPayload(list);
+    if (!payload.length) return Promise.resolve();
+    return dispatch(updateChapters({ bookId: book._id, chapters: payload })).unwrap().catch(() => {});
   };
 
   const update = (idx: number, patch: Partial<Row>) =>
     setRows(prev => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
 
   const blurSave = () => persist(rows);
-
-  const addChapter = () => setRows(prev => [...prev, { title: '', startPage: book.firstPage }]);
-
+  const addChapter = () => setRows(prev => [...prev, { title: '', startPage: book.firstPage, label: '' }]);
   const removeChapter = (idx: number) => {
     const next = rows.filter((_, i) => i !== idx);
     setRows(next);
@@ -53,14 +85,11 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
   };
 
   const handleConfirm = async () => {
-    setSubmitting(true);
     setError(null);
     try {
-      await onConfirm(rows.filter(r => r.title.trim()).map(r => ({ title: r.title.trim(), startPage: r.startPage })));
+      await onConfirm(toPayload(rows));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to confirm chapters');
-    } finally {
-      setSubmitting(false);
     }
   };
 
@@ -72,7 +101,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
         <div>
           <h3 className="font-semibold text-gray-100">Review chapters</h3>
           <p className="text-sm text-gray-500 mt-0.5">
-            Set each chapter's name and the page it starts on (pages {book.firstPage}–{book.lastPage}).
+            Set each chapter's name, the page it starts on, and the text that begins it (pages {book.firstPage}–{book.lastPage}).
           </p>
         </div>
         <button className="btn-secondary text-sm" onClick={addChapter}>+ Add</button>
@@ -85,13 +114,20 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
       <div className="space-y-3 max-h-[50vh] overflow-y-auto pr-1">
         {rows.map((c, idx) => {
           const nextStart  = rows[idx + 1]?.startPage;
-          const endPage    = nextStart ? nextStart - 1 : book.lastPage;
+          const endPage    = nextStart || book.lastPage;
           const hasPage    = Number.isFinite(c.startPage);
           const outOfRange = hasPage && (c.startPage < book.firstPage || c.startPage > book.lastPage);
-          const badOrder   = hasPage && Number.isFinite(endPage) && endPage < c.startPage;
-          const preview    = pageText(c.startPage);
+          const { startChar, found } = locate(c);
+          const hasLabel   = c.label.trim().length > 0;
+          const pageTxt    = pageText(c.startPage);
+          const excerpt    = pageTxt ? pageTxt.slice(startChar, startChar + 300) : '';
           return (
-            <div key={idx} className="rounded-lg border border-gray-700 bg-gray-800/40 p-4 space-y-3">
+            <div
+              key={idx}
+              className={`rounded-lg border p-4 space-y-3 ${
+                hasLabel && !found ? 'border-red-800 bg-red-950/20' : 'border-gray-700 bg-gray-800/40'
+              }`}
+            >
               <div className="flex gap-2 items-start">
                 <div className="flex-1 space-y-2">
                   <input
@@ -101,6 +137,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                     onBlur={blurSave}
                     placeholder="Chapter name…"
                   />
+
                   <div className="flex items-center gap-2 text-sm">
                     <label className="text-gray-400">Starts on page</label>
                     <input
@@ -112,11 +149,31 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                       onChange={e => update(idx, { startPage: e.target.value === '' ? NaN : parseInt(e.target.value, 10) })}
                       onBlur={() => { update(idx, { startPage: clampPage(c.startPage) }); blurSave(); }}
                     />
-                    <span className={`text-xs ${badOrder ? 'text-red-400' : 'text-gray-500'}`}>
-                      {!hasPage ? 'enter a page' : badOrder ? 'starts after the next chapter' : `pages ${c.startPage}–${endPage}`}
+                    <span className="text-xs text-gray-500">
+                      {outOfRange ? `out of range (${book.firstPage}–${book.lastPage})` : `pages ${hasPage ? c.startPage : '?'}–${endPage}`}
                     </span>
                   </div>
+
+                  <div className="relative">
+                    <input
+                      className="input w-full pr-6"
+                      value={c.label}
+                      onChange={e => update(idx, { label: e.target.value })}
+                      onBlur={blurSave}
+                      placeholder="Text that starts this chapter on the page (optional)…"
+                    />
+                    {hasLabel && (
+                      <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-xs ${found ? 'text-green-400' : 'text-red-400'}`}>
+                        {found ? '✓' : '✗'}
+                      </span>
+                    )}
+                  </div>
+
+                  {hasLabel && !found && (
+                    <p className="text-xs text-red-400">Not found on page {hasPage ? c.startPage : '?'} — edit the label or page.</p>
+                  )}
                 </div>
+
                 <button
                   className="text-gray-600 hover:text-red-400 transition-colors mt-1 shrink-0"
                   onClick={() => removeChapter(idx)}
@@ -129,11 +186,13 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
               </div>
 
               <div className="rounded-md bg-gray-900/60 border border-gray-800 p-2.5">
-                <p className="text-[11px] uppercase tracking-wide text-gray-600 mb-1">Page {c.startPage}</p>
+                <p className="text-[11px] uppercase tracking-wide text-gray-600 mb-1">
+                  Page {hasPage ? c.startPage : '?'}{hasLabel && found ? ` · from "${c.label.trim()}"` : ''}
+                </p>
                 {outOfRange ? (
                   <p className="text-xs text-red-400">Page out of range ({book.firstPage}–{book.lastPage}).</p>
-                ) : preview ? (
-                  <p className="text-xs text-gray-400 line-clamp-3 whitespace-pre-wrap">{preview.slice(0, 300)}</p>
+                ) : excerpt ? (
+                  <p className="text-xs text-gray-400 line-clamp-3 whitespace-pre-wrap">{highlight(excerpt, hasLabel && found ? c.label.trim() : '')}</p>
                 ) : (
                   <p className="text-xs text-gray-600 italic">No text on this page.</p>
                 )}

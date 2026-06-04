@@ -5,6 +5,7 @@ import {
   TITLE_SYSTEM_PROMPT, TITLE_PAGE_PROMPT,
   TOC_SYSTEM_PROMPT, TOC_PAGE_PROMPT,
 } from '../config.js';
+import { sanitizePageText } from '../lib/sanitize.js';
 
 interface OcrResult {
   language: string;
@@ -14,6 +15,7 @@ interface OcrResult {
 export interface ChapterSuggestion {
   title: string;
   page: number;
+  startChar: number;
   found: boolean;
 }
 
@@ -52,7 +54,7 @@ function parseOcrResult(raw: string): OcrResult {
       };
     }
   }
-  return { language: 'unknown', content: text };
+  return { language: 'unknown', content: sanitizePageText(text) };
 }
 
 function parseTocEntries(raw: string): TocEntry[] {
@@ -177,10 +179,11 @@ function resolveLocation(
   for (const page of order) {
     const text = byPage.get(page);
     if (text === undefined) continue;
-    if (findTitleOffset(entry.title, text) >= 0) return { title: entry.title, page, found: true };
+    const offset = findTitleOffset(entry.title, text);
+    if (offset >= 0) return { title: entry.title, page, startChar: offset, found: true };
   }
 
-  return { title: entry.title, page: entry.page, found: false };
+  return { title: entry.title, page: entry.page, startChar: 0, found: false };
 }
 
 export async function detectChapters(

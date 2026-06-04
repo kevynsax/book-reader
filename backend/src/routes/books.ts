@@ -230,7 +230,7 @@ export function booksRouter(io: SocketServer) {
       if (!book) return res.status(404).json({ error: 'Not found' });
 
       const { chapters } = req.body as {
-        chapters: { title: string; startPage: number }[];
+        chapters: { title: string; startPage: number; startChar?: number }[];
       };
 
       if (!Array.isArray(chapters) || chapters.length === 0) {
@@ -240,7 +240,9 @@ export function booksRouter(io: SocketServer) {
       const toRegen = new Set<number>();
       for (let i = 0; i < chapters.length; i++) {
         const existing = book.chapters[i];
-        if (!existing || existing.startPage !== chapters[i].startPage) {
+        if (!existing
+            || existing.startPage !== chapters[i].startPage
+            || (existing.startChar ?? 0) !== (chapters[i].startChar ?? 0)) {
           toRegen.add(i);
           if (i > 0) toRegen.add(i - 1);
         }
@@ -259,7 +261,7 @@ export function booksRouter(io: SocketServer) {
             audioStatus: needsRegen ? (hadAudio ? 'stale' : 'pending') : (prev?.audioStatus ?? 'pending'),
           };
         });
-        return { title: c.title, startPage: c.startPage, tracks };
+        return { title: c.title, startPage: c.startPage, startChar: c.startChar ?? 0, tracks };
       });
 
       const updated = await Book.findByIdAndUpdate(
@@ -282,7 +284,7 @@ export function booksRouter(io: SocketServer) {
     if (!book) return res.status(404).json({ error: 'Not found' });
 
     const { chapters, voice } = req.body as {
-      chapters: { title: string; startPage: number }[];
+      chapters: { title: string; startPage: number; startChar?: number }[];
       voice?: string;
     };
 
@@ -295,6 +297,7 @@ export function booksRouter(io: SocketServer) {
     book.chapters = chapters.map(c => ({
       title: c.title,
       startPage: c.startPage,
+      startChar: c.startChar ?? 0,
       tracks: freshTracks(book.voices),
     })) as unknown as typeof book.chapters;
 

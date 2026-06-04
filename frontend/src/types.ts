@@ -23,6 +23,7 @@ export interface Chapter {
   _id: string;
   title: string;
   startPage: number;
+  startChar: number;
   tracks: VoiceTrack[];
 }
 

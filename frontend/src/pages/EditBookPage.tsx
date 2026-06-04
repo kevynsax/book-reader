@@ -304,7 +304,7 @@ export default function EditBookPage() {
     navigate('/');
   };
 
-  const handleConfirmChapters = async (chapters: { title: string; startPage: number }[]) => {
+  const handleConfirmChapters = async (chapters: { title: string; startPage: number; startChar: number }[]) => {
     await dispatch(confirmChapters({ bookId: id!, chapters, voice: voiceRef.current })).unwrap();
   };
 
