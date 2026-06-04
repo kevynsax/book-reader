@@ -204,10 +204,10 @@ export default function EditBookPage() {
 
   const hasOcrPages   = book.ocrPages.length > 0;
   const hasChapters   = book.chapters.length > 0;
-  const isGenerating  = book.status === 'generating_audio' || book.chapters.some(c => c.audioStatus === 'generating');
+  const isGenerating  = book.status === 'generating_audio' || book.chapters.some(c => chapterStatus(c) === 'generating');
   const showStatus    = book.status !== 'complete' && book.status !== 'error' && !isGenerating;
   const showGenerate  = book.status === 'awaiting_chapter_review' || book.status === 'complete';
-  const hasStaleAudio = book.chapters.some(c => c.audioStatus === 'stale');
+  const hasStaleAudio = book.chapters.some(c => chapterStatus(c) === 'stale');
 
   return (
     <div className="min-h-screen">
@@ -242,10 +242,10 @@ export default function EditBookPage() {
         {/* Cover + info */}
         <div className="card flex gap-5 items-start">
           <EditableCover bookId={book._id} coverVersion={book.coverVersion ?? 0} onClick={() => setShowCoverPicker(true)} size="md" />
-          <div className="space-y-1 text-sm text-gray-400 min-w-0">
+          <div className="space-y-2 text-sm text-gray-400 min-w-0 flex-1">
             <p className="text-gray-200 font-medium text-base truncate">{book.name}</p>
             {book.totalPages > 0 && <p>{book.totalPages} pages</p>}
-            {book.voice && <p>Voice: <span className="text-gray-300">{friendlyVoice(book.voice)}</span></p>}
+            <VoiceManager book={book} editable={book.status === 'complete'} />
           </div>
         </div>
 
@@ -274,19 +274,22 @@ export default function EditBookPage() {
               <div className="card space-y-3">
                 <h3 className="font-semibold text-gray-100">Generating audio</h3>
                 {book.progress.message && <p className="text-sm text-gray-400">{book.progress.message}</p>}
-                {book.chapters.map(c => (
-                  <div key={c._id} className="flex items-center gap-3">
-                    <div className={`w-2 h-2 rounded-full shrink-0 ${
-                      c.audioStatus === 'complete'   ? 'bg-green-500'
-                      : c.audioStatus === 'stale'      ? 'bg-amber-400'
-                      : c.audioStatus === 'generating' ? 'bg-amber-400 animate-pulse'
-                      : c.audioStatus === 'error'      ? 'bg-red-500'
-                      : 'bg-gray-700'
-                    }`} />
-                    <span className="text-sm text-gray-300 flex-1 truncate">{c.title}</span>
-                    <span className="text-xs text-gray-500 capitalize">{c.audioStatus}</span>
-                  </div>
-                ))}
+                {book.chapters.map(c => {
+                  const status = chapterStatus(c);
+                  return (
+                    <div key={c._id} className="flex items-center gap-3">
+                      <div className={`w-2 h-2 rounded-full shrink-0 ${
+                        status === 'complete'   ? 'bg-green-500'
+                        : status === 'stale'      ? 'bg-amber-400'
+                        : status === 'generating' ? 'bg-amber-400 animate-pulse'
+                        : status === 'error'      ? 'bg-red-500'
+                        : 'bg-gray-700'
+                      }`} />
+                      <span className="text-sm text-gray-300 flex-1 truncate">{c.title}</span>
+                      <span className="text-xs text-gray-500 capitalize">{status}</span>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
