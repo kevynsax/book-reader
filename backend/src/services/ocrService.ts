@@ -128,57 +128,62 @@ function fold(s: string): string {
   return s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
 
-// Candidate needles for a TOC title, most specific first. The second drops a
-// leading "Chapter 3", "Capítulo IV", "Part 2" style prefix so a bare in-page
-// heading ("The Awakening") still matches a decorated TOC entry.
+// Candidate needles for a TOC title, most likely-to-match first. TOC entries
+// often carry leader dots / a trailing page number ("Introdução ...... 12") and
+// a leading list/chapter marker ("3. ", "Capítulo IV — ") that the in-page
+// heading does not, so we also try cleaned-up variants.
 function titleNeedles(title: string): string[] {
-  const t = title.trim();
-  const stripped = t.replace(/^\s*(chapter|cap[ií]tulo|part[e]?|secti?on|se[cç][aã]o)\s+[\dIVXLCDM]+\s*[:.\-—–]?\s*/i, '').trim();
-  return stripped && stripped !== t ? [t, stripped] : [t];
+  const needles: string[] = [];
+  const add = (s: string) => { const v = s.trim(); if (v.length >= 2 && !needles.includes(v)) needles.push(v); };
+
+  const full = title.trim();
+  // Drop trailing leader dots and/or page number: "Intro . . . 12" -> "Intro".
+  const noTail = full.replace(/[\s.·•–—-]*\d+\s*$/, '').replace(/[\s.·•]+$/, '').trim();
+  // Drop a leading "3.", "IV -", "Chapter 2:", "Capítulo 1 —" style marker.
+  const noHead = noTail.replace(/^\s*(chapter|cap[ií]tulo|part[e]?|secti?on|se[cç][aã]o)?\s*[\dIVXLCDM]+\s*[:.)\-—–]?\s*/i, '').trim();
+
+  add(noTail);
+  add(noHead);
+  add(full);
+  return needles;
 }
 
-// First char offset at which `title` appears in `text`, or -1. Folds accents and
-// case but keeps indices aligned with the original string (NFKD on the haystack
-// can shift indices, so we fold the haystack lazily per candidate length).
+// First char offset at which `title` appears in `text`, or -1. Matches the
+// frontend's plain case-insensitive search, with an accent-folded fallback.
+// toLowerCase/fold are length-preserving for normal text, so the index maps back
+// to the original string.
 function findTitleOffset(title: string, text: string): number {
+  const lowText  = text.toLowerCase();
+  const foldText = fold(text);
   for (const needle of titleNeedles(title)) {
-    if (needle.length < 2) continue;
-    const foldedNeedle = fold(needle);
-    // Slide a same-length window so the returned index is into the ORIGINAL text.
-    for (let i = 0; i + needle.length <= text.length; i++) {
-      if (fold(text.slice(i, i + needle.length)) === foldedNeedle) return i;
-    }
+    const direct = lowText.indexOf(needle.toLowerCase());
+    if (direct >= 0) return direct;
+    const folded = foldText.indexOf(fold(needle));
+    if (folded >= 0) return folded;
   }
   return -1;
 }
 
-// Resolve a TOC entry to a real location in the scanned pages. Tries the printed
-// page, then its half (books photocopied two-up land the printed page on ~page/2),
-// then any page that uniquely contains the title. Falls back to the printed page
-// with offset 0 and found=false so the user only has to fix the page/char.
+// Resolve a TOC entry to a real location in the scanned pages. The printed page
+// number rarely equals the scanned page number (front-matter offset, two-up
+// photocopies), so the printed page and its half are only *priority hints*: we
+// then scan every page in order and take the first match — same leniency as the
+// frontend search. Falls back to the printed page with offset 0 and found=false
+// so the user only has to fix the page/char.
 function resolveLocation(
   entry: TocEntry,
   byPage: Map<number, string>,
+  orderedPages: number[],
 ): ChapterSuggestion {
   const half = Math.max(1, Math.round(entry.page / 2));
-  const candidates = entry.page === half ? [entry.page] : [entry.page, half];
+  const seen = new Set<number>();
+  const order = [entry.page, half, ...orderedPages].filter(p => !seen.has(p) && seen.add(p));
 
-  for (const page of candidates) {
+  for (const page of order) {
     const text = byPage.get(page);
     if (text === undefined) continue;
     const offset = findTitleOffset(entry.title, text);
     if (offset >= 0) return { title: entry.title, page, startChar: offset, found: true };
-  }
-
-  // Last resort: a page anywhere in the range that uniquely contains the title.
-  const hits: { page: number; offset: number }[] = [];
-  for (const [page, text] of byPage) {
-    const offset = findTitleOffset(entry.title, text);
-    if (offset >= 0) hits.push({ page, offset });
-    if (hits.length > 1) break;
-  }
-  if (hits.length === 1) {
-    return { title: entry.title, page: hits[0].page, startChar: hits[0].offset, found: true };
   }
 
   return { title: entry.title, page: entry.page, startChar: 0, found: false };
@@ -195,5 +200,6 @@ export async function detectChapters(
   if (toc.length === 0) return [];
 
   const byPage = new Map(ocrPages.map(p => [p.page, p.text]));
-  return toc.map(entry => resolveLocation(entry, byPage));
+  const orderedPages = ocrPages.map(p => p.page);
+  return toc.map(entry => resolveLocation(entry, byPage, orderedPages));
 }

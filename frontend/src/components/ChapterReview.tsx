@@ -119,14 +119,18 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
     setChapters(prev => prev.map((c, i) => i === idx ? { ...c, ...patch } : c));
   };
 
-  const blurSave = () => {
-    const valid = searchedWithEnds.filter(c => c.title.trim());
+  // Persist the given chapter list to the server (PATCH /chapters keeps audio
+  // and only restages chapters whose boundaries actually moved).
+  const persist = (list: ReviewChapter[]) => {
+    const valid = list.filter(c => c.title.trim());
     if (!valid.length) return;
     dispatch(updateChapters({
       bookId: book._id,
       chapters: valid.map(c => ({ title: c.title, startPage: c.startPage, startChar: c.startChar })),
     })).catch(() => {});
   };
+
+  const blurSave = () => persist(searchedWithEnds);
 
   const addChapter = () => {
     setChapters(prev => [...prev, {
@@ -143,6 +147,8 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
 
   const removeChapter = (idx: number) => {
     setChapters(prev => prev.filter((_, i) => i !== idx));
+    // Persist the removal right away rather than waiting for a later input blur.
+    persist(searchedWithEnds.filter((_, i) => i !== idx));
   };
 
   const handleConfirm = async () => {
