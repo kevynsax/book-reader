@@ -7,7 +7,7 @@ import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus } from '../types';
 import { chapterStatus, bookVoices, trackFor, friendlyVoice } from '../lib/format';
 import ChapterReview, { ChapterReviewHandle } from '../components/ChapterReview';
-import TextReview from '../components/OcrPageReview';
+import TextReview, { TextReviewHandle } from '../components/OcrPageReview';
 import CoverPickerModal from '../components/CoverPickerModal';
 import VoiceManager from '../components/VoiceManager';
 import GenerateVoiceModal from '../components/GenerateVoiceModal';
@@ -280,6 +280,7 @@ export default function EditBookPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [generating,       setGenerating]       = useState(false);
   const chapterReviewRef = useRef<ChapterReviewHandle>(null);
+  const textReviewRef = useRef<TextReviewHandle>(null);
   const generatedRef = useRef(false);
   const voiceRef = useRef<string | undefined>(undefined);
 
@@ -380,12 +381,17 @@ export default function EditBookPage() {
           </div>
         )}
 
-        {hasOcrPages && <TextReview bookId={book._id} ocrPages={book.ocrPages} />}
+        {hasOcrPages && <TextReview ref={textReviewRef} bookId={book._id} ocrPages={book.ocrPages} />}
 
         {hasChapters && (
           <>
             <div className="card">
-              <ChapterReview ref={chapterReviewRef} book={book} onConfirm={handleConfirmChapters} />
+              <ChapterReview
+                ref={chapterReviewRef}
+                book={book}
+                onConfirm={handleConfirmChapters}
+                onOpenPage={hasOcrPages ? (page => textReviewRef.current?.openAt(page)) : undefined}
+              />
             </div>
 
             {isGenerating && (

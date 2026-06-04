@@ -155,14 +155,30 @@ function titleNeedles(title: string): string[] {
   return needles;
 }
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Words of a chapter title are often broken across lines on the chapter's own
+// title page ("As Epístolas\nAprendendo a Pensar\nContextualmente"), so match the
+// words in order while allowing any whitespace/punctuation run between them.
+const TITLE_SEP = '[\\s.·•–—:_-]+';
+
+function titleRegex(needle: string): RegExp | null {
+  const parts = needle.split(/[\s.·•–—:_-]+/).filter(Boolean).map(escapeRegex);
+  if (parts.length === 0) return null;
+  return new RegExp(parts.join(TITLE_SEP), 'i');
+}
+
 function findTitleOffset(title: string, text: string): number {
-  const lowText  = text.toLowerCase();
   const foldText = fold(text);
   for (const needle of titleNeedles(title)) {
-    const direct = lowText.indexOf(needle.toLowerCase());
-    if (direct >= 0) return direct;
-    const folded = foldText.indexOf(fold(needle));
-    if (folded >= 0) return folded;
+    const direct = titleRegex(needle)?.exec(text);
+    if (direct) return direct.index;
+    // Accent-insensitive fallback. NFKD keeps positions for single-accent Latin
+    // characters, so the index into the folded text maps back to the original.
+    const folded = titleRegex(fold(needle))?.exec(foldText);
+    if (folded) return folded.index;
   }
   return -1;
 }

@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { OcrPage } from '../types';
 import { api } from '../api/booksApi';
+import PagePreview from './PagePreview';
 
 interface Props {
   bookId: string;
@@ -8,14 +9,27 @@ interface Props {
   onTextSaved?: () => void;
 }
 
+export interface TextReviewHandle {
+  /** Open the fullscreen reader on the given (or nearest processed) page. */
+  openAt: (page: number) => void;
+}
+
+interface PreviewNav {
+  totalPages: number;
+  minPage: number;
+  onPageChange: (page: number) => void;
+}
+
 interface PageViewProps {
   bookId: string;
   page: OcrPage;
   large?: boolean;
   onTextSaved?: () => void;
+  /** When set, the image is shown via the zoom/pan PagePreview instead of a plain <img>. */
+  preview?: PreviewNav;
 }
 
-function PageView({ bookId, page, large, onTextSaved }: PageViewProps) {
+function PageView({ bookId, page, large, onTextSaved, preview }: PageViewProps) {
   const [editText, setEditText] = useState(page.text ?? '');
   const [dirty,    setDirty]    = useState(false);
   const [saving,   setSaving]   = useState(false);
@@ -41,16 +55,28 @@ function PageView({ bookId, page, large, onTextSaved }: PageViewProps) {
   }, [bookId, page.page, editText]);
 
   return (
-    <div className={`grid grid-cols-2 gap-4 ${large ? 'flex-1 min-h-0' : ''}`}>
-      <div className="bg-gray-800 rounded-lg overflow-hidden">
-        <img
-          key={page.page}
-          src={`/api/books/${bookId}/pages/${page.page}`}
-          alt={`Page ${page.page}`}
-          className={`w-full block object-contain ${large ? 'h-[calc(100vh-10rem)]' : 'h-auto'}`}
-          loading="lazy"
-        />
-      </div>
+    <div className={`grid grid-cols-2 gap-4 ${large ? 'h-full min-h-0 grid-rows-1' : ''}`}>
+      {preview ? (
+        <div className="min-h-0">
+          <PagePreview
+            bookId={bookId}
+            page={page.page}
+            totalPages={preview.totalPages}
+            minPage={preview.minPage}
+            onPageChange={preview.onPageChange}
+          />
+        </div>
+      ) : (
+        <div className="bg-gray-800 rounded-lg overflow-hidden">
+          <img
+            key={page.page}
+            src={`/api/books/${bookId}/pages/${page.page}`}
+            alt={`Page ${page.page}`}
+            className={`w-full block object-contain ${large ? 'h-[calc(100vh-10rem)]' : 'h-auto'}`}
+            loading="lazy"
+          />
+        </div>
+      )}
       <div className="flex flex-col gap-2">
         {page.status === 'processing' ? (
           <div className="flex-1 bg-gray-800/50 rounded-lg p-3 flex items-center">
@@ -79,7 +105,7 @@ function PageView({ bookId, page, large, onTextSaved }: PageViewProps) {
   );
 }
 
-export default function TextReview({ bookId, ocrPages, onTextSaved }: Props) {
+const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ bookId, ocrPages, onTextSaved }, ref) {
   const processed = ocrPages.filter(p => p.status === 'complete' || p.status === 'processing');
   const done      = ocrPages.filter(p => p.status === 'complete').length;
   const total     = ocrPages.length;
@@ -100,29 +126,44 @@ export default function TextReview({ bookId, ocrPages, onTextSaved }: Props) {
     return () => window.removeEventListener('keydown', handler);
   }, [fullscreen]);
 
+  // Jump to the processed page whose number is closest to the requested one.
+  const goToPage = useCallback((target: number) => {
+    if (processed.length === 0) return;
+    let best = 0, bestDiff = Infinity;
+    processed.forEach((p, i) => {
+      const d = Math.abs(p.page - target);
+      if (d < bestDiff) { bestDiff = d; best = i; }
+    });
+    setUserMoved(true);
+    setIdx(best);
+  }, [processed]);
+
+  useImperativeHandle(ref, () => ({
+    openAt: (page: number) => { goToPage(page); setFullscreen(true); },
+  }), [goToPage]);
+
   if (processed.length === 0) return null;
 
-  const page = processed[idx];
+  const safeIdx = Math.min(idx, processed.length - 1);
+  const page    = processed[safeIdx];
+  const minPage = processed[0].page;
+  const maxPage = processed[processed.length - 1].page;
   const prev = () => { setUserMoved(true); setIdx(i => Math.max(0, i - 1)); };
   const next = () => { setUserMoved(true); setIdx(i => Math.min(processed.length - 1, i + 1)); };
 
-  const Nav = ({ large }: { large?: boolean }) => (
-    <div className="flex items-center gap-2 shrink-0">
+  const Nav = () => (
+    <div className="flex items-center gap-1 shrink-0">
       <button
         className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
-        onClick={prev} disabled={idx === 0}
+        onClick={prev} disabled={safeIdx === 0}
       >
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
         </svg>
       </button>
-      <span className={`font-mono text-center text-gray-300 ${large ? 'text-sm w-28' : 'text-xs w-20'}`}>
-        p.{page.page}
-        <span className="text-gray-500"> · {idx + 1}/{processed.length}</span>
-      </span>
       <button
         className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
-        onClick={next} disabled={idx === processed.length - 1}
+        onClick={next} disabled={safeIdx === processed.length - 1}
       >
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -156,20 +197,33 @@ export default function TextReview({ bookId, ocrPages, onTextSaved }: Props) {
           {current && <span className="text-amber-400"> · reading page {current.page}…</span>}
         </p>
 
+        {/* Page label, centered above the image/text area */}
+        <div className="text-center font-mono text-sm text-gray-300">
+          P. {page.page}
+          <span className="text-gray-500"> · {safeIdx + 1}/{processed.length}</span>
+        </div>
+
         <PageView bookId={bookId} page={page} onTextSaved={onTextSaved} />
       </div>
 
       {fullscreen && (
         <div className="fixed inset-0 z-50 bg-gray-950/95 backdrop-blur flex flex-col">
-          <div className="flex items-center gap-4 px-6 py-4 border-b border-gray-800 shrink-0">
-            <h2 className="font-semibold text-gray-100 flex-1">Reading pages</h2>
-            <p className="text-xs text-gray-500">
-              {done} of {total} pages
-              {current && <span className="text-amber-400 ml-1">· reading page {current.page}…</span>}
-            </p>
-            {processed.length > 1 && <Nav large />}
+          <div className="relative flex items-center gap-4 px-6 py-4 border-b border-gray-800 shrink-0">
+            <div className="flex items-center gap-3 flex-1 min-w-0">
+              <h2 className="font-semibold text-gray-100">Reading pages</h2>
+              <p className="text-xs text-gray-500">
+                {done} of {total} pages
+                {current && <span className="text-amber-400 ml-1">· reading page {current.page}…</span>}
+              </p>
+            </div>
+
+            {/* Page label centered in the header */}
+            <span className="absolute left-1/2 -translate-x-1/2 font-mono text-sm text-gray-200">
+              P. {page.page}
+            </span>
+
             <button
-              className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+              className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors shrink-0"
               onClick={() => setFullscreen(false)}
               title="Close (Esc)"
             >
@@ -180,10 +234,18 @@ export default function TextReview({ bookId, ocrPages, onTextSaved }: Props) {
           </div>
 
           <div className="flex-1 min-h-0 px-6 py-4">
-            <PageView bookId={bookId} page={page} large onTextSaved={onTextSaved} />
+            <PageView
+              bookId={bookId}
+              page={page}
+              large
+              onTextSaved={onTextSaved}
+              preview={{ totalPages: maxPage, minPage, onPageChange: goToPage }}
+            />
           </div>
         </div>
       )}
     </>
   );
-}
+});
+
+export default TextReview;

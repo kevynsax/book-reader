@@ -8,6 +8,7 @@ import { Book, IVoiceTrack, freshTracks, trackForVoice } from '../models/Book.js
 import { DATA_DIR } from '../config.js';
 import { processBook, generateBookAudio, generateVoiceAudio, regenerateChapterAudio } from '../workers/bookProcessor.js';
 import { findPageImagePath, copyPageAsCover } from '../services/pdfService.js';
+import { detectChapters } from '../services/ocrService.js';
 import { synthesizeSample } from '../services/ttsService.js';
 import { sanitizePageText } from '../lib/sanitize.js';
 
@@ -222,6 +223,26 @@ export function booksRouter(io: SocketServer) {
     await book.save();
     io.emit('book:update', { bookId: book._id.toString(), updatedAt: book.updatedAt, coverImagePath: coverDest });
     res.json({ message: 'Cover updated' });
+  });
+
+  router.post('/:id/summary/detect', async (req, res) => {
+    try {
+      const book = await Book.findById(req.params.id).lean();
+      if (!book) return res.status(404).json({ error: 'Not found' });
+
+      const summaryImagePath = await findPageImagePath(book.folderPath, book.summaryPage);
+      if (!summaryImagePath) return res.status(404).json({ error: 'Summary page image not found' });
+
+      const completedPages = book.ocrPages
+        .filter(p => p.status === 'complete')
+        .map(p => ({ page: p.page, text: sanitizePageText(p.text) }));
+
+      const chapters = await detectChapters(summaryImagePath, completedPages);
+      res.json({ summaryPage: book.summaryPage, chapters });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to read summary';
+      res.status(502).json({ error: message });
+    }
   });
 
   router.patch('/:id/chapters', async (req, res) => {
