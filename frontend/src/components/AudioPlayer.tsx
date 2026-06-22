@@ -1,6 +1,17 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Chapter } from '../types';
+import { Chapter, TimelineEntry } from '../types';
 import { fmtRemaining, trackFor } from '../lib/format';
+
+// Index of the last sentence whose start time has passed (the active line).
+function activeLineAt(timeline: TimelineEntry[], t: number): number {
+  let lo = 0, hi = timeline.length - 1, idx = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (timeline[mid].start <= t) { idx = mid; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return idx;
+}
 
 interface Props {
   bookId: string;
@@ -47,16 +58,40 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration]     = useState(0);
 
+  // Read-along timeline (sentence start/end times). timelineRef is read inside
+  // the timeupdate handler to avoid a stale closure.
+  const [timeline, setTimeline]   = useState<TimelineEntry[]>([]);
+  const timelineRef               = useRef<TimelineEntry[]>([]);
+  const [activeLine, setActiveLine] = useState(-1);
+
   useEffect(() => { idxRef.current = currentIdx; }, [currentIdx]);
 
   useEffect(() => {
     setCurrentIdx(i => Math.min(i, Math.max(0, readyChapters.length - 1)));
   }, [voice]);
 
-  const chapter  = readyChapters[currentIdx];
-  const audioUrl = chapter
-    ? `/api/books/${bookId}/chapters/${chapters.indexOf(chapter)}/audio?voice=${encodeURIComponent(voice)}`
+  const chapter    = readyChapters[currentIdx];
+  const chapterIdx = chapter ? chapters.indexOf(chapter) : -1;
+  const audioUrl   = chapter
+    ? `/api/books/${bookId}/chapters/${chapterIdx}/audio?voice=${encodeURIComponent(voice)}`
     : null;
+
+  // Load the read-along timeline for the current chapter/voice (404 => none).
+  useEffect(() => {
+    setTimeline([]); timelineRef.current = []; setActiveLine(-1);
+    if (chapterIdx < 0) return;
+    let cancelled = false;
+    fetch(`/api/books/${bookId}/chapters/${chapterIdx}/timeline?voice=${encodeURIComponent(voice)}`)
+      .then(r => (r.ok ? r.json() : []))
+      .then((data: TimelineEntry[]) => {
+        if (cancelled) return;
+        const t = Array.isArray(data) ? data : [];
+        timelineRef.current = t;
+        setTimeline(t);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [bookId, chapterIdx, voice]);
 
   const savePos = useCallback(() => {
     const audio = audioRef.current;
@@ -109,6 +144,10 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
     };
     const onTimeUpd = () => {
       setCurrentTime(audio.currentTime);
+      if (timelineRef.current.length) {
+        const idx = activeLineAt(timelineRef.current, audio.currentTime);
+        setActiveLine(prev => (prev === idx ? prev : idx));
+      }
       if (audio.currentTime - lastSave.current >= 5) {
         savePos();
         lastSave.current = audio.currentTime;
@@ -147,6 +186,11 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
     if (!audio || !duration) return;
     const rect = e.currentTarget.getBoundingClientRect();
     audio.currentTime = ((e.clientX - rect.left) / rect.width) * duration;
+  };
+
+  const seekTo = (time: number) => {
+    const audio = audioRef.current;
+    if (audio) audio.currentTime = Math.max(0, time);
   };
 
   const skip = (delta: number) => {
@@ -188,6 +232,27 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
       <div className="progress-bar cursor-pointer" onClick={seek}>
         <div className="progress-fill" style={{ width: `${pct}%` }} />
       </div>
+
+      {timeline.length > 0 && (
+        <div className="min-h-[4rem] flex flex-col items-center justify-center text-center gap-1 px-1">
+          <p
+            className="text-base sm:text-lg text-gray-100 leading-snug cursor-pointer"
+            onClick={() => seekTo((activeLine >= 0 ? timeline[activeLine] : timeline[0]).start)}
+            title="Replay this line"
+          >
+            {(activeLine >= 0 ? timeline[activeLine] : timeline[0]).text}
+          </p>
+          {activeLine + 1 < timeline.length && (
+            <p
+              className="text-xs text-gray-600 leading-snug line-clamp-1 cursor-pointer hover:text-gray-400"
+              onClick={() => seekTo(timeline[activeLine + 1].start)}
+              title="Skip ahead"
+            >
+              {timeline[activeLine + 1].text}
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="flex items-center justify-center gap-2">
         <button className="p-1.5 text-gray-300 hover:text-amber-400 transition-colors disabled:opacity-30 disabled:hover:text-gray-300"

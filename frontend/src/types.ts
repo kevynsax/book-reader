@@ -19,6 +19,19 @@ export interface VoiceTrack {
   audioStatus: AudioStatus;
 }
 
+// Read-along: a spoken sentence and its start/end time (seconds) in the chapter audio.
+export interface TimelineEntry {
+  text: string;
+  start: number;
+  end: number;
+}
+
+// A selectable TTS engine/model returned by GET /api/models.
+export interface TtsModel {
+  id: string;
+  label: string;
+}
+
 export interface Chapter {
   _id: string;
   title: string;

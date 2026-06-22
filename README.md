@@ -1,6 +1,6 @@
 # Book Reader
 
-A full-stack web application that converts PDF books into audiobooks. Upload a PDF, OCR each page with Qwen VL, review the detected chapters, and generate per-chapter audio with the Kokoro TTS engine.
+A full-stack web application that converts PDF books into audiobooks. Upload a PDF, OCR each page with Qwen VL, review the detected chapters, and generate per-chapter audio with a local Chatterbox TTS engine (voice cloning, language-aware).
 
 ## Stack
 
@@ -8,7 +8,7 @@ A full-stack web application that converts PDF books into audiobooks. Upload a P
 - **Frontend** — React 18 + Redux Toolkit + TypeScript + Tailwind CSS v4 + Vite → served by Nginx
 - **Database** — MongoDB
 - **OCR** — Qwen2.5-VL (via `https://qwenvl.kevyn.com.br`)
-- **TTS** — Kokoro (via `https://tts.kevyn.com.br`)
+- **TTS** — local Chatterbox (MLX) OpenAI-compatible server in `~/projects/tts-2` (via `http://127.0.0.1:8000`); curated pt/en clone voices, detected language passed per chapter
 - **PDF splitting** — `pdftoppm` (poppler-utils — installed automatically in the backend Docker image)
 
 ---

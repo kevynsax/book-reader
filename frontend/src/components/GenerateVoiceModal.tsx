@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { friendlyVoice } from '../lib/format';
+import { TtsModel } from '../types';
 
 interface Props {
   bookId: string;
@@ -9,26 +11,37 @@ interface Props {
 }
 
 const VOICE_LANGS = [
-  { id: 'pt', label: 'Portuguese', prefixes: ['pf', 'pm'] },
-  { id: 'en', label: 'English',    prefixes: ['af', 'am', 'bf', 'bm', 'ef', 'em'] },
+  { id: 'pt', label: 'Portuguese' },
+  { id: 'en', label: 'English' },
 ];
 
-const FALLBACK_VOICES = [
-  'af_heart','af_bella','af_nicole','af_nova','af_sarah',
-  'am_adam','am_echo','am_michael','am_onyx',
-  'pf_dora','pm_alex','pm_santa',
+const FALLBACK_MODELS: TtsModel[] = [
+  { id: 'chatterbox', label: 'Chatterbox (local)' },
+  { id: 'kokoro', label: 'Kokoro' },
 ];
 
-function capFirst(s: string) { return s.charAt(0).toUpperCase() + s.slice(1); }
-function voiceName(v: string) { return capFirst(v.split('_').slice(1).join(' ')); }
-function langOf(v: string) {
-  return VOICE_LANGS.find(l => l.prefixes.some(p => v.startsWith(p + '_')))?.id ?? 'pt';
+// Engine id for a (possibly legacy/unprefixed) composite voice.
+function engineOf(composite: string): string {
+  const sep = composite.indexOf(':');
+  if (sep > 0 && FALLBACK_MODELS.some(m => m.id === composite.slice(0, sep))) return composite.slice(0, sep);
+  if (composite === 'default' || /^[a-z]{2}-[A-Z]{2}-/.test(composite)) return 'chatterbox';
+  if (/^[a-z]{2}_/.test(composite)) return 'kokoro';
+  return 'chatterbox';
+}
+
+// Language a bare voice belongs to, per engine (Kokoro encodes it in the prefix).
+function langOfVoice(model: string, v: string): string {
+  if (model === 'kokoro') return v.startsWith('pf') || v.startsWith('pm') ? 'pt' : 'en';
+  return v.startsWith('pt-') ? 'pt' : 'en';
 }
 
 export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onConfirm, onClose }: Props) {
-  const [allVoices, setAllVoices] = useState<string[]>(FALLBACK_VOICES);
-  const [lang, setLang]           = useState(initialVoice ? langOf(initialVoice) : 'pt');
-  const [selected, setSelected]   = useState<string>('');
+  const [models, setModels]   = useState<TtsModel[]>(FALLBACK_MODELS);
+  const [model, setModel]     = useState(initialVoice ? engineOf(initialVoice) : 'chatterbox');
+  const [allVoices, setAllVoices] = useState<string[]>([]);
+  const [voicesState, setVoicesState] = useState<'loading' | 'ready' | 'offline'>('loading');
+  const [lang, setLang]       = useState('pt');
+  const [selected, setSelected]   = useState<string>(''); // composite "engine:voice"
   const [sampleState, setSampleState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [playing, setPlaying]     = useState(false);
   const [progress, setProgress]   = useState(0);
@@ -38,29 +51,50 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
   const reqIdRef = useRef(0);
 
   useEffect(() => {
-    fetch('/api/voices')
+    fetch('/api/models')
       .then(r => r.json())
-      .then((v: unknown) => { if (Array.isArray(v) && v.length) setAllVoices(v as string[]); })
+      .then((m: unknown) => { if (Array.isArray(m) && m.length) setModels(m as TtsModel[]); })
       .catch(() => {});
   }, []);
 
+  // Load voices whenever the selected model changes.
+  useEffect(() => {
+    let cancelled = false;
+    setAllVoices([]); setSelected(''); setSampleState('idle'); setVoicesState('loading');
+    fetch(`/api/models/${model}/voices`)
+      .then(r => (r.ok ? r.json() : { available: false, voices: [] }))
+      .then((data: { available?: boolean; voices?: string[] }) => {
+        if (cancelled) return;
+        if (data.available === false) { setVoicesState('offline'); return; }
+        const list = Array.isArray(data.voices) ? data.voices : [];
+        setAllVoices(list);
+        setVoicesState('ready');
+        // Keep the current language if it has voices, otherwise switch.
+        if (!list.some(x => langOfVoice(model, x) === lang)) {
+          const first = list.find(Boolean);
+          if (first) setLang(langOfVoice(model, first));
+        }
+      })
+      .catch(() => { if (!cancelled) setVoicesState('offline'); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model]);
+
   useEffect(() => () => { if (urlRef.current) URL.revokeObjectURL(urlRef.current); }, []);
 
-  const langDef  = VOICE_LANGS.find(l => l.id === lang)!;
-  const filtered = allVoices.filter(v =>
-    langDef.prefixes.some(p => v.startsWith(p + '_')) && !exclude?.includes(v)
+  const filtered = allVoices.filter(
+    v => langOfVoice(model, v) === lang && !exclude?.includes(`${model}:${v}`),
   );
-  const female   = filtered.filter(v => v[1] === 'f');
-  const male     = filtered.filter(v => v[1] === 'm');
 
   const selectVoice = async (voice: string) => {
-    setSelected(voice);
+    const composite = `${model}:${voice}`;
+    setSelected(composite);
     setSampleState('loading');
     setPlaying(false);
     setProgress(0);
     const reqId = ++reqIdRef.current;
     try {
-      const res = await fetch(`/api/books/${bookId}/sample?voice=${encodeURIComponent(voice)}`);
+      const res = await fetch(`/api/books/${bookId}/sample?voice=${encodeURIComponent(composite)}`);
       if (!res.ok) throw new Error(String(res.status));
       const blob = await res.blob();
       if (reqId !== reqIdRef.current) return;
@@ -81,28 +115,6 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
     else audio.play().catch(() => {});
   };
 
-  const Section = ({ title, voices }: { title: string; voices: string[] }) =>
-    voices.length === 0 ? null : (
-      <div>
-        <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">{title}</p>
-        <div className="grid grid-cols-3 gap-2">
-          {voices.map(v => (
-            <button
-              key={v}
-              className={`px-3 py-2 rounded-lg text-sm transition-colors ${
-                v === selected
-                  ? 'bg-amber-600/20 text-amber-400 ring-1 ring-amber-500'
-                  : 'bg-gray-800 text-gray-200 hover:bg-gray-700'
-              }`}
-              onClick={() => selectVoice(v)}
-            >
-              {voiceName(v)}
-            </button>
-          ))}
-        </div>
-      </div>
-    );
-
   return (
     <div
       className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
@@ -112,17 +124,69 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800 shrink-0">
           <div>
             <h2 className="font-semibold text-gray-100">Choose a voice</h2>
-            <p className="text-xs text-gray-500 mt-0.5">Pick a reader and preview it on the first paragraph.</p>
+            <p className="text-xs text-gray-500 mt-0.5">Pick a model, then a reader. Preview before generating.</p>
           </div>
           <button className="text-gray-500 hover:text-gray-300 text-xl leading-none" onClick={onClose}>×</button>
         </div>
 
         <div className="p-5 space-y-4 overflow-y-auto">
-          <select className="input" value={lang} onChange={e => setLang(e.target.value)}>
-            {VOICE_LANGS.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
-          </select>
-          <Section title="Female" voices={female} />
-          <Section title="Male" voices={male} />
+          <div>
+            <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">Model</p>
+            <div className="flex flex-wrap gap-2">
+              {models.map(m => (
+                <button
+                  key={m.id}
+                  className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                    m.id === model
+                      ? 'bg-amber-600/20 text-amber-400 ring-1 ring-amber-500'
+                      : 'bg-gray-800 text-gray-200 hover:bg-gray-700'
+                  }`}
+                  onClick={() => setModel(m.id)}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {voicesState !== 'offline' && (
+            <select className="input" value={lang} onChange={e => setLang(e.target.value)}>
+              {VOICE_LANGS.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
+            </select>
+          )}
+
+          {voicesState === 'offline' ? (
+            <div className="rounded-lg border border-amber-700/50 bg-amber-950/30 px-4 py-3 text-sm">
+              <p className="text-amber-300 font-medium">This model is offline</p>
+              <p className="text-amber-200/70 mt-1">
+                The {models.find(m => m.id === model)?.label ?? model} server isn’t reachable
+                right now (it may be a laptop that’s turned off). Try again later or pick another model.
+              </p>
+            </div>
+          ) : voicesState === 'loading' ? (
+            <p className="text-sm text-gray-500">Checking model…</p>
+          ) : filtered.length === 0 ? (
+            <p className="text-sm text-gray-500">No voices for this model and language.</p>
+          ) : (
+            <div className="grid grid-cols-3 gap-2">
+              {filtered.map(v => {
+                const composite = `${model}:${v}`;
+                return (
+                  <button
+                    key={v}
+                    className={`px-3 py-2 rounded-lg text-sm transition-colors ${
+                      composite === selected
+                        ? 'bg-amber-600/20 text-amber-400 ring-1 ring-amber-500'
+                        : 'bg-gray-800 text-gray-200 hover:bg-gray-700'
+                    }`}
+                    onClick={() => selectVoice(v)}
+                  >
+                    {friendlyVoice(v)}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <audio

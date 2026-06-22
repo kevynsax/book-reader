@@ -9,7 +9,7 @@ import { DATA_DIR } from '../config.js';
 import { processBook, generateBookAudio, generateVoiceAudio, regenerateChapterAudio } from '../workers/bookProcessor.js';
 import { findPageImagePath, copyPageAsCover } from '../services/pdfService.js';
 import { detectChapters } from '../services/ocrService.js';
-import { synthesizeSample } from '../services/ttsService.js';
+import { synthesizeSample, timelinePathFor } from '../services/ttsService.js';
 import { sanitizePageText } from '../lib/sanitize.js';
 
 const upload = multer({
@@ -97,7 +97,7 @@ export function booksRouter(io: SocketServer) {
       coverPage: parseInt(coverPage),
       firstPage: parseInt(firstPage),
       lastPage: parseInt(lastPage),
-      voices: [voice || 'pf_dora'],
+      voices: [voice || 'chatterbox:pt-BR-FranciscaNeural'],
       folderPath: 'pending',
       filePath: 'pending',
       status: 'uploading',
@@ -382,6 +382,26 @@ export function booksRouter(io: SocketServer) {
 
     res.setHeader('Content-Length', stat.size);
     createReadStream(audioPath).pipe(res);
+  });
+
+  // Read-along timeline (sentence start/end times) for a chapter's audio.
+  router.get('/:id/chapters/:chapterIdx/timeline', async (req, res) => {
+    const book = await Book.findById(req.params.id).lean();
+    if (!book) return res.status(404).json({ error: 'Not found' });
+
+    const idx = parseInt(req.params.chapterIdx);
+    const chapter = book.chapters[idx];
+    if (!chapter) return res.status(404).json({ error: 'Not found' });
+
+    const voice = (req.query.voice as string) || book.voices[0];
+    const track = chapter.tracks.find((t: IVoiceTrack) => t.voice === voice);
+    if (!track?.audioPath) return res.status(404).json({ error: 'No timeline' });
+
+    const timelinePath = timelinePathFor(track.audioPath);
+    if (!existsSync(timelinePath)) return res.status(404).json({ error: 'No timeline' });
+
+    res.setHeader('Content-Type', 'application/json');
+    createReadStream(timelinePath).pipe(res);
   });
 
   router.put('/:id/pages/:page/text', async (req, res) => {

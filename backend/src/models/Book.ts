@@ -128,7 +128,7 @@ const BookSchema = new Schema<IBook>(
       message: { type: String, default: '' },
     },
     errorMessage: { type: String },
-    voices: { type: [String], default: ['pf_dora'] },
+    voices: { type: [String], default: ['chatterbox:pt-BR-FranciscaNeural'] },
   },
   { timestamps: true }
 );
@@ -140,7 +140,7 @@ export async function migrateLegacyVoices(): Promise<void> {
   const cursor = col.find({ voices: { $exists: false } });
 
   for await (const b of cursor) {
-    const voice: string = b.voice || 'pf_dora';
+    const voice: string = b.voice || 'chatterbox:pt-BR-FranciscaNeural';
     const chapters = (b.chapters || []).map((ch: Record<string, unknown>) => {
       if (Array.isArray(ch.tracks)) return ch;
       return {

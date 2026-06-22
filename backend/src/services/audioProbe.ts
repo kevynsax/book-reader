@@ -1,5 +1,8 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
 
 const exec = promisify(execFile);
 
@@ -24,4 +27,15 @@ export async function probeDurationSecs(file: string): Promise<number> {
   const secs = parseFloat(stdout.trim());
   if (!isFinite(secs) || secs <= 0) throw new Error(`ffprobe returned no duration for ${file}`);
   return secs;
+}
+
+// Duration of an in-memory mp3 (for engines that don't return a duration header).
+export async function probeMp3Buffer(buffer: Buffer): Promise<number> {
+  const tmp = path.join(os.tmpdir(), `probe_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.mp3`);
+  try {
+    await fs.writeFile(tmp, buffer);
+    return await probeDurationSecs(tmp);
+  } finally {
+    await fs.unlink(tmp).catch(() => {});
+  }
 }

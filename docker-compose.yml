@@ -22,11 +22,15 @@ services:
       MONGODB_URI: mongodb://mongodb:27017/book-reader
       QWENVL_API: ${QWENVL_API:-https://qwenvl.kevyn.com.br}
       QWENVL_MODEL: ${QWENVL_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct-AWQ}
-      TTS_API: ${TTS_API:-https://tts.kevyn.com.br}
+      # Chatterbox TTS runs on the HOST (MLX needs the Mac GPU); reach it via host.docker.internal.
+      TTS_API: ${TTS_API:-http://host.docker.internal:8000}
       DATA_DIR: /app/data
-      KOKORO_VOICE: ${KOKORO_VOICE:-pf_dora}
-      KOKORO_SPEED: ${KOKORO_SPEED:-1.0}
+      TTS_VOICE: ${TTS_VOICE:-pt-BR-FranciscaNeural}
+      TTS_SPEED: ${TTS_SPEED:-1.0}
+      TTS_LANGUAGE: ${TTS_LANGUAGE:-en}
       FRONTEND_ORIGIN: http://localhost:5173
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # so the container can reach the host TTS server
     volumes:
       - ./backend:/app                  # live source edits
       - backend_modules:/app/node_modules  # isolated from host

@@ -5,10 +5,14 @@ export const PORT = parseInt(process.env.PORT || '3001');
 export const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/book-reader';
 export const QWENVL_API = process.env.QWENVL_API || 'https://qwenvl.kevyn.com.br';
 export const QWENVL_MODEL = process.env.QWENVL_MODEL || 'Qwen/Qwen2.5-VL-7B-Instruct-AWQ';
-export const TTS_API = process.env.TTS_API || 'https://tts.kevyn.com.br';
+export const TTS_API = process.env.TTS_API || 'http://127.0.0.1:8000';
+// Per-engine endpoints. Chatterbox is local (falls back to TTS_API); Kokoro is remote.
+export const CHATTERBOX_API = process.env.CHATTERBOX_API || TTS_API;
+export const KOKORO_API = process.env.KOKORO_API || 'https://tts.kevyn.com.br';
 export const DATA_DIR = process.env.DATA_DIR || './data';
-export const KOKORO_VOICE = process.env.KOKORO_VOICE || 'pf_dora';
-export const KOKORO_SPEED = parseFloat(process.env.KOKORO_SPEED || '1.0');
+export const DEFAULT_VOICE = process.env.TTS_VOICE || 'chatterbox:pt-BR-FranciscaNeural';
+export const TTS_SPEED = parseFloat(process.env.TTS_SPEED || '1.0');
+export const DEFAULT_LANGUAGE = process.env.TTS_LANGUAGE || 'en';
 export const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
 
 export const QWENVL_MAX_TOKENS = 4096;
@@ -38,13 +42,6 @@ export const OCR_PAGE_PROMPT = [
   'If a page has multiple columns, read each column from top to bottom, left to right.',
   'Extract only this page. Do not mention the page number.',
 ].join(' ');
-
-export const FALLBACK_VOICES = [
-  'af_alloy','af_aoede','af_bella','af_heart','af_jessica','af_nicole','af_nova','af_sarah','af_sky',
-  'am_adam','am_echo','am_eric','am_liam','am_michael','am_onyx','am_puck',
-  'bf_alice','bf_emma','bf_lily','bm_daniel','bm_george','bm_lewis',
-  'pf_dora','pm_alex','pm_santa',
-];
 
 export const TITLE_SYSTEM_PROMPT = [
   'You are reading the front cover of a book.',

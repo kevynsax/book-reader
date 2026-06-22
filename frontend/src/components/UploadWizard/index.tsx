@@ -13,7 +13,7 @@ const INIT: UploadFormData = {
   coverPage: 0,
   firstPage: 0,
   lastPage: 0,
-  voice: 'pf_dora',
+  voice: 'pt-BR-FranciscaNeural',
 };
 
 interface Props {

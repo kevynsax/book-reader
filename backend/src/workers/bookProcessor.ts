@@ -6,6 +6,7 @@ import { splitPdfIntoPages, findPageImagePath, getAllPagePaths, copyPageAsCover 
 import { ocrPage, detectChapters, extractBookTitle } from '../services/ocrService.js';
 import { sanitizePageText } from '../lib/sanitize.js';
 import { generateAudio } from '../services/ttsService.js';
+import { DEFAULT_LANGUAGE } from '../config.js';
 
 function emit(io: SocketServer, book: IBook, update: Record<string, unknown>) {
   io.emit('book:update', { bookId: book._id.toString(), updatedAt: book.updatedAt, ...update });
@@ -37,6 +38,23 @@ function extractChapterText(
     if (isLast)  return endChar >= 0 ? text.slice(0, endChar) : text;
     return text;
   }).join('\n\n').trim();
+}
+
+// Dominant language for a chapter: first non-'unknown' page language in its
+// page range, falling back to the configured default. Used as the TTS lang_code.
+function chapterLanguage(
+  chapters: IBook['chapters'],
+  idx: number,
+  ocrPages: IBook['ocrPages'],
+  lastPage: number,
+): string {
+  const startPage = chapters[idx].startPage;
+  const endPage   = chapters[idx + 1] ? chapters[idx + 1].startPage : lastPage;
+  const lang = ocrPages
+    .filter(p => p.page >= startPage && p.page <= endPage && p.status === 'complete')
+    .map(p => p.language)
+    .find(l => l && l !== 'unknown');
+  return lang || DEFAULT_LANGUAGE;
 }
 
 async function setProgress(
@@ -160,7 +178,9 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
 }
 
 export function chapterAudioPath(audioDir: string, chapterIdx: number, voice: string): string {
-  return path.join(audioDir, `chapter-${String(chapterIdx + 1).padStart(3, '0')}__${voice}.mp3`);
+  // Composite voice ids contain ':'; make them filesystem-safe.
+  const safeVoice = voice.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return path.join(audioDir, `chapter-${String(chapterIdx + 1).padStart(3, '0')}__${safeVoice}.mp3`);
 }
 
 async function generateForVoices(
@@ -204,9 +224,10 @@ async function generateForVoices(
       });
 
       const audioPath = chapterAudioPath(audioDir, i, voice);
+      const language = chapterLanguage(book.chapters, i, book.ocrPages, book.lastPage);
 
       try {
-        const durationSecs = await generateAudio(text, audioPath, voice);
+        const durationSecs = await generateAudio(text, audioPath, voice, language);
         track.audioPath = audioPath;
         track.audioDurationSecs = Math.round(durationSecs);
         track.audioStatus = 'complete';
@@ -285,12 +306,13 @@ export async function regenerateChapterAudio(bookId: string, chapterIdx: number,
     return;
   }
 
+  const language = chapterLanguage(book.chapters, chapterIdx, book.ocrPages, book.lastPage);
   for (const voice of book.voices) {
     const track = trackForVoice(chapter, voice);
     if (!track) continue;
     const audioPath = chapterAudioPath(audioDir, chapterIdx, voice);
     try {
-      const durationSecs = await generateAudio(text, audioPath, voice);
+      const durationSecs = await generateAudio(text, audioPath, voice, language);
       track.audioPath = audioPath;
       track.audioDurationSecs = Math.round(durationSecs);
       track.audioStatus = 'complete';

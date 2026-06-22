@@ -1,8 +1,27 @@
 import { AudioStatus, Book, Chapter, VoiceTrack } from '../types';
 
-export function friendlyVoice(voice: string): string {
+const ENGINE_IDS = ['chatterbox', 'kokoro'];
+
+// Strip a composite "engine:voice" prefix to the bare voice id.
+export function bareVoice(voice: string): string {
+  const sep = voice.indexOf(':');
+  if (sep > 0 && ENGINE_IDS.includes(voice.slice(0, sep))) return voice.slice(sep + 1);
+  return voice;
+}
+
+export function friendlyVoice(composite: string): string {
+  const voice = bareVoice(composite);
   if (!voice) return '';
-  return voice.split('_').slice(1).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+  if (voice === 'default') return 'Default';
+  // Edge ids: <lang>-<REGION>-<Name>[Multilingual]Neural  e.g. en-US-AvaNeural, pt-BR-ThalitaMultilingualNeural
+  const parts = voice.split('-');
+  if (parts.length >= 3) {
+    const region = parts[1];
+    const name = parts.slice(2).join('-').replace(/(Multilingual)?Neural$/i, '');
+    return `${name} (${region})`;
+  }
+  // legacy Kokoro ids like pf_dora -> Dora
+  return voice.split('_').slice(1).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ') || voice;
 }
 
 export function bookVoices(book: Book): string[] {
