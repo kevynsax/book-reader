@@ -15,12 +15,31 @@ export type BookStatus =
 
 export type AudioStatus = 'pending' | 'stale' | 'generating' | 'complete' | 'error';
 
+// One audio chunk for a single sentence, in one voice. Kept on disk so a typo
+// fix only re-renders this segment instead of the whole chapter.
+export interface ISegment {
+  sentenceId: Types.ObjectId;
+  audioPath?: string;
+  durationSecs?: number;
+  audioStatus: AudioStatus;
+  audioError?: string;
+}
+
 export interface IVoiceTrack {
   voice: string;
   audioPath?: string;
   audioDurationSecs?: number;
   audioStatus: AudioStatus;
   audioError?: string;
+  segments: Types.DocumentArray<ISegment & Document>;
+}
+
+// An editable, speech-ready sentence — the source of truth for chapter audio.
+// Shared across voices (text is the same); each voice renders its own segment.
+export interface ISentence {
+  _id: Types.ObjectId;
+  order: number;
+  text: string;
 }
 
 export interface IChapter {
@@ -28,6 +47,7 @@ export interface IChapter {
   title: string;
   startPage: number;
   startChar: number;
+  sentences: Types.DocumentArray<ISentence & Document>;
   tracks: Types.DocumentArray<IVoiceTrack & Document>;
 }
 
@@ -65,9 +85,52 @@ export function trackForVoice(
   return chapter.tracks.find(t => t.voice === voice);
 }
 
-export function freshTracks(voices: string[]): IVoiceTrack[] {
-  return voices.map(voice => ({ voice, audioStatus: 'pending' as AudioStatus }));
+export function freshTracks(voices: string[]) {
+  return voices.map(voice => ({ voice, audioStatus: 'pending' as AudioStatus, segments: [] as ISegment[] }));
 }
+
+// A track's status derived from its segments (the assembled-chapter readiness).
+export function deriveTrackStatus(segments: { audioStatus: AudioStatus }[]): AudioStatus {
+  if (segments.length === 0) return 'pending';
+  if (segments.some(s => s.audioStatus === 'generating')) return 'generating';
+  if (segments.some(s => s.audioStatus === 'error')) return 'error';
+  if (segments.some(s => s.audioStatus === 'stale')) return 'stale';
+  if (segments.every(s => s.audioStatus === 'complete')) return 'complete';
+  return 'pending';
+}
+
+// Chapters trimmed for the wire: sentences and per-segment data stay server-side
+// (the editor fetches them on demand) to keep sync/update payloads small.
+export function serializeChaptersForClient(chapters: IBook['chapters']) {
+  return chapters.map(c => ({
+    _id: c._id,
+    title: c.title,
+    startPage: c.startPage,
+    startChar: c.startChar,
+    tracks: c.tracks.map(t => ({
+      voice: t.voice,
+      audioPath: t.audioPath,
+      audioDurationSecs: t.audioDurationSecs,
+      audioStatus: t.audioStatus,
+      audioError: t.audioError,
+    })),
+  }));
+}
+
+const SegmentSchema = new Schema<ISegment>(
+  {
+    sentenceId: { type: Schema.Types.ObjectId, required: true },
+    audioPath: { type: String },
+    durationSecs: { type: Number },
+    audioStatus: {
+      type: String,
+      enum: ['pending', 'stale', 'generating', 'complete', 'error'],
+      default: 'pending',
+    },
+    audioError: { type: String },
+  },
+  { _id: false }
+);
 
 const VoiceTrackSchema = new Schema<IVoiceTrack>(
   {
@@ -80,14 +143,21 @@ const VoiceTrackSchema = new Schema<IVoiceTrack>(
       default: 'pending',
     },
     audioError: { type: String },
+    segments: { type: [SegmentSchema], default: [] },
   },
   { _id: false }
 );
+
+const SentenceSchema = new Schema<ISentence>({
+  order: { type: Number, required: true },
+  text: { type: String, default: '' },
+});
 
 const ChapterSchema = new Schema<IChapter>({
   title: { type: String, required: true },
   startPage: { type: Number, required: true },
   startChar: { type: Number, default: 0 },
+  sentences: { type: [SentenceSchema], default: [] },
   tracks: { type: [VoiceTrackSchema], default: [] },
 });
 

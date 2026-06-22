@@ -27,6 +27,15 @@ export interface TimelineEntry {
   end: number;
 }
 
+// An editable sentence with its audio segment status, for the sentence editor.
+export interface EditableSentence {
+  _id: string;
+  order: number;
+  text: string;
+  audioStatus: AudioStatus;
+  audioError?: string;
+}
+
 // A selectable TTS engine/model returned by GET /api/models.
 export interface TtsModel {
   id: string;

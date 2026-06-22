@@ -18,6 +18,16 @@ export function requestBook(bookId: string) {
   getSocket().emit('subscribe-to-book', { bookId });
 }
 
+// Subscribe to raw book:update payloads (e.g. segment/sentence events the editor
+// needs but that don't live in the redux store). Returns an unsubscribe fn.
+export function onBookUpdate(
+  cb: (data: { bookId: string } & Record<string, unknown>) => void
+): () => void {
+  const s = getSocket();
+  s.on('book:update', cb);
+  return () => { s.off('book:update', cb); };
+}
+
 function lastUpdateFromStore(): string | undefined {
   let max: string | undefined;
   for (const b of store.getState().books.books) {

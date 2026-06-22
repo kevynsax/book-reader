@@ -1,11 +1,11 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { Server as SocketServer } from 'socket.io';
-import { Book, IBook, freshTracks, trackForVoice } from '../models/Book.js';
+import { Book, IBook, IChapter, IVoiceTrack, freshTracks, trackForVoice, deriveTrackStatus, serializeChaptersForClient } from '../models/Book.js';
 import { splitPdfIntoPages, findPageImagePath, getAllPagePaths, copyPageAsCover } from '../services/pdfService.js';
 import { ocrPage, detectChapters, extractBookTitle } from '../services/ocrService.js';
 import { sanitizePageText } from '../lib/sanitize.js';
-import { generateAudio } from '../services/ttsService.js';
+import { synthesizeSegment, assembleChapter, buildSpeakableSentences } from '../services/ttsService.js';
 import { parseVoice } from '../services/ttsEngines.js';
 import { readyServersFor, pickReadyServer, TtsServer } from '../services/ttsServers.js';
 import { DEFAULT_LANGUAGE } from '../config.js';
@@ -197,8 +197,118 @@ export function chapterAudioPath(audioDir: string, chapterIdx: number, voice: st
   return path.join(audioDir, `chapter-${String(chapterIdx + 1).padStart(3, '0')}__${safeVoice}.mp3`);
 }
 
-// Render one chapter for one voice on a specific server. Mutations to the shared
-// book doc are saved under `lock` to avoid concurrent-save errors.
+// Assign a subdocument array on a Mongoose doc (typed escape hatch for .set).
+function setSubdoc(doc: unknown, path: string, value: unknown): void {
+  (doc as { set: (p: string, v: unknown) => void }).set(path, value);
+}
+
+// Directory and per-sentence file paths for a chapter/voice's segments.
+function segmentDir(audioDir: string, chapterIdx: number, voice: string): string {
+  const safeVoice = voice.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return path.join(audioDir, `chapter-${String(chapterIdx + 1).padStart(3, '0')}__${safeVoice}`);
+}
+
+function segmentAudioPath(audioDir: string, chapterIdx: number, voice: string, order: number): string {
+  return path.join(segmentDir(audioDir, chapterIdx, voice), `seg-${String(order + 1).padStart(4, '0')}.mp3`);
+}
+
+// Make a track's segments run 1:1 with the chapter's sentences, preserving any
+// already-rendered segment audio (matched by sentenceId).
+function ensureSegments(track: IVoiceTrack, chapter: IChapter): void {
+  const byId = new Map(track.segments.map(s => [String(s.sentenceId), s]));
+  const next = [...chapter.sentences]
+    .sort((a, b) => a.order - b.order)
+    .map(sen => {
+      const ex = byId.get(String(sen._id));
+      return ex
+        ? { sentenceId: sen._id, audioPath: ex.audioPath, durationSecs: ex.durationSecs, audioStatus: ex.audioStatus, audioError: ex.audioError }
+        : { sentenceId: sen._id, audioStatus: 'pending' as const };
+    });
+  setSubdoc(track, 'segments', next);
+}
+
+// Ordered {audioPath, durationSecs, text} for assembly, by sentence order.
+function orderedSegmentInputs(chapter: IChapter, track: IVoiceTrack) {
+  const byId = new Map(track.segments.map(s => [String(s.sentenceId), s]));
+  return [...chapter.sentences]
+    .sort((a, b) => a.order - b.order)
+    .map(sen => {
+      const seg = byId.get(String(sen._id));
+      return { audioPath: seg?.audioPath ?? '', durationSecs: seg?.durationSecs ?? 0, text: sen.text };
+    });
+}
+
+// Build the editable, speech-ready sentence list for a chapter (once). Returns
+// false if there's no readable text yet.
+async function buildSentences(book: IBook, idx: number, lock: SaveLock): Promise<boolean> {
+  const chapter = book.chapters[idx];
+  if (chapter.sentences.length > 0) return true;
+
+  const text = extractChapterText(book.chapters, idx, book.ocrPages, book.lastPage);
+  if (!text) return false;
+
+  const language = chapterLanguage(book.chapters, idx, book.ocrPages, book.lastPage);
+  const sentences = await buildSpeakableSentences(text, language);
+  setSubdoc(chapter, 'sentences', sentences.map((t, order) => ({ order, text: t })));
+  await lock.run(() => book.save());
+  return true;
+}
+
+// Concatenate a track's complete segments into the chapter mp3 + timeline, or
+// reflect a segment error onto the track. Emits the resulting chapter status.
+async function finalizeTrack(
+  book: IBook,
+  io: SocketServer,
+  idx: number,
+  voice: string,
+  audioDir: string,
+  lock: SaveLock,
+  preservePlayable = false,
+): Promise<void> {
+  const chapter = book.chapters[idx];
+  const track = trackForVoice(chapter, voice);
+  if (!track) return;
+
+  const allComplete = track.segments.length > 0 && track.segments.every(s => s.audioStatus === 'complete');
+  if (allComplete) {
+    const audioPath = chapterAudioPath(audioDir, idx, voice);
+    try {
+      const durationSecs = await assembleChapter(orderedSegmentInputs(chapter, track), audioPath);
+      track.audioPath = audioPath;
+      track.audioDurationSecs = Math.round(durationSecs);
+      track.audioStatus = 'complete';
+      track.audioError = undefined;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`assembleChapter ${book._id} ch${idx + 1} (${voice}):`, err);
+      track.audioStatus = 'error';
+      track.audioError = `Assembly failed: ${message}`;
+    }
+  } else if (preservePlayable && track.audioPath) {
+    // A single-sentence re-render failed but the previously assembled chapter
+    // audio is still valid — keep it playable; the bad segment shows in the editor.
+    track.audioStatus = 'complete';
+  } else {
+    track.audioStatus = deriveTrackStatus(track.segments);
+    track.audioError = track.segments.find(s => s.audioStatus === 'error')?.audioError;
+  }
+
+  await lock.run(() => book.save());
+  emit(io, book, {
+    chapterUpdate: {
+      idx,
+      voice,
+      audioStatus: track.audioStatus,
+      audioPath: track.audioPath,
+      audioDurationSecs: track.audioDurationSecs,
+      audioError: track.audioError,
+    },
+  });
+}
+
+// Render one chapter for one voice on a specific server: build sentences once,
+// synthesize each not-yet-complete segment, then assemble. Resumable — already
+// complete segments are skipped, so a mid-chapter failure only retries the rest.
 async function renderChapter(
   book: IBook,
   io: SocketServer,
@@ -213,8 +323,7 @@ async function renderChapter(
   const track = trackForVoice(chapter, voice);
   if (!track || track.audioStatus === 'complete') return;
 
-  const text = extractChapterText(book.chapters, idx, book.ocrPages, book.lastPage);
-  if (!text) {
+  if (!(await buildSentences(book, idx, lock))) {
     const audioError = 'No readable text for this chapter (run OCR first?)';
     console.error(`renderChapter ${book._id} ch${idx + 1} (${voice}): ${audioError}`);
     track.audioStatus = 'error';
@@ -224,7 +333,9 @@ async function renderChapter(
     return;
   }
 
+  ensureSegments(track, chapter);
   track.audioStatus = 'generating';
+  track.audioError = undefined;
   progress.done++;
   await lock.run(() => book.save());
   emit(io, book, {
@@ -232,33 +343,36 @@ async function renderChapter(
     chapterUpdate: { idx, voice, audioStatus: 'generating' },
   });
 
-  const audioPath = chapterAudioPath(audioDir, idx, voice);
   const language = chapterLanguage(book.chapters, idx, book.ocrPages, book.lastPage);
+  const sentenceById = new Map(chapter.sentences.map(s => [String(s._id), s]));
 
-  try {
-    const durationSecs = await generateAudio(text, audioPath, server.url, voice, language);
-    track.audioPath = audioPath;
-    track.audioDurationSecs = Math.round(durationSecs);
-    track.audioStatus = 'complete';
-    track.audioError = undefined;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`renderChapter ${book._id} ch${idx + 1} (${voice}) on ${server.label}:`, err);
-    track.audioStatus = 'error';
-    track.audioError = `${message} (${server.label})`;
+  for (const seg of track.segments) {
+    if (seg.audioStatus === 'complete') continue;
+    const sentence = sentenceById.get(String(seg.sentenceId));
+    if (!sentence) continue;
+
+    const segPath = segmentAudioPath(audioDir, idx, voice, sentence.order);
+    seg.audioStatus = 'generating';
+    seg.audioError = undefined;
+    try {
+      const durationSecs = await synthesizeSegment(sentence.text, segPath, server.url, voice, language);
+      seg.audioPath = segPath;
+      seg.durationSecs = durationSecs;
+      seg.audioStatus = 'complete';
+      seg.audioError = undefined;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`renderChapter ${book._id} ch${idx + 1} seg#${sentence.order + 1} (${voice}) on ${server.label}:`, err);
+      seg.audioStatus = 'error';
+      seg.audioError = `${message} (${server.label})`;
+    }
+    await lock.run(() => book.save());
+    emit(io, book, {
+      segmentUpdate: { chapterIdx: idx, voice, sentenceId: String(seg.sentenceId), audioStatus: seg.audioStatus, audioError: seg.audioError },
+    });
   }
 
-  await lock.run(() => book.save());
-  emit(io, book, {
-    chapterUpdate: {
-      idx,
-      voice,
-      audioStatus: track.audioStatus,
-      audioPath: track.audioPath,
-      audioDurationSecs: track.audioDurationSecs,
-      audioError: track.audioError,
-    },
-  });
+  await finalizeTrack(book, io, idx, voice, audioDir, lock);
 }
 
 // Render every pending chapter for one voice, fanning the chapters across all
@@ -292,7 +406,7 @@ async function renderVoice(
     }
     progress.done += pending.length;
     await lock.run(() => book.save());
-    emit(io, book, { chapters: book.chapters });
+    emit(io, book, { chapters: serializeChaptersForClient(book.chapters) });
     return;
   }
 
@@ -341,16 +455,16 @@ async function generateForVoices(
         `${failed.length} chapter${failed.length > 1 ? 's' : ''} failed to generate` +
         (reasons.length ? `: ${reasons.join('; ')}` : '.');
       await book.save();
-      emit(io, book, { status: 'error', errorMessage: book.errorMessage, chapters: book.chapters });
+      emit(io, book, { status: 'error', errorMessage: book.errorMessage, chapters: serializeChaptersForClient(book.chapters) });
     } else {
       book.status = 'complete';
       book.progress = { current: progress.total, total: progress.total, message: 'Complete!' };
       await book.save();
-      emit(io, book, { status: 'complete', progress: book.progress, chapters: book.chapters });
+      emit(io, book, { status: 'complete', progress: book.progress, chapters: serializeChaptersForClient(book.chapters) });
     }
   } else {
     await book.save();
-    emit(io, book, { chapters: book.chapters });
+    emit(io, book, { chapters: serializeChaptersForClient(book.chapters) });
   }
 }
 
@@ -381,6 +495,8 @@ export async function generateVoiceAudio(bookId: string, io: SocketServer, voice
   }
 }
 
+// Full chapter rebuild (e.g. after OCR/chapter-boundary edits): discard cached
+// sentences + segment audio so the latest text is re-read from scratch.
 export async function regenerateChapterAudio(bookId: string, chapterIdx: number, io: SocketServer): Promise<void> {
   const book = await Book.findById(bookId);
   if (!book) return;
@@ -391,49 +507,130 @@ export async function regenerateChapterAudio(bookId: string, chapterIdx: number,
   const audioDir = path.join(book.folderPath, 'audio');
   await fs.mkdir(audioDir, { recursive: true });
 
-  let text: string;
-  try {
-    text = extractChapterText(book.chapters, chapterIdx, book.ocrPages, book.lastPage);
-    if (!text) throw new Error('No text available for this chapter');
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`regenerateChapterAudio ${book._id} ch${chapterIdx + 1}:`, err);
-    for (const t of chapter.tracks) { t.audioStatus = 'error'; t.audioError = message; }
-    await book.save();
-    emit(io, book, { chapters: book.chapters });
-    return;
+  setSubdoc(chapter, 'sentences', []);
+  for (const t of chapter.tracks) {
+    setSubdoc(t, 'segments', []);
+    t.audioStatus = 'pending';
+    t.audioError = undefined;
+  }
+  await book.save();
+  for (const voice of book.voices) {
+    await fs.rm(segmentDir(audioDir, chapterIdx, voice), { recursive: true, force: true }).catch(() => {});
   }
 
-  const language = chapterLanguage(book.chapters, chapterIdx, book.ocrPages, book.lastPage);
+  const lock = new SaveLock();
+  const progress = { done: 0, total: book.voices.length };
   for (const voice of book.voices) {
+    const { model } = parseVoice(voice);
+    const server = await pickReadyServer(model.id);
+    if (!server) {
+      const track = trackForVoice(chapter, voice);
+      const audioError = `No TTS server is online for model "${model.id}" — start the server and try again.`;
+      if (track) { track.audioStatus = 'error'; track.audioError = audioError; }
+      await book.save();
+      emit(io, book, { chapterUpdate: { idx: chapterIdx, voice, audioStatus: 'error', audioError } });
+      continue;
+    }
+    await renderChapter(book, io, voice, chapterIdx, server, audioDir, lock, progress);
+  }
+}
+
+// Re-synthesize one sentence's segment for the given voices, then reassemble
+// each affected chapter mp3. Shared by edit + single-sentence regenerate.
+async function rerenderSegment(
+  book: IBook,
+  io: SocketServer,
+  chapterIdx: number,
+  sentenceId: string,
+  voices: string[],
+): Promise<void> {
+  const chapter = book.chapters[chapterIdx];
+  if (!chapter) return;
+  const sentence = chapter.sentences.find(s => String(s._id) === sentenceId);
+  if (!sentence) return;
+
+  const audioDir = path.join(book.folderPath, 'audio');
+  const language = chapterLanguage(book.chapters, chapterIdx, book.ocrPages, book.lastPage);
+  const lock = new SaveLock();
+
+  for (const voice of voices) {
     const track = trackForVoice(chapter, voice);
     if (!track) continue;
-    const audioPath = chapterAudioPath(audioDir, chapterIdx, voice);
+    ensureSegments(track, chapter);
+    const seg = track.segments.find(s => String(s.sentenceId) === sentenceId);
+    if (!seg) continue;
+
+    seg.audioStatus = 'generating';
+    seg.audioError = undefined;
+    await lock.run(() => book.save());
+    emit(io, book, { segmentUpdate: { chapterIdx, voice, sentenceId, audioStatus: 'generating' } });
+
+    const { model } = parseVoice(voice);
+    const server = await pickReadyServer(model.id);
+    if (!server) {
+      seg.audioStatus = 'error';
+      seg.audioError = `No TTS server is online for model "${model.id}".`;
+      await lock.run(() => book.save());
+      emit(io, book, { segmentUpdate: { chapterIdx, voice, sentenceId, audioStatus: 'error', audioError: seg.audioError } });
+      await finalizeTrack(book, io, chapterIdx, voice, audioDir, lock, true);
+      continue;
+    }
+
+    const segPath = segmentAudioPath(audioDir, chapterIdx, voice, sentence.order);
     try {
-      const { model } = parseVoice(voice);
-      const server = await pickReadyServer(model.id);
-      if (!server) throw new Error(`No TTS server available for model "${model.id}"`);
-      const durationSecs = await generateAudio(text, audioPath, server.url, voice, language);
-      track.audioPath = audioPath;
-      track.audioDurationSecs = Math.round(durationSecs);
-      track.audioStatus = 'complete';
-      track.audioError = undefined;
+      const durationSecs = await synthesizeSegment(sentence.text, segPath, server.url, voice, language);
+      seg.audioPath = segPath;
+      seg.durationSecs = durationSecs;
+      seg.audioStatus = 'complete';
+      seg.audioError = undefined;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`regenerateChapterAudio ${book._id} ch${chapterIdx + 1} (${voice}):`, err);
-      track.audioStatus = 'error';
-      track.audioError = message;
+      console.error(`rerenderSegment ${book._id} ch${chapterIdx + 1} (${voice}):`, err);
+      seg.audioStatus = 'error';
+      seg.audioError = `${message} (${server.label})`;
     }
-    await book.save();
-    emit(io, book, {
-      chapterUpdate: {
-        idx: chapterIdx,
-        voice,
-        audioStatus: track.audioStatus,
-        audioPath: track.audioPath,
-        audioDurationSecs: track.audioDurationSecs,
-        audioError: track.audioError,
-      },
-    });
+    await lock.run(() => book.save());
+    emit(io, book, { segmentUpdate: { chapterIdx, voice, sentenceId, audioStatus: seg.audioStatus, audioError: seg.audioError } });
+    await finalizeTrack(book, io, chapterIdx, voice, audioDir, lock, true);
   }
+}
+
+// Edit a sentence's text, then re-render its segment for every voice.
+export async function editSentence(
+  bookId: string,
+  chapterIdx: number,
+  sentenceId: string,
+  text: string,
+  io: SocketServer,
+): Promise<void> {
+  const book = await Book.findById(bookId);
+  if (!book) return;
+  const chapter = book.chapters[chapterIdx];
+  if (!chapter) return;
+  const sentence = chapter.sentences.find(s => String(s._id) === sentenceId);
+  if (!sentence) return;
+
+  sentence.text = text;
+  for (const track of chapter.tracks) {
+    const seg = track.segments.find(s => String(s.sentenceId) === sentenceId);
+    if (seg) { seg.audioStatus = 'stale'; seg.audioError = undefined; }
+  }
+  await book.save();
+  emit(io, book, { sentenceUpdate: { chapterIdx, sentenceId, text } });
+
+  await rerenderSegment(book, io, chapterIdx, sentenceId, book.voices);
+}
+
+// Re-render one sentence's segment without changing its text (e.g. it errored).
+export async function regenerateSegment(
+  bookId: string,
+  chapterIdx: number,
+  sentenceId: string,
+  io: SocketServer,
+  voice?: string,
+): Promise<void> {
+  const book = await Book.findById(bookId);
+  if (!book) return;
+  const voices = voice ? [voice] : book.voices;
+  await rerenderSegment(book, io, chapterIdx, sentenceId, voices);
 }

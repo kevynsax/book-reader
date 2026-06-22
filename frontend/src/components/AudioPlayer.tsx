@@ -18,6 +18,7 @@ interface Props {
   chapters: Chapter[];
   voice: string;
   onProgress?: (remaining: number) => void;
+  onChapterChange?: (chapterIdx: number) => void;
 }
 
 function fmt(s: number): string {
@@ -37,7 +38,7 @@ function loadJson<T>(key: string, fallback: T): T {
   catch { return fallback; }
 }
 
-export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Props) {
+export default function AudioPlayer({ bookId, chapters, voice, onProgress, onChapterChange }: Props) {
   const audioRef   = useRef<HTMLAudioElement>(null);
   const idxRef     = useRef(0);
   const seekOnLoad = useRef(-1);
@@ -72,16 +73,21 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
 
   const chapter    = readyChapters[currentIdx];
   const chapterIdx = chapter ? chapters.indexOf(chapter) : -1;
+  // Duration changes whenever a sentence is re-rendered, so it doubles as a
+  // cache-buster that forces a reload of the rebuilt chapter audio + timeline.
+  const audioVersion = chapter ? (trackFor(chapter, voice)?.audioDurationSecs ?? 0) : 0;
   const audioUrl   = chapter
-    ? `/api/books/${bookId}/chapters/${chapterIdx}/audio?voice=${encodeURIComponent(voice)}`
+    ? `/api/books/${bookId}/chapters/${chapterIdx}/audio?voice=${encodeURIComponent(voice)}&v=${audioVersion}`
     : null;
+
+  useEffect(() => { onChapterChange?.(chapterIdx); }, [chapterIdx, onChapterChange]);
 
   // Load the read-along timeline for the current chapter/voice (404 => none).
   useEffect(() => {
     setTimeline([]); timelineRef.current = []; setActiveLine(-1);
     if (chapterIdx < 0) return;
     let cancelled = false;
-    fetch(`/api/books/${bookId}/chapters/${chapterIdx}/timeline?voice=${encodeURIComponent(voice)}`)
+    fetch(`/api/books/${bookId}/chapters/${chapterIdx}/timeline?voice=${encodeURIComponent(voice)}&v=${audioVersion}`)
       .then(r => (r.ok ? r.json() : []))
       .then((data: TimelineEntry[]) => {
         if (cancelled) return;
@@ -91,7 +97,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress }: Pro
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [bookId, chapterIdx, voice]);
+  }, [bookId, chapterIdx, voice, audioVersion]);
 
   const savePos = useCallback(() => {
     const audio = audioRef.current;
