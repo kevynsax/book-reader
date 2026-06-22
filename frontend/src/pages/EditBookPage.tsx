@@ -241,8 +241,8 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
             generating ? 'bg-amber-400 animate-pulse' : allDone ? 'bg-green-500' : errored ? 'bg-red-500' : 'bg-gray-700'
           }`} />
           <span className="text-gray-100 font-medium truncate">{friendlyVoice(voice)}</span>
-          <span className={`text-xs shrink-0 ${generating ? 'text-amber-400' : allDone ? 'text-green-400' : 'text-gray-500'}`}>
-            {generating ? 'generating…' : allDone ? 'done' : 'waiting'}
+          <span className={`text-xs shrink-0 ${generating ? 'text-amber-400' : allDone ? 'text-green-400' : errored ? 'text-red-400' : 'text-gray-500'}`}>
+            {generating ? 'generating…' : allDone ? 'done' : errored ? 'failed' : 'waiting'}
           </span>
         </span>
         <span className="text-xs text-gray-500 tabular-nums shrink-0">{done}/{total}</span>
@@ -251,16 +251,20 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
       <div className="border-t border-gray-800 divide-y divide-gray-800/60 max-h-56 overflow-y-auto">
         {book.chapters.map((c, i) => {
           const s = statuses[i];
+          const err = s === 'error' ? trackFor(c, voice)?.audioError : undefined;
           return (
-            <div key={c._id} className="flex items-center gap-2 px-3 py-1.5">
-              <span className={`w-2 h-2 rounded-full shrink-0 ${DOT_CLASS[s] ?? 'bg-gray-700'}`} />
-              <span className="text-gray-500 text-xs tabular-nums shrink-0 w-5">{i + 1}.</span>
-              <span className={`text-sm truncate flex-1 ${s === 'generating' ? 'text-amber-300' : 'text-gray-300'}`}>
-                {c.title || `Chapter ${i + 1}`}
-              </span>
-              <span className={`text-[11px] shrink-0 ${TRACK_TEXT[s] ?? 'text-gray-500'}`}>
-                {TRACK_LABEL[s] ?? s}
-              </span>
+            <div key={c._id} className="px-3 py-1.5">
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${DOT_CLASS[s] ?? 'bg-gray-700'}`} />
+                <span className="text-gray-500 text-xs tabular-nums shrink-0 w-5">{i + 1}.</span>
+                <span className={`text-sm truncate flex-1 ${s === 'generating' ? 'text-amber-300' : 'text-gray-300'}`}>
+                  {c.title || `Chapter ${i + 1}`}
+                </span>
+                <span className={`text-[11px] shrink-0 ${TRACK_TEXT[s] ?? 'text-gray-500'}`}>
+                  {TRACK_LABEL[s] ?? s}
+                </span>
+              </div>
+              {err && <p className="text-[11px] text-red-400/90 pl-9 mt-0.5 break-words">{err}</p>}
             </div>
           );
         })}
@@ -330,8 +334,9 @@ export default function EditBookPage() {
   const hasOcrPages   = book.ocrPages.length > 0;
   const hasChapters   = book.chapters.length > 0;
   const isGenerating  = book.status === 'generating_audio' || book.chapters.some(c => chapterStatus(c) === 'generating');
+  const hasAudioError = book.chapters.some(c => chapterStatus(c) === 'error');
   const showStatus    = book.status !== 'complete' && book.status !== 'error' && !isGenerating;
-  const showGenerate  = (book.status === 'awaiting_chapter_review' || book.status === 'complete') && !isGenerating;
+  const showGenerate  = (book.status === 'awaiting_chapter_review' || book.status === 'complete' || book.status === 'error') && !isGenerating;
   const hasStaleAudio = book.chapters.some(c => chapterStatus(c) === 'stale');
 
   return (
@@ -397,12 +402,12 @@ export default function EditBookPage() {
               />
             </div>
 
-            {isGenerating && (
+            {(isGenerating || hasAudioError) && (
               <div className="card space-y-4">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-semibold text-gray-100">Generating audio</h3>
+                  <h3 className="font-semibold text-gray-100">{isGenerating ? 'Generating audio' : 'Generation results'}</h3>
                   <span className="text-xs text-gray-500">
-                    green = ready · pulsing = rendering
+                    green = ready · pulsing = rendering · red = failed
                   </span>
                 </div>
                 {book.progress.message && <p className="text-sm text-gray-400">{book.progress.message}</p>}
@@ -428,9 +433,9 @@ export default function EditBookPage() {
               <button
                 className="btn-primary w-full justify-center"
                 disabled={generating}
-                onClick={() => book.status === 'complete' ? runGenerate() : setShowVoiceDialog(true)}
+                onClick={() => book.status === 'complete' || book.status === 'error' ? runGenerate() : setShowVoiceDialog(true)}
               >
-                {generating ? 'Generating…' : 'Generate'}
+                {generating ? 'Generating…' : book.status === 'error' ? 'Retry' : 'Generate'}
               </button>
             )}
           </>

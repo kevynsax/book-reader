@@ -115,7 +115,7 @@ const booksSlice = createSlice({
       if (patch.chapterUpdate) {
         const cu = patch.chapterUpdate as {
           idx: number; voice?: string; audioStatus: VoiceTrack['audioStatus'];
-          audioPath?: string; audioDurationSecs?: number;
+          audioPath?: string; audioDurationSecs?: number; audioError?: string;
         };
         const chapter = book.chapters[cu.idx];
         if (chapter) {
@@ -128,6 +128,7 @@ const booksSlice = createSlice({
           }
           if (track) {
             track.audioStatus = cu.audioStatus;
+            track.audioError = cu.audioError;
             if (cu.audioPath) track.audioPath = cu.audioPath;
             if (cu.audioDurationSecs !== undefined) track.audioDurationSecs = cu.audioDurationSecs;
           }

@@ -20,6 +20,7 @@ export interface IVoiceTrack {
   audioPath?: string;
   audioDurationSecs?: number;
   audioStatus: AudioStatus;
+  audioError?: string;
 }
 
 export interface IChapter {
@@ -78,6 +79,7 @@ const VoiceTrackSchema = new Schema<IVoiceTrack>(
       enum: ['pending', 'stale', 'generating', 'complete', 'error'],
       default: 'pending',
     },
+    audioError: { type: String },
   },
   { _id: false }
 );

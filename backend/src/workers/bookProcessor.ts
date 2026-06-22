@@ -215,9 +215,12 @@ async function renderChapter(
 
   const text = extractChapterText(book.chapters, idx, book.ocrPages, book.lastPage);
   if (!text) {
+    const audioError = 'No readable text for this chapter (run OCR first?)';
+    console.error(`renderChapter ${book._id} ch${idx + 1} (${voice}): ${audioError}`);
     track.audioStatus = 'error';
+    track.audioError = audioError;
     await lock.run(() => book.save());
-    emit(io, book, { chapterUpdate: { idx, voice, audioStatus: 'error' } });
+    emit(io, book, { chapterUpdate: { idx, voice, audioStatus: 'error', audioError } });
     return;
   }
 
@@ -237,8 +240,12 @@ async function renderChapter(
     track.audioPath = audioPath;
     track.audioDurationSecs = Math.round(durationSecs);
     track.audioStatus = 'complete';
-  } catch {
+    track.audioError = undefined;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`renderChapter ${book._id} ch${idx + 1} (${voice}) on ${server.label}:`, err);
     track.audioStatus = 'error';
+    track.audioError = `${message} (${server.label})`;
   }
 
   await lock.run(() => book.save());
@@ -249,6 +256,7 @@ async function renderChapter(
       audioStatus: track.audioStatus,
       audioPath: track.audioPath,
       audioDurationSecs: track.audioDurationSecs,
+      audioError: track.audioError,
     },
   });
 }
@@ -276,9 +284,11 @@ async function renderVoice(
   const servers = await readyServersFor(model.id);
 
   if (servers.length === 0) {
+    const audioError = `No TTS server is online for model "${model.id}" — start the server and try again.`;
+    console.error(`renderVoice ${book._id} (${voice}): ${audioError}`);
     for (const i of pending) {
       const t = trackForVoice(book.chapters[i], voice);
-      if (t) t.audioStatus = 'error';
+      if (t) { t.audioStatus = 'error'; t.audioError = audioError; }
     }
     progress.done += pending.length;
     await lock.run(() => book.save());
@@ -321,11 +331,23 @@ async function generateForVoices(
     await renderVoice(book, io, voice, audioDir, lock, progress);
   }
 
+  const failed = book.chapters.flatMap(c => c.tracks).filter(t => t.audioStatus === 'error');
+
   if (manageBookStatus) {
-    book.status = 'complete';
-    book.progress = { current: progress.total, total: progress.total, message: 'Complete!' };
-    await book.save();
-    emit(io, book, { status: 'complete', progress: book.progress, chapters: book.chapters });
+    if (failed.length > 0) {
+      const reasons = [...new Set(failed.map(t => t.audioError).filter(Boolean))];
+      book.status = 'error';
+      book.errorMessage =
+        `${failed.length} chapter${failed.length > 1 ? 's' : ''} failed to generate` +
+        (reasons.length ? `: ${reasons.join('; ')}` : '.');
+      await book.save();
+      emit(io, book, { status: 'error', errorMessage: book.errorMessage, chapters: book.chapters });
+    } else {
+      book.status = 'complete';
+      book.progress = { current: progress.total, total: progress.total, message: 'Complete!' };
+      await book.save();
+      emit(io, book, { status: 'complete', progress: book.progress, chapters: book.chapters });
+    }
   } else {
     await book.save();
     emit(io, book, { chapters: book.chapters });
@@ -373,8 +395,10 @@ export async function regenerateChapterAudio(bookId: string, chapterIdx: number,
   try {
     text = extractChapterText(book.chapters, chapterIdx, book.ocrPages, book.lastPage);
     if (!text) throw new Error('No text available for this chapter');
-  } catch {
-    for (const t of chapter.tracks) t.audioStatus = 'error';
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`regenerateChapterAudio ${book._id} ch${chapterIdx + 1}:`, err);
+    for (const t of chapter.tracks) { t.audioStatus = 'error'; t.audioError = message; }
     await book.save();
     emit(io, book, { chapters: book.chapters });
     return;
@@ -393,8 +417,12 @@ export async function regenerateChapterAudio(bookId: string, chapterIdx: number,
       track.audioPath = audioPath;
       track.audioDurationSecs = Math.round(durationSecs);
       track.audioStatus = 'complete';
-    } catch {
+      track.audioError = undefined;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`regenerateChapterAudio ${book._id} ch${chapterIdx + 1} (${voice}):`, err);
       track.audioStatus = 'error';
+      track.audioError = message;
     }
     await book.save();
     emit(io, book, {
@@ -404,6 +432,7 @@ export async function regenerateChapterAudio(bookId: string, chapterIdx: number,
         audioStatus: track.audioStatus,
         audioPath: track.audioPath,
         audioDurationSecs: track.audioDurationSecs,
+        audioError: track.audioError,
       },
     });
   }

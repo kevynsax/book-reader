@@ -17,6 +17,7 @@ export interface VoiceTrack {
   audioPath?: string;
   audioDurationSecs?: number;
   audioStatus: AudioStatus;
+  audioError?: string;
 }
 
 // Read-along: a spoken sentence and its start/end time (seconds) in the chapter audio.
