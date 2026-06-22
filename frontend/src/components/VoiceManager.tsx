@@ -82,7 +82,7 @@ export default function VoiceManager({ book, activeVoice, onSelectVoice, editabl
         <GenerateVoiceModal
           bookId={book._id}
           exclude={voices}
-          onConfirm={voice => { dispatch(addVoice({ bookId: book._id, voice })); setShowAdd(false); }}
+          onConfirm={voices => { dispatch(addVoice({ bookId: book._id, voice: voices })); setShowAdd(false); }}
           onClose={() => setShowAdd(false)}
         />
       )}

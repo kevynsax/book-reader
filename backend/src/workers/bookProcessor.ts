@@ -6,10 +6,24 @@ import { splitPdfIntoPages, findPageImagePath, getAllPagePaths, copyPageAsCover 
 import { ocrPage, detectChapters, extractBookTitle } from '../services/ocrService.js';
 import { sanitizePageText } from '../lib/sanitize.js';
 import { generateAudio } from '../services/ttsService.js';
+import { parseVoice } from '../services/ttsEngines.js';
+import { readyServersFor, pickReadyServer, TtsServer } from '../services/ttsServers.js';
 import { DEFAULT_LANGUAGE } from '../config.js';
 
 function emit(io: SocketServer, book: IBook, update: Record<string, unknown>) {
   io.emit('book:update', { bookId: book._id.toString(), updatedAt: book.updatedAt, ...update });
+}
+
+// Serializes book.save() across the parallel per-server workers that share one
+// Mongoose document — concurrent saves would throw ParallelSaveError. Rendering
+// (the slow TTS + ffmpeg work) still runs in parallel; only the DB write waits.
+class SaveLock {
+  private tail: Promise<unknown> = Promise.resolve();
+  run<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.tail.then(fn, fn);
+    this.tail = next.then(() => undefined, () => undefined);
+    return next;
+  }
 }
 
 function extractChapterText(
@@ -183,6 +197,106 @@ export function chapterAudioPath(audioDir: string, chapterIdx: number, voice: st
   return path.join(audioDir, `chapter-${String(chapterIdx + 1).padStart(3, '0')}__${safeVoice}.mp3`);
 }
 
+// Render one chapter for one voice on a specific server. Mutations to the shared
+// book doc are saved under `lock` to avoid concurrent-save errors.
+async function renderChapter(
+  book: IBook,
+  io: SocketServer,
+  voice: string,
+  idx: number,
+  server: TtsServer,
+  audioDir: string,
+  lock: SaveLock,
+  progress: { done: number; total: number },
+): Promise<void> {
+  const chapter = book.chapters[idx];
+  const track = trackForVoice(chapter, voice);
+  if (!track || track.audioStatus === 'complete') return;
+
+  const text = extractChapterText(book.chapters, idx, book.ocrPages, book.lastPage);
+  if (!text) {
+    track.audioStatus = 'error';
+    await lock.run(() => book.save());
+    emit(io, book, { chapterUpdate: { idx, voice, audioStatus: 'error' } });
+    return;
+  }
+
+  track.audioStatus = 'generating';
+  progress.done++;
+  await lock.run(() => book.save());
+  emit(io, book, {
+    progress: { current: progress.done, total: progress.total, message: `Generating "${chapter.title}"… (${server.label})` },
+    chapterUpdate: { idx, voice, audioStatus: 'generating' },
+  });
+
+  const audioPath = chapterAudioPath(audioDir, idx, voice);
+  const language = chapterLanguage(book.chapters, idx, book.ocrPages, book.lastPage);
+
+  try {
+    const durationSecs = await generateAudio(text, audioPath, server.url, voice, language);
+    track.audioPath = audioPath;
+    track.audioDurationSecs = Math.round(durationSecs);
+    track.audioStatus = 'complete';
+  } catch {
+    track.audioStatus = 'error';
+  }
+
+  await lock.run(() => book.save());
+  emit(io, book, {
+    chapterUpdate: {
+      idx,
+      voice,
+      audioStatus: track.audioStatus,
+      audioPath: track.audioPath,
+      audioDurationSecs: track.audioDurationSecs,
+    },
+  });
+}
+
+// Render every pending chapter for one voice, fanning the chapters across all
+// ready servers (a shared cursor: each server pulls the next chapter as it frees
+// up). If no server is reachable, the voice's chapters are marked errored.
+async function renderVoice(
+  book: IBook,
+  io: SocketServer,
+  voice: string,
+  audioDir: string,
+  lock: SaveLock,
+  progress: { done: number; total: number },
+): Promise<void> {
+  const pending = book.chapters
+    .map((_, i) => i)
+    .filter(i => {
+      const t = trackForVoice(book.chapters[i], voice);
+      return t && t.audioStatus !== 'complete';
+    });
+  if (pending.length === 0) return;
+
+  const { model } = parseVoice(voice);
+  const servers = await readyServersFor(model.id);
+
+  if (servers.length === 0) {
+    for (const i of pending) {
+      const t = trackForVoice(book.chapters[i], voice);
+      if (t) t.audioStatus = 'error';
+    }
+    progress.done += pending.length;
+    await lock.run(() => book.save());
+    emit(io, book, { chapters: book.chapters });
+    return;
+  }
+
+  let cursor = 0;
+  const takeNext = () => (cursor < pending.length ? pending[cursor++] : -1);
+  await Promise.all(
+    servers.map(async server => {
+      for (let idx = takeNext(); idx !== -1; idx = takeNext()) {
+        await renderChapter(book, io, voice, idx, server, audioDir, lock, progress);
+      }
+    }),
+  );
+}
+
 async function generateForVoices(
   book: IBook,
   io: SocketServer,
@@ -198,59 +312,18 @@ async function generateForVoices(
     emit(io, book, { status: 'generating_audio' });
   }
 
-  const total = voices.length * book.chapters.length;
-  let done = 0;
+  const lock = new SaveLock();
+  const progress = { done: 0, total: voices.length * book.chapters.length };
 
+  // Voices render one at a time so each server loads a model once per voice
+  // (no hot-swap thrashing); a voice's chapters fan out across the servers.
   for (const voice of voices) {
-    for (let i = 0; i < book.chapters.length; i++) {
-      done++;
-      const chapter = book.chapters[i];
-      const track = trackForVoice(chapter, voice);
-      if (!track || track.audioStatus === 'complete') continue;
-
-      const text = extractChapterText(book.chapters, i, book.ocrPages, book.lastPage);
-      if (!text) {
-        track.audioStatus = 'error';
-        await book.save();
-        emit(io, book, { chapterUpdate: { idx: i, voice, audioStatus: 'error' } });
-        continue;
-      }
-
-      track.audioStatus = 'generating';
-      await book.save();
-      emit(io, book, {
-        progress: { current: done, total, message: `Generating "${chapter.title}"…` },
-        chapterUpdate: { idx: i, voice, audioStatus: 'generating' },
-      });
-
-      const audioPath = chapterAudioPath(audioDir, i, voice);
-      const language = chapterLanguage(book.chapters, i, book.ocrPages, book.lastPage);
-
-      try {
-        const durationSecs = await generateAudio(text, audioPath, voice, language);
-        track.audioPath = audioPath;
-        track.audioDurationSecs = Math.round(durationSecs);
-        track.audioStatus = 'complete';
-      } catch {
-        track.audioStatus = 'error';
-      }
-
-      await book.save();
-      emit(io, book, {
-        chapterUpdate: {
-          idx: i,
-          voice,
-          audioStatus: track.audioStatus,
-          audioPath: track.audioPath,
-          audioDurationSecs: track.audioDurationSecs,
-        },
-      });
-    }
+    await renderVoice(book, io, voice, audioDir, lock, progress);
   }
 
   if (manageBookStatus) {
     book.status = 'complete';
-    book.progress = { current: total, total, message: 'Complete!' };
+    book.progress = { current: progress.total, total: progress.total, message: 'Complete!' };
     await book.save();
     emit(io, book, { status: 'complete', progress: book.progress, chapters: book.chapters });
   } else {
@@ -274,14 +347,15 @@ export async function generateBookAudio(bookId: string, io: SocketServer): Promi
   }
 }
 
-export async function generateVoiceAudio(bookId: string, io: SocketServer, voice: string): Promise<void> {
+export async function generateVoiceAudio(bookId: string, io: SocketServer, voice: string | string[]): Promise<void> {
   const book = await Book.findById(bookId);
   if (!book) return;
 
+  const voices = Array.isArray(voice) ? voice : [voice];
   try {
-    await generateForVoices(book, io, [voice], false);
+    await generateForVoices(book, io, voices, false);
   } catch (err) {
-    console.error(`generateVoiceAudio ${bookId} ${voice} failed:`, err);
+    console.error(`generateVoiceAudio ${bookId} ${voices.join(', ')} failed:`, err);
   }
 }
 
@@ -312,7 +386,10 @@ export async function regenerateChapterAudio(bookId: string, chapterIdx: number,
     if (!track) continue;
     const audioPath = chapterAudioPath(audioDir, chapterIdx, voice);
     try {
-      const durationSecs = await generateAudio(text, audioPath, voice, language);
+      const { model } = parseVoice(voice);
+      const server = await pickReadyServer(model.id);
+      if (!server) throw new Error(`No TTS server available for model "${model.id}"`);
+      const durationSecs = await generateAudio(text, audioPath, server.url, voice, language);
       track.audioPath = audioPath;
       track.audioDurationSecs = Math.round(durationSecs);
       track.audioStatus = 'complete';

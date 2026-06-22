@@ -6,9 +6,30 @@ export const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017
 export const QWENVL_API = process.env.QWENVL_API || 'https://qwenvl.kevyn.com.br';
 export const QWENVL_MODEL = process.env.QWENVL_MODEL || 'Qwen/Qwen2.5-VL-7B-Instruct-AWQ';
 export const TTS_API = process.env.TTS_API || 'http://127.0.0.1:8000';
-// Per-engine endpoints. Chatterbox is local (falls back to TTS_API); Kokoro is remote.
-export const CHATTERBOX_API = process.env.CHATTERBOX_API || TTS_API;
-export const KOKORO_API = process.env.KOKORO_API || 'https://tts.kevyn.com.br';
+
+// TTS servers run the same OpenAI-compatible API (see ../tts-2). Each loads one
+// model at a time but can hot-swap. Synthesis is load-balanced across them.
+// Configure via TTS_SERVERS: "id|Label|url" entries, comma- or newline-separated.
+export interface TtsServerConfig { id: string; label: string; url: string; }
+
+function parseServers(): TtsServerConfig[] {
+  const raw = (process.env.TTS_SERVERS || '').trim();
+  if (raw) {
+    const parsed = raw
+      .split(/[\n,]+/)
+      .map(s => s.trim())
+      .filter(Boolean)
+      .map(entry => {
+        const [id, label, url] = entry.split('|').map(x => x.trim());
+        return { id, label: label || id, url: (url || '').replace(/\/+$/, '') };
+      })
+      .filter(s => s.id && s.url);
+    if (parsed.length) return parsed;
+  }
+  return [{ id: 'macbook', label: 'MacBook', url: TTS_API.replace(/\/+$/, '') }];
+}
+
+export const TTS_SERVERS: TtsServerConfig[] = parseServers();
 export const DATA_DIR = process.env.DATA_DIR || './data';
 export const DEFAULT_VOICE = process.env.TTS_VOICE || 'chatterbox:pt-BR-FranciscaNeural';
 export const TTS_SPEED = parseFloat(process.env.TTS_SPEED || '1.0');

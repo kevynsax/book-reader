@@ -6,13 +6,16 @@
 export interface Connectives {
   chapter: string;
   verse: string;
+  verses: string;
   through: string;
   and: string;
+  page: string;
+  pages: string;
 }
 
 export const CONNECTIVES: Record<string, Connectives> = {
-  en: { chapter: 'chapter', verse: 'verse', through: 'through', and: 'and' },
-  pt: { chapter: 'capítulo', verse: 'versículo', through: 'a', and: 'e' },
+  en: { chapter: 'chapter', verse: 'verse', verses: 'verses', through: 'through', and: 'and', page: 'on the page', pages: 'on the pages' },
+  pt: { chapter: 'capítulo', verse: 'versículo', verses: 'versículos', through: 'a', and: 'e', page: 'na página', pages: 'nas páginas' },
 };
 
 interface BookDef { say: string; aliases: string[]; }

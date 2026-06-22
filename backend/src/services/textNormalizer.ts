@@ -29,6 +29,20 @@ function matchBook(
   return null;
 }
 
+function speakVerses(conn: Connectives, v1: string, v2: string, rest: string, forcePlural = false): string {
+  const plural = forcePlural || !!v2 || !!rest;
+  let spoken = `${plural ? conn.verses : conn.verse} ${v1}`;
+  if (v2) spoken += ` ${conn.through} ${v2}`;
+  if (rest) {
+    for (const item of rest.split(',')) {
+      const m = item.trim().match(/^(\d+)(?:\s*[-–—]\s*(\d+))?$/);
+      if (!m) continue;
+      spoken += ` ${conn.and} ${m[1]}` + (m[2] ? ` ${conn.through} ${m[2]}` : '');
+    }
+  }
+  return spoken;
+}
+
 export function expandReferences(text: string, books: Map<string, string>, conn: Connectives): string {
   return text.replace(REF_RE, (match, num, wordsRaw, chap, v1, v2, rest) => {
     const numArabic = num ? (ROMAN[num.toLowerCase()] ?? num) : '';
@@ -39,18 +53,34 @@ export function expandReferences(text: string, books: Map<string, string>, conn:
     const preamble = words.slice(0, words.length - hit.take);
     const pre = preamble.length ? preamble.join(' ') + ' ' : '';
 
-    let spoken = `${hit.say} ${conn.chapter} ${chap} ${conn.verse} ${v1}`;
-    if (v2) spoken += ` ${conn.through} ${v2}`;
-
-    if (rest) {
-      for (const item of rest.split(',')) {
-        const m = item.trim().match(/^(\d+)(?:\s*[-–—]\s*(\d+))?$/);
-        if (!m) continue;
-        spoken += ` ${conn.and} ${m[1]}` + (m[2] ? ` ${conn.through} ${m[2]}` : '');
-      }
-    }
-    return pre + spoken;
+    return `${pre}${hit.say} ${conn.chapter} ${chap} ${speakVerses(conn, v1, v2, rest)}`;
   });
+}
+
+const BARE_REF_RE =
+  /(?<![\p{L}\d:])(\d+):(\d+)(?:\s*[-–—]\s*(\d+))?((?:\s*,\s*\d+(?:\s*[-–—]\s*\d+)?)+)?(?![:\d])/giu;
+
+export function expandBareReferences(text: string, conn: Connectives): string {
+  return text.replace(BARE_REF_RE, (_m, chap, v1, v2, rest) =>
+    `${conn.chapter} ${chap} ${speakVerses(conn, v1, v2, rest)}`,
+  );
+}
+
+const VERSE_RE =
+  /\b(vv?)\.\s*(\d+)(?:\s*[-–—]\s*(\d+))?((?:\s*,\s*\d+(?:\s*[-–—]\s*\d+)?)+)?/gi;
+
+export function expandVerseRefs(text: string, conn: Connectives): string {
+  return text.replace(VERSE_RE, (_m, tok, v1, v2, rest) =>
+    speakVerses(conn, v1, v2, rest, tok.toLowerCase() === 'vv'),
+  );
+}
+
+const PAGE_RE = /\(?\bpp?\.\s*(\d+)(?:\s*[-–—]\s*(\d+))?\)?/gi;
+
+export function expandPages(text: string, conn: Connectives): string {
+  return text.replace(PAGE_RE, (_m, p1, p2) =>
+    p2 ? `${conn.pages} ${p1} ${conn.through} ${p2}` : `${conn.page} ${p1}`,
+  );
 }
 
 function escapeRe(s: string): string {
@@ -73,6 +103,9 @@ export async function normalizeForSpeech(text: string, language: string): Promis
   if (!text) return text;
   const lang = effectiveLang(language);
   let out = expandReferences(text, BIBLE_BOOKS[lang], CONNECTIVES[lang]);
+  out = expandVerseRefs(out, CONNECTIVES[lang]);
+  out = expandBareReferences(out, CONNECTIVES[lang]);
+  out = expandPages(out, CONNECTIVES[lang]);
   out = expandAcronyms(out, await getAcronyms(lang));
   return out;
 }

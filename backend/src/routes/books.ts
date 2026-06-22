@@ -465,14 +465,21 @@ export function booksRouter(io: SocketServer) {
     const book = await Book.findById(req.params.id);
     if (!book) return res.status(404).json({ error: 'Not found' });
 
-    const { voice } = req.body as { voice?: string };
-    if (!voice) return res.status(400).json({ error: 'voice is required' });
-    if (book.voices.includes(voice)) return res.status(409).json({ error: 'Voice already added' });
+    const body = req.body as { voice?: string; voices?: string[] };
+    const requested = Array.from(
+      new Set((body.voices ?? (body.voice ? [body.voice] : [])).map(v => v.trim()).filter(Boolean))
+    );
+    if (requested.length === 0) return res.status(400).json({ error: 'voice is required' });
 
-    book.voices.push(voice);
-    for (const chapter of book.chapters) {
-      if (!trackForVoice(chapter, voice)) {
-        chapter.tracks.push({ voice, audioStatus: 'pending' });
+    const toAdd = requested.filter(v => !book.voices.includes(v));
+    if (toAdd.length === 0) return res.status(409).json({ error: 'Voice already added' });
+
+    for (const voice of toAdd) {
+      book.voices.push(voice);
+      for (const chapter of book.chapters) {
+        if (!trackForVoice(chapter, voice)) {
+          chapter.tracks.push({ voice, audioStatus: 'pending' });
+        }
       }
     }
     await book.save();
@@ -482,10 +489,10 @@ export function booksRouter(io: SocketServer) {
       voices: book.voices,
       chapters: book.chapters,
     });
-    res.json({ message: 'Voice added. Generation started.' });
+    res.json({ message: `${toAdd.length} voice(s) added. Generation started.` });
 
-    generateVoiceAudio(book._id.toString(), io, voice).catch(err =>
-      console.error(`generateVoiceAudio ${book._id} ${voice} failed:`, err)
+    generateVoiceAudio(book._id.toString(), io, toAdd).catch(err =>
+      console.error(`generateVoiceAudio ${book._id} ${toAdd.join(', ')} failed:`, err)
     );
   });
 

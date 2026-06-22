@@ -9,7 +9,8 @@ import { seedLexicons } from './models/Lexicon.js';
 import { booksRouter, registerBookSync } from './routes/books.js';
 import { lexiconRouter } from './routes/lexicon.js';
 import { PORT, FRONTEND_ORIGIN, DATA_DIR } from './config.js';
-import { ENGINES, getEngine, isEngineUp } from './services/ttsEngines.js';
+import { MODELS, getModel } from './services/ttsEngines.js';
+import { getServers, serverStatus, fetchCatalog } from './services/ttsServers.js';
 import fs from 'fs/promises';
 
 process.on('unhandledRejection', err => console.error('Unhandled promise rejection:', err));
@@ -33,32 +34,54 @@ async function main() {
   app.use('/api/books', booksRouter(io));
   app.use('/api/lexicon', lexiconRouter());
 
-  // Selectable TTS models (engines).
-  app.get('/api/models', (_req, res) => {
-    res.json(ENGINES.map(e => ({ id: e.id, label: e.label })));
+  // Available TTS servers (MacBook + remote), with online state + active model,
+  // so the UI can show where generation will run.
+  app.get('/api/servers', async (_req, res) => {
+    res.json(await Promise.all(getServers().map(serverStatus)));
   });
 
-  // Voices for a given model. First checks the engine is reachable (its server
-  // may be an offline laptop); reports `available` so the UI can say so.
-  app.get('/api/models/:id/voices', async (req, res) => {
-    const engine = getEngine(req.params.id);
-    if (!engine) return res.status(404).json({ error: 'unknown model' });
+  // Selectable TTS models — the union of what the servers advertise via
+  // /v1/models, falling back to the static catalog if all servers are offline.
+  app.get('/api/models', async (_req, res) => {
+    const catalogs = await Promise.all(getServers().map(fetchCatalog));
+    const byId = new Map<string, { id: string; label: string }>();
+    for (const list of catalogs) {
+      for (const m of list) if (!byId.has(m.id)) byId.set(m.id, { id: m.id, label: m.label });
+    }
+    if (byId.size === 0) {
+      for (const m of MODELS) byId.set(m.id, { id: m.id, label: m.label });
+    }
+    res.json([...byId.values()]);
+  });
 
-    if (!(await isEngineUp(engine))) {
-      return res.json({ available: false, voices: [] });
+  // Voices for a given model. A model is `available` if any server is online
+  // (it can be loaded there). For cloned-voice models we read the live voice
+  // list off any reachable server; named-voice models (Kokoro) use the catalog.
+  app.get('/api/models/:id/voices', async (req, res) => {
+    const model = getModel(req.params.id);
+    if (!model) return res.status(404).json({ error: 'unknown model' });
+
+    const statuses = await Promise.all(getServers().map(serverStatus));
+    const online = statuses.filter(s => s.online);
+    if (online.length === 0) return res.json({ available: false, voices: [] });
+
+    if (model.named) {
+      return res.json({ available: true, voices: model.fallbackVoices });
     }
-    try {
-      const r = await fetch(`${engine.api}/v1/audio/voices`);
-      const data = await r.json() as unknown;
-      const list = Array.isArray(data)
-        ? data
-        : (data && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).voices))
-          ? (data as Record<string, unknown>).voices
-          : null;
-      res.json({ available: true, voices: Array.isArray(list) && list.length ? list : engine.fallbackVoices });
-    } catch {
-      res.json({ available: true, voices: engine.fallbackVoices });
+    for (const s of online) {
+      try {
+        const r = await fetch(`${s.url}/v1/audio/voices`, { signal: AbortSignal.timeout(4000) });
+        if (!r.ok) continue;
+        const data = await r.json() as unknown;
+        const list = Array.isArray(data)
+          ? data
+          : (data && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).voices))
+            ? (data as Record<string, unknown>).voices as string[]
+            : null;
+        if (Array.isArray(list) && list.length) return res.json({ available: true, voices: list });
+      } catch { /* try the next server */ }
     }
+    res.json({ available: true, voices: model.fallbackVoices });
   });
 
   app.get('/health', (_req, res) => res.json({ ok: true }));

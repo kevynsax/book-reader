@@ -32,6 +32,17 @@ export interface TtsModel {
   label: string;
 }
 
+export interface TtsServer {
+  id: string;
+  label: string;
+  url: string;
+  online: boolean;
+  state?: string;
+  activeModel?: string;
+  backend?: string;
+  models: { id: string; label: string }[];
+}
+
 export interface Chapter {
   _id: string;
   title: string;

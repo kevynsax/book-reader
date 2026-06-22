@@ -53,8 +53,9 @@ export const renameBook = createAsyncThunk(
 
 export const addVoice = createAsyncThunk(
   'books/addVoice',
-  async ({ bookId, voice }: { bookId: string; voice: string }) => {
-    await api.post(`/api/books/${bookId}/voices`, { voice });
+  async ({ bookId, voice }: { bookId: string; voice: string | string[] }) => {
+    const voices = Array.isArray(voice) ? voice : [voice];
+    await api.post(`/api/books/${bookId}/voices`, { voices });
   }
 );
 

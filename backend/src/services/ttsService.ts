@@ -4,7 +4,8 @@ import { DEFAULT_VOICE, TTS_SPEED, DEFAULT_LANGUAGE } from '../config.js';
 import { normalizeMp3, probeDurationSecs, probeMp3Buffer } from './audioProbe.js';
 import { normalizeForSpeech } from './textNormalizer.js';
 import { splitIntoSentences } from '../lib/sentences.js';
-import { parseVoice, TtsEngine } from './ttsEngines.js';
+import { parseVoice, TtsModel } from './ttsEngines.js';
+import { pickReadyServer } from './ttsServers.js';
 
 export interface TimelineEntry {
   text: string;
@@ -18,29 +19,32 @@ export function timelinePathFor(audioPath: string): string {
 }
 
 export async function synthesizeSample(text: string, voice: string): Promise<Buffer> {
-  const { engine, voice: bareVoice } = parseVoice(voice);
+  const { model, voice: bareVoice } = parseVoice(voice);
+  const server = await pickReadyServer(model.id);
+  if (!server) throw new Error(`No TTS server available for model "${model.id}"`);
   const speakable = await normalizeForSpeech(text.slice(0, 1500), DEFAULT_LANGUAGE);
-  const { buffer } = await synthesizeChunk(speakable, engine, bareVoice, TTS_SPEED, DEFAULT_LANGUAGE);
+  const { buffer } = await synthesizeChunk(speakable, server.url, model, bareVoice, TTS_SPEED, DEFAULT_LANGUAGE);
   return buffer;
 }
 
 async function synthesizeChunk(
   text: string,
-  engine: TtsEngine,
+  serverUrl: string,
+  model: TtsModel,
   voice: string,
   speed: number,
   language: string,
 ): Promise<{ buffer: Buffer; durationSecs: number }> {
   const body: Record<string, unknown> = {
-    model: engine.model,
+    model: model.id,
     input: text,
     voice,
     response_format: 'mp3',
     speed,
   };
-  if (engine.usesLanguage) body.language = language;
+  if (model.usesLanguage) body.language = language;
 
-  const res = await fetch(`${engine.api}/v1/audio/speech`, {
+  const res = await fetch(`${serverUrl}/v1/audio/speech`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -63,11 +67,12 @@ async function synthesizeChunk(
 export async function generateAudio(
   text: string,
   outputPath: string,
+  serverUrl: string,
   voice: string = DEFAULT_VOICE,
   language: string = DEFAULT_LANGUAGE,
   speed: number = TTS_SPEED
 ): Promise<number> {
-  const { engine, voice: bareVoice } = parseVoice(voice);
+  const { model, voice: bareVoice } = parseVoice(voice);
   const speakable = await normalizeForSpeech(text, language);
   const sentences = splitIntoSentences(speakable);
   if (sentences.length === 0) throw new Error('No speakable text for chapter');
@@ -80,7 +85,7 @@ export async function generateAudio(
     const timeline: TimelineEntry[] = [];
     let cursor = 0;
     for (const sentence of sentences) {
-      const { buffer, durationSecs } = await synthesizeChunk(sentence, engine, bareVoice, speed, language);
+      const { buffer, durationSecs } = await synthesizeChunk(sentence, serverUrl, model, bareVoice, speed, language);
       buffers.push(buffer);
       timeline.push({ text: sentence, start: cursor, end: cursor + durationSecs });
       cursor += durationSecs;

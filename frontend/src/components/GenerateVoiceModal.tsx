@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { friendlyVoice } from '../lib/format';
 import { TtsModel } from '../types';
+import ServerStatus from './ServerStatus';
 
 interface Props {
   bookId: string;
   initialVoice?: string;
   exclude?: string[];
-  onConfirm: (voice: string) => void;
+  onConfirm: (voices: string[]) => void;
   onClose: () => void;
 }
 
@@ -16,7 +17,8 @@ const VOICE_LANGS = [
 ];
 
 const FALLBACK_MODELS: TtsModel[] = [
-  { id: 'chatterbox', label: 'Chatterbox (local)' },
+  { id: 'chatterbox', label: 'Chatterbox' },
+  { id: 'openaudio', label: 'OpenAudio (Fish)' },
   { id: 'kokoro', label: 'Kokoro' },
 ];
 
@@ -41,7 +43,8 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
   const [allVoices, setAllVoices] = useState<string[]>([]);
   const [voicesState, setVoicesState] = useState<'loading' | 'ready' | 'offline'>('loading');
   const [lang, setLang]       = useState('pt');
-  const [selected, setSelected]   = useState<string>(''); // composite "engine:voice"
+  const [selected, setSelected]   = useState<Set<string>>(new Set()); // composites "engine:voice"
+  const [preview, setPreview]     = useState<string>(''); // composite currently sampled
   const [sampleState, setSampleState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [playing, setPlaying]     = useState(false);
   const [progress, setProgress]   = useState(0);
@@ -60,7 +63,7 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
   // Load voices whenever the selected model changes.
   useEffect(() => {
     let cancelled = false;
-    setAllVoices([]); setSelected(''); setSampleState('idle'); setVoicesState('loading');
+    setAllVoices([]); setPreview(''); setSampleState('idle'); setVoicesState('loading');
     fetch(`/api/models/${model}/voices`)
       .then(r => (r.ok ? r.json() : { available: false, voices: [] }))
       .then((data: { available?: boolean; voices?: string[] }) => {
@@ -86,9 +89,19 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
     v => langOfVoice(model, v) === lang && !exclude?.includes(`${model}:${v}`),
   );
 
-  const selectVoice = async (voice: string) => {
+  const toggleVoice = (voice: string) => {
     const composite = `${model}:${voice}`;
-    setSelected(composite);
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(composite)) next.delete(composite);
+      else next.add(composite);
+      return next;
+    });
+    loadSample(composite);
+  };
+
+  const loadSample = async (composite: string) => {
+    setPreview(composite);
     setSampleState('loading');
     setPlaying(false);
     setProgress(0);
@@ -123,13 +136,15 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
       <div className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-md shadow-2xl flex flex-col max-h-[85vh]">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800 shrink-0">
           <div>
-            <h2 className="font-semibold text-gray-100">Choose a voice</h2>
-            <p className="text-xs text-gray-500 mt-0.5">Pick a model, then a reader. Preview before generating.</p>
+            <h2 className="font-semibold text-gray-100">Choose voices</h2>
+            <p className="text-xs text-gray-500 mt-0.5">Pick one or more readers across models. Tap to select and preview.</p>
           </div>
           <button className="text-gray-500 hover:text-gray-300 text-xl leading-none" onClick={onClose}>×</button>
         </div>
 
         <div className="p-5 space-y-4 overflow-y-auto">
+          <ServerStatus />
+
           <div>
             <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">Model</p>
             <div className="flex flex-wrap gap-2">
@@ -171,20 +186,50 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
             <div className="grid grid-cols-3 gap-2">
               {filtered.map(v => {
                 const composite = `${model}:${v}`;
+                const isSelected = selected.has(composite);
+                const isPreview = composite === preview;
                 return (
                   <button
                     key={v}
-                    className={`px-3 py-2 rounded-lg text-sm transition-colors ${
-                      composite === selected
+                    className={`relative px-3 py-2 rounded-lg text-sm transition-colors ${
+                      isSelected
                         ? 'bg-amber-600/20 text-amber-400 ring-1 ring-amber-500'
-                        : 'bg-gray-800 text-gray-200 hover:bg-gray-700'
+                        : isPreview
+                          ? 'bg-gray-800 text-gray-200 ring-1 ring-gray-500'
+                          : 'bg-gray-800 text-gray-200 hover:bg-gray-700'
                     }`}
-                    onClick={() => selectVoice(v)}
+                    onClick={() => toggleVoice(v)}
                   >
+                    {isSelected && (
+                      <span className="absolute top-1 right-1 text-amber-400 text-xs leading-none">✓</span>
+                    )}
                     {friendlyVoice(v)}
                   </button>
                 );
               })}
+            </div>
+          )}
+
+          {selected.size > 0 && (
+            <div>
+              <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">Selected ({selected.size})</p>
+              <div className="flex flex-wrap gap-2">
+                {[...selected].map(composite => (
+                  <span
+                    key={composite}
+                    className="inline-flex items-center gap-1.5 rounded-full pl-3 pr-2 py-1 text-xs border border-amber-500/60 bg-amber-600/10 text-amber-300"
+                  >
+                    {friendlyVoice(composite.slice(composite.indexOf(':') + 1))}
+                    <button
+                      className="text-amber-400/60 hover:text-red-400 leading-none text-sm"
+                      onClick={() => setSelected(prev => { const n = new Set(prev); n.delete(composite); return n; })}
+                      title="Remove"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -204,7 +249,7 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
           <button
             className="btn-secondary relative overflow-hidden flex items-center gap-2 disabled:opacity-40"
             onClick={togglePlay}
-            disabled={!selected || sampleState === 'loading' || sampleState === 'error'}
+            disabled={!preview || sampleState === 'loading' || sampleState === 'error'}
             title="Play sample"
           >
             <span
@@ -228,10 +273,10 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
 
           <button
             className="btn-primary flex-1 justify-center disabled:opacity-40"
-            onClick={() => selected && onConfirm(selected)}
-            disabled={!selected}
+            onClick={() => selected.size && onConfirm([...selected])}
+            disabled={!selected.size}
           >
-            Generate
+            {selected.size > 1 ? `Generate ${selected.size} voices` : 'Generate'}
           </button>
         </div>
       </div>

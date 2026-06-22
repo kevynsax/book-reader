@@ -1,17 +1,18 @@
-import { CHATTERBOX_API, KOKORO_API } from '../config.js';
+// A selectable TTS model. All servers speak the same OpenAI audio shape and
+// expose this catalog via /v1/models; here we keep the per-model metadata the
+// app needs (language handling + a fallback voice list when a server can't be
+// reached). The composite voice id stored on a book is "model:voice".
 
-// A selectable TTS "model"/engine. Both speak the OpenAI audio shape.
-export interface TtsEngine {
-  id: string;
+export interface TtsModel {
+  id: string;            // catalog key sent as `model` (chatterbox, kokoro, openaudio)
   label: string;
-  api: string;          // base URL
-  model: string;        // value sent as `model` in the request body
   usesLanguage: boolean; // forward the per-chapter language as lang_code?
-  fallbackVoices: string[]; // used if the engine's /v1/audio/voices is unreachable
+  named: boolean;        // built-in named voices (Kokoro) vs cloned clips
+  fallbackVoices: string[]; // used if a server's /v1/audio/voices is unreachable
 }
 
-// Curated Chatterbox clone voices (the mp3 clips in tts-2/voices/).
-const CHATTERBOX_VOICES = [
+// Curated Chatterbox/Fish clone voices (the mp3 clips in tts-2/voices/).
+const CLONE_VOICES = [
   'pt-BR-FranciscaNeural', 'pt-BR-AntonioNeural', 'pt-BR-ThalitaMultilingualNeural',
   'pt-PT-RaquelNeural', 'pt-PT-DuarteNeural',
   'en-US-AvaNeural', 'en-US-AndrewNeural', 'en-US-EmmaNeural', 'en-US-BrianNeural',
@@ -26,46 +27,33 @@ const KOKORO_VOICES = [
   'pf_dora', 'pm_alex', 'pm_santa',
 ];
 
-// Order matters: the first entry is the default engine.
-export const ENGINES: TtsEngine[] = [
-  { id: 'chatterbox', label: 'Chatterbox (local)', api: CHATTERBOX_API, model: 'chatterbox', usesLanguage: true, fallbackVoices: CHATTERBOX_VOICES },
-  { id: 'kokoro', label: 'Kokoro', api: KOKORO_API, model: 'kokoro', usesLanguage: false, fallbackVoices: KOKORO_VOICES },
+// Order matters: the first entry is the default model.
+export const MODELS: TtsModel[] = [
+  { id: 'chatterbox', label: 'Chatterbox', usesLanguage: true, named: false, fallbackVoices: CLONE_VOICES },
+  { id: 'openaudio', label: 'OpenAudio (Fish)', usesLanguage: true, named: false, fallbackVoices: CLONE_VOICES },
+  { id: 'kokoro', label: 'Kokoro', usesLanguage: false, named: true, fallbackVoices: KOKORO_VOICES },
 ];
 
-export function getEngine(id: string): TtsEngine | undefined {
-  return ENGINES.find(e => e.id === id);
+export function getModel(id: string): TtsModel | undefined {
+  return MODELS.find(m => m.id === id);
 }
 
-// Probe the engine's Swagger/OpenAPI endpoint to see if it's reachable. The
-// Chatterbox server runs on a laptop that's frequently offline, so callers use
-// this to surface availability in the UI.
-export async function isEngineUp(engine: TtsEngine): Promise<boolean> {
-  try {
-    const res = await fetch(`${engine.api}/openapi.json`, { signal: AbortSignal.timeout(4000) });
-    return res.ok;
-  } catch {
-    return false;
-  }
+const DEFAULT_MODEL = MODELS[0];
+
+// Infer the model for a legacy, unprefixed voice id.
+function inferModel(voice: string): TtsModel {
+  if (voice === 'default' || /^[a-z]{2}-[A-Z]{2}-/.test(voice)) return getModel('chatterbox')!;
+  if (/^[a-z]{2}_/.test(voice)) return getModel('kokoro')!;
+  return DEFAULT_MODEL;
 }
 
-const DEFAULT_ENGINE = ENGINES[0];
-
-// Infer the engine for a legacy, unprefixed voice id.
-function inferEngine(voice: string): TtsEngine {
-  // Edge-style "xx-YY-Name" or the Chatterbox built-in "default".
-  if (voice === 'default' || /^[a-z]{2}-[A-Z]{2}-/.test(voice)) return getEngine('chatterbox')!;
-  // Kokoro names look like "pf_dora", "af_heart".
-  if (/^[a-z]{2}_/.test(voice)) return getEngine('kokoro')!;
-  return DEFAULT_ENGINE;
-}
-
-// Split a composite "engine:voice" id into its engine + bare voice. Legacy
+// Split a composite "model:voice" id into its model + bare voice. Legacy
 // unprefixed ids are routed by inference (no DB migration needed).
-export function parseVoice(composite: string): { engine: TtsEngine; voice: string } {
+export function parseVoice(composite: string): { model: TtsModel; voice: string } {
   const sep = composite.indexOf(':');
   if (sep > 0) {
-    const engine = getEngine(composite.slice(0, sep));
-    if (engine) return { engine, voice: composite.slice(sep + 1) };
+    const model = getModel(composite.slice(0, sep));
+    if (model) return { model, voice: composite.slice(sep + 1) };
   }
-  return { engine: inferEngine(composite), voice: composite };
+  return { model: inferModel(composite), voice: composite };
 }

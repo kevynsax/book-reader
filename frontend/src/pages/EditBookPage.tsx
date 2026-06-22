@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { AppDispatch, RootState } from '../store';
-import { confirmChapters, deleteBook, renameBook, generateBook } from '../store/booksSlice';
+import { confirmChapters, deleteBook, renameBook, generateBook, addVoice } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus } from '../types';
 import { chapterStatus, bookVoices, trackFor, friendlyVoice } from '../lib/format';
@@ -309,14 +309,17 @@ export default function EditBookPage() {
     await dispatch(confirmChapters({ bookId: id!, chapters, voice: voiceRef.current })).unwrap();
   };
 
-  const runGenerate = async (voice?: string) => {
+  const runGenerate = async (voices?: string[]) => {
     setShowVoiceDialog(false);
     setGenerating(true);
     generatedRef.current = true;
     try {
-      if (voice) {
-        voiceRef.current = voice;
+      if (voices && voices.length) {
+        voiceRef.current = voices[0];
         await chapterReviewRef.current?.submit();
+        if (voices.length > 1) {
+          await dispatch(addVoice({ bookId: id!, voice: voices.slice(1) })).unwrap();
+        }
       } else {
         await chapterReviewRef.current?.save();
         await dispatch(generateBook(id!)).unwrap();
