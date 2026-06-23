@@ -444,17 +444,6 @@ export default function EditBookPage() {
               />
             </div>
 
-            {hasStaleAudio && !isGenerating && (
-              <div className="flex items-start gap-3 rounded-lg border border-amber-700 bg-amber-950/30 px-4 py-3">
-                <svg className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                </svg>
-                <p className="text-sm text-amber-300">
-                  Text or chapters have been modified — the current audio no longer reflects the latest content. Click <strong>Generate</strong> to rebuild.
-                </p>
-              </div>
-            )}
           </>
         )}
 
@@ -476,13 +465,26 @@ export default function EditBookPage() {
         )}
 
         {hasChapters && showGenerate && (
-          <button
-            className="btn-primary w-full justify-center"
-            disabled={generating}
-            onClick={() => book.status === 'complete' || book.status === 'error' ? runGenerate() : setShowVoiceDialog(true)}
-          >
-            {generating ? 'Generating…' : book.status === 'error' ? 'Retry' : 'Generate'}
-          </button>
+          <div className="space-y-3">
+            {hasStaleAudio && !isGenerating && (
+              <div className="flex items-start gap-3 rounded-lg border border-amber-700 bg-amber-950/30 px-4 py-3">
+                <svg className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                </svg>
+                <p className="text-sm text-amber-300">
+                  Text or chapters have been modified — the current audio no longer reflects the latest content. Click <strong>Generate</strong> to rebuild.
+                </p>
+              </div>
+            )}
+            <button
+              className="btn-primary w-full justify-center"
+              disabled={generating}
+              onClick={() => book.status === 'complete' || book.status === 'error' ? runGenerate() : setShowVoiceDialog(true)}
+            >
+              {generating ? 'Generating…' : book.status === 'error' ? 'Retry' : 'Generate'}
+            </button>
+          </div>
         )}
 
       </main>

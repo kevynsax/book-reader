@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import { useDispatch } from 'react-redux';
 import { AppDispatch } from '../store';
@@ -78,6 +78,12 @@ interface PreviewNav {
   onPageChange: (page: number) => void;
 }
 
+interface LineOccurrence {
+  pageIdx: number;
+  page: number;
+  lineIdx: number;
+}
+
 interface PageViewProps {
   bookId: string;
   page: OcrPage;
@@ -85,12 +91,170 @@ interface PageViewProps {
   /** When set, the image is shown via the zoom/pan PagePreview instead of a plain <img>. */
   preview?: PreviewNav;
   /** When set, the text panel becomes an auto-saving textarea. */
-  edit?: { draft: string; onChange: (text: string) => void; onBlur: () => void };
+  edit?: {
+    draft: string;
+    onChange: (text: string) => void;
+    onBlur: () => void;
+    onUndo: () => void;
+    warnOver: number;
+    activeLine: number | null;
+  };
+}
+
+// Find the first matching character between the target min/max positions.
+function scanFor(line: string, char: string, from: number, to: number): number {
+  const start = Math.max(0, from);
+  const end = Math.min(line.length - 1, to);
+  for (let i = start; i <= end; i++) if (line[i] === char) return i;
+  return -1;
+}
+
+// If no target-window break exists, use the nearest earlier preferred break.
+function scanBefore(line: string, char: string, before: number): number {
+  const start = Math.min(line.length - 1, before - 1);
+  for (let i = start; i >= 0; i--) if (line[i] === char) return i;
+  return -1;
+}
+
+function scanNearest(line: string, char: string, target: number): number {
+  let best = -1;
+  let bestDistance = Infinity;
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] !== char) continue;
+    const distance = Math.abs(i - target);
+    if (distance < bestDistance) {
+      best = i;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+function splitAt(line: string, at: number): [string, string] | null {
+  const left = line.slice(0, at + 1).replace(/\s+$/, '');
+  const right = line.slice(at + 1).replace(/^\s+/, '');
+  return left === '' || right === '' ? null : [left, right];
+}
+
+function isSmallLargeSplit(left: string, right: string, minLen: number, maxLen: number): boolean {
+  return (left.length < minLen && right.length > maxLen) || (right.length < minLen && left.length > maxLen);
+}
+
+function middleSplit(line: string): [string, string] | null {
+  const target = Math.floor(line.length / 2);
+  let at = scanNearest(line, ';', target);
+  if (at === -1) at = scanNearest(line, ':', target);
+  if (at === -1) at = scanNearest(line, ',', target);
+  return at === -1 ? null : splitAt(line, at);
+}
+
+// Break the first line longer than `maxLen`, preferring ; then : then ,
+// between minLen and maxLen, then falling back before minLen. Returns null if
+// nothing was broken.
+function breakLineAt(lines: string[], lineIdx: number, minLen: number, maxLen: number): string[] | null {
+  const line = lines[lineIdx];
+  if (!line || line.length <= maxLen) return null;
+  let at = scanFor(line, ';', minLen, maxLen);
+  if (at === -1) at = scanFor(line, ':', minLen, maxLen);
+  if (at === -1) at = scanFor(line, ',', minLen, maxLen);
+  if (at === -1) at = scanBefore(line, ';', minLen);
+  if (at === -1) at = scanBefore(line, ':', minLen);
+  if (at === -1) at = scanBefore(line, ',', minLen);
+  if (at === -1) return null;
+  let split = splitAt(line, at);
+  if (!split) return null;
+  if (isSmallLargeSplit(split[0], split[1], minLen, maxLen)) split = middleSplit(line) ?? split;
+  const [left, right] = split;
+  const next = lines.slice();
+  next.splice(lineIdx, 1, left, right);
+  return next;
+}
+
+function breakLongLine(text: string, minLen: number, maxLen: number, preferredLine?: number): string | null {
+  const lines = text.split('\n');
+  if (preferredLine !== undefined) {
+    const preferred = breakLineAt(lines, preferredLine, minLen, maxLen);
+    if (preferred) return preferred.join('\n');
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const next = breakLineAt(lines, i, minLen, maxLen);
+    if (next) return next.join('\n');
+  }
+  return null;
+}
+
+// An auto-saving editor whose lines longer than `warnOver` get a light warning
+// background. A plain <textarea> can't style individual lines, so a synced
+// highlight backdrop sits behind a transparent-background textarea.
+function HighlightEditor(
+  { draft, onChange, onBlur, onUndo, warnOver, activeLine }: NonNullable<PageViewProps['edit']>,
+) {
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const lines = draft.split('\n');
+  const shared = 'p-0 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words';
+
+  useEffect(() => {
+    if (activeLine === null) return;
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const lineHeight = parseFloat(window.getComputedStyle(textarea).lineHeight) || 18;
+    textarea.scrollTop = Math.max(0, activeLine * lineHeight - textarea.clientHeight / 3);
+    if (backdropRef.current) backdropRef.current.scrollTop = textarea.scrollTop;
+  }, [activeLine, draft]);
+
+  return (
+    <div className="relative flex-1 min-h-[60vh]">
+      <div
+        ref={backdropRef}
+        aria-hidden
+        className={`absolute inset-0 overflow-hidden pointer-events-none text-transparent ${shared}`}
+      >
+        {lines.map((line, i) => (
+          <div
+            key={i}
+            className={
+              i === activeLine
+                ? 'bg-amber-500/35 outline outline-1 outline-amber-400/50 rounded-sm'
+                : line.length > warnOver ? 'bg-amber-500/15 rounded-sm' : ''
+            }
+          >
+            {line.length ? line : ' '}
+          </div>
+        ))}
+      </div>
+      <textarea
+        ref={textareaRef}
+        autoFocus
+        spellCheck={false}
+        className={`absolute inset-0 w-full h-full overflow-auto bg-transparent text-gray-200 resize-none outline-none ${shared}`}
+        value={draft}
+        onChange={e => onChange(e.target.value)}
+        onKeyDown={e => {
+          if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+            e.preventDefault();
+            onUndo();
+          }
+        }}
+        onBlur={onBlur}
+        onScroll={e => {
+          const el = backdropRef.current;
+          if (el) { el.scrollTop = e.currentTarget.scrollTop; el.scrollLeft = e.currentTarget.scrollLeft; }
+        }}
+      />
+    </div>
+  );
 }
 
 function PageView({ bookId, page, large, preview, edit }: PageViewProps) {
   return (
-    <div className={`grid grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)] gap-4 ${large ? 'h-full min-h-0 grid-rows-1' : ''}`}>
+    <div
+      className={`grid gap-4 ${
+        large
+          ? 'h-full min-h-0 grid-cols-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)] lg:grid-rows-1'
+          : 'grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)]'
+      }`}
+    >
       {preview ? (
         <div className="min-h-0">
           <PagePreview
@@ -118,13 +282,7 @@ function PageView({ bookId, page, large, preview, edit }: PageViewProps) {
             <p className="text-[11px] text-gray-500 mb-2 shrink-0">
               One sentence per line · blank line separates paragraphs
             </p>
-            <textarea
-              autoFocus
-              className="w-full flex-1 min-h-[60vh] bg-transparent font-mono text-xs leading-relaxed text-gray-200 resize-none outline-none"
-              value={edit.draft}
-              onChange={e => edit.onChange(e.target.value)}
-              onBlur={edit.onBlur}
-            />
+            <HighlightEditor {...edit} />
           </div>
         ) : page.status === 'processing' ? (
           <span className="text-xs text-amber-400 animate-pulse">Reading page…</span>
@@ -149,6 +307,20 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
   const [userMoved,  setUserMoved]  = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [draft,      setDraft]      = useState('');
+  const [minLen,     setMinLen]     = useState(120);
+  const [maxLen,     setMaxLen]     = useState(180);
+  const [showSaved,  setShowSaved]  = useState(false);
+  const [activeReview, setActiveReview] = useState<LineOccurrence | null>(null);
+  const savedTimer = useRef<ReturnType<typeof setTimeout>>();
+  const undoStack = useRef<string[]>([]);
+
+  const flashSaved = useCallback(() => {
+    setShowSaved(true);
+    clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setShowSaved(false), 1500);
+  }, []);
+
+  useEffect(() => () => clearTimeout(savedTimer.current), []);
 
   useEffect(() => {
     if (!userMoved && processed.length > 0) setIdx(processed.length - 1);
@@ -158,7 +330,12 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     if (!fullscreen) return;
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setFullscreen(false); };
     window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', handler);
+      document.body.style.overflow = prevOverflow;
+    };
   }, [fullscreen]);
 
   // Jump to the processed page whose number is closest to the requested one.
@@ -180,8 +357,31 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
   const safeIdx = Math.min(idx, Math.max(0, processed.length - 1));
   const page    = processed[safeIdx];
 
+  const reviewOccurrences = useMemo<LineOccurrence[]>(() => {
+    const items: LineOccurrence[] = [];
+    processed.forEach((p, pageIdx) => {
+      const text = pageIdx === safeIdx ? draft : (p.text ?? '');
+      text.split('\n').forEach((line, lineIdx) => {
+        if (line.length > maxLen) items.push({ pageIdx, page: p.page, lineIdx });
+      });
+    });
+    return items;
+  }, [processed, safeIdx, draft, maxLen]);
+
+  const activeReviewIndex = activeReview
+    ? reviewOccurrences.findIndex(o => o.page === activeReview.page && o.lineIdx === activeReview.lineIdx)
+    : -1;
+
+  useEffect(() => {
+    if (!activeReview) return;
+    if (activeReviewIndex === -1) setActiveReview(null);
+  }, [activeReview, activeReviewIndex]);
+
   // Keep the editor draft in sync with the page being shown.
-  useEffect(() => { setDraft(page?.text ?? ''); }, [page?.page, page?.text, fullscreen]);
+  useEffect(() => {
+    setDraft(page?.text ?? '');
+    undoStack.current = [];
+  }, [page?.page, fullscreen]);
 
   if (processed.length === 0) return null;
 
@@ -193,7 +393,61 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
   const saveDraft = () => {
     if (draft !== (page.text ?? '')) {
       dispatch(updatePageText({ bookId, page: page.page, text: draft }));
+      flashSaved();
     }
+  };
+
+  const changeDraft = (next: string) => {
+    setDraft(prev => {
+      if (next === prev) return prev;
+      undoStack.current.push(prev);
+      if (undoStack.current.length > 100) undoStack.current.shift();
+      return next;
+    });
+  };
+
+  const undoDraft = () => {
+    const prev = undoStack.current.pop();
+    if (prev === undefined) return;
+    setDraft(prev);
+  };
+
+  const goToReview = (occurrence: LineOccurrence) => {
+    saveDraft();
+    const target = processed[occurrence.pageIdx];
+    setDraft(target?.text ?? '');
+    undoStack.current = [];
+    setUserMoved(true);
+    setIdx(occurrence.pageIdx);
+    setActiveReview(occurrence);
+  };
+
+  const nextReview = () => {
+    if (reviewOccurrences.length === 0) return;
+    const currentLine = activeReview?.page === page.page ? activeReview.lineIdx : -1;
+    const nextOccurrence = reviewOccurrences.find(o =>
+      o.pageIdx > safeIdx || (o.pageIdx === safeIdx && o.lineIdx > currentLine),
+    ) ?? reviewOccurrences[0];
+    goToReview(nextOccurrence);
+  };
+
+  const prevReview = () => {
+    if (reviewOccurrences.length === 0) return;
+    const currentLine = activeReview?.page === page.page ? activeReview.lineIdx : Number.MAX_SAFE_INTEGER;
+    const previous = reviewOccurrences.filter(o =>
+      o.pageIdx < safeIdx || (o.pageIdx === safeIdx && o.lineIdx < currentLine),
+    );
+    goToReview(previous[previous.length - 1] ?? reviewOccurrences[reviewOccurrences.length - 1]);
+  };
+
+  const breakLine = () => {
+    const reviewLine = activeReview?.page === page.page ? activeReview.lineIdx : undefined;
+    const result = breakLongLine(draft, minLen, maxLen, reviewLine);
+    if (result === null) return;
+    changeDraft(result);
+    dispatch(updatePageText({ bookId, page: page.page, text: result }));
+    flashSaved();
+    setActiveReview(null);
   };
 
   const Nav = () => (
@@ -251,8 +505,8 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
         <PageView bookId={bookId} page={page} />
       </div>
 
-      {fullscreen && (
-        <div className="fixed inset-0 z-50 bg-gray-950/95 backdrop-blur flex flex-col">
+      {fullscreen && createPortal(
+        <div className="fixed inset-0 z-50 h-[100dvh] w-screen bg-gray-950 flex flex-col">
           <div className="relative flex items-center gap-4 px-6 py-4 border-b border-gray-800 shrink-0">
             <div className="flex items-center gap-3 flex-1 min-w-0">
               <h2 className="font-semibold text-gray-100">Reading pages</h2>
@@ -260,12 +514,77 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                 {done} of {total} pages
                 {current && <span className="text-amber-400 ml-1">· reading page {current.page}…</span>}
               </p>
+              {showSaved && (
+                <span className="flex items-center gap-1 text-xs text-emerald-400 shrink-0">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Saved
+                </span>
+              )}
             </div>
 
             {/* Page label centered in the header */}
             <span className="absolute left-1/2 -translate-x-1/2 font-mono text-sm text-gray-200">
               P. {page.page}
             </span>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-1 rounded border border-gray-800 bg-gray-900 px-1.5 py-1">
+                <span className="px-1 text-[11px] text-gray-400 tabular-nums">
+                  {reviewOccurrences.length === 0
+                    ? '0 issues'
+                    : `${activeReviewIndex >= 0 ? activeReviewIndex + 1 : '-'} / ${reviewOccurrences.length}`}
+                </span>
+                <button
+                  className="w-6 h-6 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
+                  onClick={prevReview}
+                  disabled={reviewOccurrences.length === 0}
+                  title="Previous long line"
+                  aria-label="Previous long line"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 15l-6-6-6 6" />
+                  </svg>
+                </button>
+                <button
+                  className="w-6 h-6 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
+                  onClick={nextReview}
+                  disabled={reviewOccurrences.length === 0}
+                  title="Next long line"
+                  aria-label="Next long line"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 9l6 6 6-6" />
+                  </svg>
+                </button>
+              </div>
+              <input
+                type="number"
+                value={minLen}
+                onChange={e => setMinLen(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                className="w-14 h-7 px-1 text-center text-xs bg-gray-800 border border-gray-700 rounded text-gray-200 outline-none focus:border-gray-500"
+                title="Min line length — don't break before this many characters"
+              />
+              <span className="text-gray-600 text-xs">–</span>
+              <input
+                type="number"
+                value={maxLen}
+                onChange={e => setMaxLen(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                className="w-14 h-7 px-1 text-center text-xs bg-gray-800 border border-gray-700 rounded text-gray-200 outline-none focus:border-gray-500"
+                title="Max line length — longer lines are flagged and scanned for a break point"
+              />
+              <button
+                className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                onClick={breakLine}
+                title="Break the first long line at the next ; : or ,"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z" />
+                </svg>
+              </button>
+            </div>
 
             <button
               className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors shrink-0"
@@ -278,16 +597,24 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
             </button>
           </div>
 
-          <div className="flex-1 min-h-0 px-6 py-4">
+          <div className="flex-1 min-h-0 p-3 sm:p-4">
             <PageView
               bookId={bookId}
               page={page}
               large
               preview={{ totalPages: maxPage, minPage, onPageChange: (p) => { saveDraft(); goToPage(p); } }}
-              edit={{ draft, onChange: setDraft, onBlur: saveDraft }}
+              edit={{
+                draft,
+                onChange: changeDraft,
+                onBlur: saveDraft,
+                onUndo: undoDraft,
+                warnOver: maxLen,
+                activeLine: activeReview?.page === page.page ? activeReview.lineIdx : null,
+              }}
             />
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
