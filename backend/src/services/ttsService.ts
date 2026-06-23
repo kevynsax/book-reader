@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { TTS_SPEED, DEFAULT_LANGUAGE, TTS_VOLUME_GAIN, TITLE_MAX_WORDS, TITLE_SILENCE_SECS, TITLE_VOLUME_GAIN } from '../config.js';
-import { normalizeMp3, probeDurationSecs, probeMp3Buffer, probeAudioFormat, generateSilence, applyVolume } from './audioProbe.js';
+import { concatAudio, probeDurationSecs, decodedDurationSecs, probeMp3Buffer, probeAudioFormat, generateSilence, applyVolume } from './audioProbe.js';
 import { normalizeForSpeech } from './textNormalizer.js';
 import { isTitle } from '../lib/sentences.js';
 import { parseVoice, TtsModel } from './ttsEngines.js';
@@ -96,9 +96,28 @@ export async function synthesizeSegment(
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
+// A concat-demuxer manifest entry. Paths are absolute and single-quotes escaped
+// so ffmpeg resolves them regardless of cwd.
+function concatLine(file: string): string {
+  return `file '${path.resolve(file).replace(/'/g, `'\\''`)}'`;
+}
+
+// Resolve promises with at most `limit` in flight, preserving input order.
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (let i = next++; i < items.length; i = next++) out[i] = await fn(items[i], i);
+  }));
+  return out;
+}
+
 // Concatenate per-sentence mp3 segments into the final chapter mp3 and write the
-// read-along timeline. Segment durations are summed then scaled to the probed
-// file duration so highlight anchoring survives the concat/re-encode.
+// read-along timeline. The segments are joined in the PCM domain (concat demuxer
+// + re-encode) so the join is sample-accurate. Timeline offsets are summed from
+// each file's *real* decoded duration — not the stored segment durationSecs, which
+// some TTS servers report as the pre-encode length (the mp3 carries extra encoder
+// delay/padding) — so highlights stay locked to the audio across a long chapter.
 export async function assembleChapter(
   segments: { audioPath: string; durationSecs: number; text: string; display?: string }[],
   outputPath: string,
@@ -106,48 +125,55 @@ export async function assembleChapter(
   if (segments.length === 0) throw new Error('No segments to assemble');
 
   const tmpDir = path.dirname(outputPath);
-  const rawPath = path.join(tmpDir, `_raw_${path.basename(outputPath)}.mp3`);
+  const base = path.basename(outputPath);
+  const listPath = path.join(tmpDir, `_list_${base}.txt`);
+  const silencePath = path.join(tmpDir, `_silence_${base}.mp3`);
+  const boostedPaths: string[] = [];
 
   try {
-    let silence: Buffer | null = null;
+    let silenceFile: string | null = null;
+    let silenceDur = 0;
     if (segments.some(s => isTitle(s.text, TITLE_MAX_WORDS))) {
       const { sampleRate, channels } = await probeAudioFormat(segments[0].audioPath);
-      silence = await generateSilence(TITLE_SILENCE_SECS, sampleRate, channels);
+      await fs.writeFile(silencePath, await generateSilence(TITLE_SILENCE_SECS, sampleRate, channels));
+      silenceFile = silencePath;
+      silenceDur = await decodedDurationSecs(silencePath);
     }
 
-    const buffers: Buffer[] = [];
+    // The actual file fed into the concat for each sentence — the original
+    // segment, or a temp gain-boosted copy for titles (the demuxer can't apply
+    // per-file gain, so it's pre-baked here).
+    const files = await mapLimit(segments, 8, async (seg, i) => {
+      if (!(silenceFile && isTitle(seg.text, TITLE_MAX_WORDS))) return seg.audioPath;
+      const file = path.join(tmpDir, `_title_${i}_${base}.mp3`);
+      await fs.writeFile(file, await applyVolume(await fs.readFile(seg.audioPath), TITLE_VOLUME_GAIN));
+      boostedPaths.push(file);
+      return file;
+    });
+    const durations = await mapLimit(files, 16, f => decodedDurationSecs(f));
+
+    const lines: string[] = [];
     const timeline: TimelineEntry[] = [];
     let cursor = 0;
-    for (const seg of segments) {
-      const title = silence && isTitle(seg.text, TITLE_MAX_WORDS);
-      if (title) {
-        buffers.push(silence!);
-        cursor += TITLE_SILENCE_SECS;
-      }
-      const segBuf = await fs.readFile(seg.audioPath);
-      buffers.push(title ? await applyVolume(segBuf, TITLE_VOLUME_GAIN) : segBuf);
-      timeline.push({ text: seg.display ?? seg.text, start: cursor, end: cursor + seg.durationSecs });
-      cursor += seg.durationSecs;
-      if (title) {
-        buffers.push(silence!);
-        cursor += TITLE_SILENCE_SECS;
-      }
-    }
+    segments.forEach((seg, i) => {
+      const title = silenceFile && isTitle(seg.text, TITLE_MAX_WORDS);
+      if (title) { lines.push(concatLine(silenceFile!)); cursor += silenceDur; }
+      lines.push(concatLine(files[i]));
+      timeline.push({ text: seg.display ?? seg.text, start: +cursor.toFixed(3), end: +(cursor + durations[i]).toFixed(3) });
+      cursor += durations[i];
+      if (title) { lines.push(concatLine(silenceFile!)); cursor += silenceDur; }
+    });
 
-    await fs.writeFile(rawPath, Buffer.concat(buffers));
-    await normalizeMp3(rawPath, outputPath, TTS_VOLUME_GAIN);
+    await fs.writeFile(listPath, lines.join('\n'));
+    await concatAudio(listPath, outputPath, TTS_VOLUME_GAIN);
     const finalDuration = await probeDurationSecs(outputPath);
 
-    const scale = cursor > 0 ? finalDuration / cursor : 1;
-    const scaled = timeline.map(e => ({
-      text: e.text,
-      start: +(e.start * scale).toFixed(3),
-      end: +(e.end * scale).toFixed(3),
-    }));
-    await fs.writeFile(timelinePathFor(outputPath), JSON.stringify(scaled));
+    await fs.writeFile(timelinePathFor(outputPath), JSON.stringify(timeline));
 
     return finalDuration;
   } finally {
-    await fs.unlink(rawPath).catch(() => {});
+    await fs.unlink(listPath).catch(() => {});
+    await fs.unlink(silencePath).catch(() => {});
+    await Promise.all(boostedPaths.map(f => fs.unlink(f).catch(() => {})));
   }
 }

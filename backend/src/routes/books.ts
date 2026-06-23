@@ -6,10 +6,10 @@ import { createReadStream, existsSync } from 'fs';
 import { Server as SocketServer } from 'socket.io';
 import { Book, IVoiceTrack, ISegment, ISentence, freshTracks, trackForVoice, serializeChaptersForClient } from '../models/Book.js';
 import { DATA_DIR } from '../config.js';
-import { processBook, generateBookAudio, generateVoiceAudio, regenerateChapterAudio, regenerateVoiceAudio, regenerateChapterVoiceAudio, editSentence, regenerateSegment, speechLanguage } from '../workers/bookProcessor.js';
+import { processBook, generateBookAudio, generateVoiceAudio, regenerateChapterAudio, regenerateVoiceAudio, regenerateChapterVoiceAudio, reassembleBookAudio, editSentence, regenerateSegment, bookSpeechLanguage } from '../workers/bookProcessor.js';
 import { normalizeForSpeech } from '../services/textNormalizer.js';
 import { findPageImagePath, copyPageAsCover } from '../services/pdfService.js';
-import { detectChapters } from '../services/ocrService.js';
+import { detectChapters, fetchSlmModels, splitLineIntoSentences } from '../services/ocrService.js';
 import { synthesizeSample, timelinePathFor } from '../services/ttsService.js';
 import { sanitizePageText } from '../lib/sanitize.js';
 
@@ -160,6 +160,15 @@ export function booksRouter(io: SocketServer) {
       res.send(audio);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'TTS failed';
+      res.status(502).json({ error: message });
+    }
+  });
+
+  router.get('/line-split/models', async (_req, res) => {
+    try {
+      res.json(await fetchSlmModels());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to list SLM models';
       res.status(502).json({ error: message });
     }
   });
@@ -376,6 +385,14 @@ export function booksRouter(io: SocketServer) {
     const stat = await fs.stat(audioPath);
     res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('Accept-Ranges', 'bytes');
+    // Reassembly rewrites the file in place without changing its rounded-second
+    // cache-buster, so force revalidation: the ETag tracks size+mtime, and the
+    // browser only re-downloads when the audio actually changed (else a 304).
+    const etag = `"${stat.size}-${Math.floor(stat.mtimeMs)}"`;
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('ETag', etag);
+    res.setHeader('Last-Modified', stat.mtime.toUTCString());
+    if (req.headers['if-none-match'] === etag) return res.status(304).end();
 
     const range = req.headers.range;
     if (range) {
@@ -417,6 +434,9 @@ export function booksRouter(io: SocketServer) {
     if (!existsSync(timelinePath)) return res.status(404).json({ error: 'No timeline' });
 
     res.setHeader('Content-Type', 'application/json');
+    // Rewritten in place on every reassembly; never serve a stale copy or the
+    // highlight desyncs from the (possibly re-rendered) audio.
+    res.setHeader('Cache-Control', 'no-store');
     createReadStream(timelinePath).pipe(res);
   });
 
@@ -432,7 +452,7 @@ export function booksRouter(io: SocketServer) {
     if (!pageDoc) return res.status(404).json({ error: 'Page not found' });
 
     pageDoc.text = text;
-    pageDoc.readText = await normalizeForSpeech(text, speechLanguage(pageDoc.language));
+    pageDoc.readText = await normalizeForSpeech(text, bookSpeechLanguage(book, pageDoc.language));
 
     let anyStale = false;
     for (let i = 0; i < book.chapters.length; i++) {
@@ -461,6 +481,25 @@ export function booksRouter(io: SocketServer) {
     res.json({ message: 'Saved' });
   });
 
+  router.post('/:id/line-split', async (req, res) => {
+    const book = await Book.findById(req.params.id).lean();
+    if (!book) return res.status(404).json({ error: 'Not found' });
+
+    const { line, model } = req.body as { line?: string; model?: string };
+    if (typeof line !== 'string' || !line.trim()) {
+      return res.status(400).json({ error: 'line is required' });
+    }
+
+    try {
+      const split = await splitLineIntoSentences(sanitizePageText(line).trim(), typeof model === 'string' ? model : undefined);
+      if (!split) return res.status(422).json({ error: 'No sentence split found' });
+      res.json(split);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to split line';
+      res.status(502).json({ error: message });
+    }
+  });
+
   router.post('/:id/chapters/:idx/regenerate', async (req, res) => {
     const book = await Book.findById(req.params.id);
     if (!book) return res.status(404).json({ error: 'Not found' });
@@ -476,6 +515,19 @@ export function booksRouter(io: SocketServer) {
 
     regenerateChapterAudio(book._id.toString(), idx, io).catch(err =>
       console.error(`regenerateChapterAudio ${book._id} ch${idx} failed:`, err)
+    );
+  });
+
+  // Rebuild chapter mp3s + timelines from cached segments (no re-synthesis) to
+  // repair read-along timelines written by the older lossy assembly.
+  router.post('/:id/reassemble', async (req, res) => {
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).json({ error: 'Not found' });
+
+    res.json({ message: 'Reassembly started' });
+
+    reassembleBookAudio(book._id.toString(), io).catch(err =>
+      console.error(`reassembleBookAudio ${book._id} failed:`, err)
     );
   });
 

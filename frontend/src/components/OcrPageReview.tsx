@@ -5,6 +5,7 @@ import { AppDispatch } from '../store';
 import { updatePageText } from '../store/booksSlice';
 import { OcrPage } from '../types';
 import { diffText } from '../lib/diff';
+import { api } from '../api/booksApi';
 import PagePreview from './PagePreview';
 
 // Render the reviewed text, highlighting spans that get rewritten for speech.
@@ -84,6 +85,30 @@ interface LineOccurrence {
   lineIdx: number;
 }
 
+interface SplitProposal {
+  original: string;
+  left: string;
+  right: string;
+}
+
+type SplitStrategy = 'punctuation' | 'conjunction' | 'slm';
+
+const SPLIT_STRATEGIES: SplitStrategy[] = ['punctuation', 'conjunction', 'slm'];
+const SLM_MODEL_SESSION_KEY = 'book-reader:line-review-slm-model';
+
+function storedSlmModels(): string[] {
+  if (typeof window === 'undefined') return [];
+  const raw = sessionStorage.getItem(SLM_MODEL_SESSION_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+  } catch {
+    return raw.trim() ? [raw.trim()] : [];
+  }
+  return [];
+}
+
 interface PageViewProps {
   bookId: string;
   page: OcrPage;
@@ -148,12 +173,63 @@ function middleSplit(line: string): [string, string] | null {
   return at === -1 ? null : splitAt(line, at);
 }
 
+function splitAtConjunction(line: string, at: number): [string, string] | null {
+  const left = line.slice(0, at).replace(/\s+$/, '');
+  const right = line.slice(at).replace(/^\s+/, '');
+  return left === '' || right === '' ? null : [left, right];
+}
+
+function conjunctionSplit(line: string): [string, string] | null {
+  const target = Math.floor(line.length / 2);
+  let best = -1;
+  let bestDistance = Infinity;
+  for (const phrase of [' e ', ' and ']) {
+    let at = line.indexOf(phrase);
+    while (at !== -1) {
+      const splitAt = at + 1;
+      const distance = Math.abs(splitAt - target);
+      if (distance < bestDistance) {
+        best = splitAt;
+        bestDistance = distance;
+      }
+      at = line.indexOf(phrase, at + phrase.length);
+    }
+  }
+  return best === -1 ? null : splitAtConjunction(line, best);
+}
+
 // Break the first line longer than `maxLen`, preferring ; then : then ,
 // between minLen and maxLen, then falling back before minLen. Returns null if
 // nothing was broken.
-function breakLineAt(lines: string[], lineIdx: number, minLen: number, maxLen: number): string[] | null {
+function breakLineAt(
+  lines: string[],
+  lineIdx: number,
+  minLen: number,
+  maxLen: number,
+  strategy: SplitStrategy,
+): string[] | null {
   const line = lines[lineIdx];
+  const proposal = proposeLineSplit(line, minLen, maxLen, strategy);
+  if (!proposal) return null;
+  const next = lines.slice();
+  next.splice(lineIdx, 1, proposal.left, proposal.right);
+  return next;
+}
+
+function proposeLineSplit(
+  line: string,
+  minLen: number,
+  maxLen: number,
+  strategy: SplitStrategy,
+): SplitProposal | null {
   if (!line || line.length <= maxLen) return null;
+  if (strategy === 'slm') return null;
+  if (strategy === 'conjunction') {
+    const split = conjunctionSplit(line);
+    if (!split) return null;
+    const [left, right] = split;
+    return { original: line, left, right };
+  }
   let at = scanFor(line, ';', minLen, maxLen);
   if (at === -1) at = scanFor(line, ':', minLen, maxLen);
   if (at === -1) at = scanFor(line, ',', minLen, maxLen);
@@ -165,19 +241,23 @@ function breakLineAt(lines: string[], lineIdx: number, minLen: number, maxLen: n
   if (!split) return null;
   if (isSmallLargeSplit(split[0], split[1], minLen, maxLen)) split = middleSplit(line) ?? split;
   const [left, right] = split;
-  const next = lines.slice();
-  next.splice(lineIdx, 1, left, right);
-  return next;
+  return { original: line, left, right };
 }
 
-function breakLongLine(text: string, minLen: number, maxLen: number, preferredLine?: number): string | null {
+function breakLongLine(
+  text: string,
+  minLen: number,
+  maxLen: number,
+  strategy: SplitStrategy,
+  preferredLine?: number,
+): string | null {
   const lines = text.split('\n');
   if (preferredLine !== undefined) {
-    const preferred = breakLineAt(lines, preferredLine, minLen, maxLen);
+    const preferred = breakLineAt(lines, preferredLine, minLen, maxLen, strategy);
     if (preferred) return preferred.join('\n');
   }
   for (let i = 0; i < lines.length; i++) {
-    const next = breakLineAt(lines, i, minLen, maxLen);
+    const next = breakLineAt(lines, i, minLen, maxLen, strategy);
     if (next) return next.join('\n');
   }
   return null;
@@ -220,6 +300,17 @@ function HighlightEditor(
             }
           >
             {line.length ? line : ' '}
+            {line.length > warnOver && (
+              <span
+                className={`relative -top-2 ml-1 text-[9px] leading-none ${
+                  i === activeLine
+                    ? 'text-gray-500'
+                    : 'text-gray-600'
+                }`}
+              >
+                {line.length}
+              </span>
+            )}
           </div>
         ))}
       </div>
@@ -306,11 +397,22 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
   const [idx,        setIdx]        = useState(0);
   const [userMoved,  setUserMoved]  = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [lineReviewFullscreen, setLineReviewFullscreen] = useState(false);
   const [draft,      setDraft]      = useState('');
   const [minLen,     setMinLen]     = useState(120);
   const [maxLen,     setMaxLen]     = useState(180);
   const [showSaved,  setShowSaved]  = useState(false);
   const [activeReview, setActiveReview] = useState<LineOccurrence | null>(null);
+  const [splitStrategyIdx, setSplitStrategyIdx] = useState(0);
+  const [slmProposal, setSlmProposal] = useState<SplitProposal | null>(null);
+  const [slmLoading, setSlmLoading] = useState(false);
+  const [slmError, setSlmError] = useState<string | null>(null);
+  const [slmModels, setSlmModels] = useState<{ id: string; label: string }[]>([]);
+  const [slmModelsLoading, setSlmModelsLoading] = useState(false);
+  const [slmModelsError, setSlmModelsError] = useState<string | null>(null);
+  const [showSlmModelPicker, setShowSlmModelPicker] = useState(false);
+  const [selectedSlmModels, setSelectedSlmModels] = useState<string[]>(storedSlmModels);
+  const [slmModelIdx, setSlmModelIdx] = useState(0);
   const savedTimer = useRef<ReturnType<typeof setTimeout>>();
   const undoStack = useRef<string[]>([]);
 
@@ -327,8 +429,16 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
   }, [processed.length, userMoved]);
 
   useEffect(() => {
-    if (!fullscreen) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setFullscreen(false); };
+    setSlmModelIdx(i => Math.min(i, Math.max(0, selectedSlmModels.length - 1)));
+  }, [selectedSlmModels.length]);
+
+  useEffect(() => {
+    if (!fullscreen && !lineReviewFullscreen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (lineReviewFullscreen) setLineReviewFullscreen(false);
+      else setFullscreen(false);
+    };
     window.addEventListener('keydown', handler);
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -336,7 +446,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
       window.removeEventListener('keydown', handler);
       document.body.style.overflow = prevOverflow;
     };
-  }, [fullscreen]);
+  }, [fullscreen, lineReviewFullscreen]);
 
   // Jump to the processed page whose number is closest to the requested one.
   const goToPage = useCallback((target: number) => {
@@ -356,6 +466,8 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
 
   const safeIdx = Math.min(idx, Math.max(0, processed.length - 1));
   const page    = processed[safeIdx];
+  const splitStrategy = SPLIT_STRATEGIES[splitStrategyIdx] ?? 'punctuation';
+  const activeSlmModel = selectedSlmModels[slmModelIdx] ?? selectedSlmModels[0] ?? '';
 
   const reviewOccurrences = useMemo<LineOccurrence[]>(() => {
     const items: LineOccurrence[] = [];
@@ -371,6 +483,77 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
   const activeReviewIndex = activeReview
     ? reviewOccurrences.findIndex(o => o.page === activeReview.page && o.lineIdx === activeReview.lineIdx)
     : -1;
+  const currentPageFirstReview = reviewOccurrences.find(o => o.pageIdx === safeIdx) ?? null;
+  const currentPageIssueCount = draft.split('\n').filter(line => line.length > maxLen).length;
+  const activeSplitLineIdx = useMemo(() => {
+    const reviewLine = activeReview?.page === page.page ? activeReview.lineIdx : undefined;
+    const lines = draft.split('\n');
+    return reviewLine ?? lines.findIndex(line => line.length > maxLen);
+  }, [activeReview, page.page, draft, maxLen]);
+  const activeSplitLine = activeSplitLineIdx >= 0 ? draft.split('\n')[activeSplitLineIdx] : '';
+  const activeLocalSplitPreview = useMemo<SplitProposal | null>(() => {
+    const lines = draft.split('\n');
+    return activeSplitLineIdx >= 0 && splitStrategy !== 'slm'
+      ? proposeLineSplit(lines[activeSplitLineIdx], minLen, maxLen, splitStrategy)
+      : null;
+  }, [activeSplitLineIdx, draft, minLen, maxLen, splitStrategy]);
+  const slmPreviewStale = splitStrategy === 'slm' && !!activeSplitLine && slmProposal?.original !== activeSplitLine;
+  const activeSplitPreview = splitStrategy === 'slm'
+    ? (slmPreviewStale ? null : slmProposal)
+    : activeLocalSplitPreview;
+  const needsSlmModel = splitStrategy === 'slm' && selectedSlmModels.length === 0;
+  const showSlmLoading = splitStrategy === 'slm' && !!activeSplitLine && !needsSlmModel && (slmLoading || slmPreviewStale);
+  const showSplitComparison = !!(activeSplitLine || activeSplitPreview || showSlmLoading || (splitStrategy === 'slm' && slmError && !slmPreviewStale));
+  const canAcceptSplit = !!activeSplitPreview && !slmLoading;
+
+  useEffect(() => {
+    if (splitStrategy !== 'slm' || selectedSlmModels.length > 0) return;
+    setShowSlmModelPicker(true);
+  }, [splitStrategy, selectedSlmModels.length]);
+
+  useEffect(() => {
+    if (!showSlmModelPicker || slmModels.length || slmModelsLoading) return;
+    setSlmModelsLoading(true);
+    setSlmModelsError(null);
+    api.get<{ id: string; label: string }[]>('/api/books/line-split/models')
+      .then(res => setSlmModels(res.data))
+      .catch(err => setSlmModelsError(err?.response?.data?.error || err?.message || 'Failed to list SLM models'))
+      .finally(() => setSlmModelsLoading(false));
+  }, [showSlmModelPicker, slmModels.length, slmModelsLoading]);
+
+  useEffect(() => {
+    setSlmProposal(null);
+    setSlmError(null);
+    if (splitStrategy !== 'slm' || activeSplitLineIdx < 0 || !activeSlmModel) {
+      setSlmLoading(false);
+      return;
+    }
+
+    const line = activeSplitLine;
+    if (!line || line.length <= maxLen) {
+      setSlmLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSlmLoading(true);
+    api.post<{ left: string; right: string }>(`/api/books/${bookId}/line-split`, { line, model: activeSlmModel })
+      .then(res => {
+        if (cancelled) return;
+        const left = res.data.left?.trim();
+        const right = res.data.right?.trim();
+        setSlmProposal(left && right ? { original: line, left, right } : null);
+        setSlmError(left && right ? null : 'No sentence split found');
+      })
+      .catch(err => {
+        if (cancelled) return;
+        const msg = err?.response?.data?.error || err?.message || 'Failed to split line';
+        setSlmError(msg);
+      })
+      .finally(() => { if (!cancelled) setSlmLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [splitStrategy, activeSplitLine, maxLen, bookId, activeSlmModel]);
 
   useEffect(() => {
     if (!activeReview) return;
@@ -412,6 +595,11 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     setDraft(prev);
   };
 
+  const saveText = (text: string) => {
+    dispatch(updatePageText({ bookId, page: page.page, text }));
+    flashSaved();
+  };
+
   const goToReview = (occurrence: LineOccurrence) => {
     saveDraft();
     const target = processed[occurrence.pageIdx];
@@ -441,13 +629,66 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
   };
 
   const breakLine = () => {
+    if (activeSplitPreview && activeSplitLineIdx >= 0) {
+      const lines = draft.split('\n');
+      lines.splice(activeSplitLineIdx, 1, activeSplitPreview.left, activeSplitPreview.right);
+      const result = lines.join('\n');
+      changeDraft(result);
+      saveText(result);
+      setActiveReview(null);
+      return;
+    }
     const reviewLine = activeReview?.page === page.page ? activeReview.lineIdx : undefined;
-    const result = breakLongLine(draft, minLen, maxLen, reviewLine);
+    const result = breakLongLine(draft, minLen, maxLen, splitStrategy, reviewLine);
     if (result === null) return;
     changeDraft(result);
-    dispatch(updatePageText({ bookId, page: page.page, text: result }));
-    flashSaved();
+    saveText(result);
     setActiveReview(null);
+  };
+
+  const cycleSplitStrategy = () => {
+    const line = draft.split('\n')[activeSplitLineIdx];
+    if (!line) return;
+    if (splitStrategy === 'slm' && selectedSlmModels.length > 0 && slmModelIdx < selectedSlmModels.length - 1) {
+      setSlmModelIdx(i => i + 1);
+      return;
+    }
+    setSplitStrategyIdx(currentIdx => {
+      for (let offset = 1; offset <= SPLIT_STRATEGIES.length; offset++) {
+        const nextIdx = (currentIdx + offset) % SPLIT_STRATEGIES.length;
+        if (SPLIT_STRATEGIES[nextIdx] === 'slm') {
+          setSlmModelIdx(0);
+          return nextIdx;
+        }
+        if (proposeLineSplit(line, minLen, maxLen, SPLIT_STRATEGIES[nextIdx])) return nextIdx;
+      }
+      return currentIdx;
+    });
+  };
+
+  const toggleSlmModel = (model: string) => {
+    setSelectedSlmModels(prev => {
+      const next = prev.includes(model) ? prev.filter(id => id !== model) : [...prev, model];
+      sessionStorage.setItem(SLM_MODEL_SESSION_KEY, JSON.stringify(next));
+      setSlmModelIdx(0);
+      return next;
+    });
+  };
+
+  const closeSlmModelPicker = () => {
+    setShowSlmModelPicker(false);
+    if (selectedSlmModels.length === 0) setSplitStrategyIdx(0);
+  };
+
+  const openLineReview = () => {
+    setLineReviewFullscreen(true);
+    if (activeReview) return;
+    if (currentPageFirstReview) {
+      setActiveReview(currentPageFirstReview);
+      return;
+    }
+    if (draft !== (page.text ?? '')) return;
+    if (reviewOccurrences.length > 0) nextReview();
   };
 
   const Nav = () => (
@@ -478,6 +719,17 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
           <h3 className="font-semibold text-gray-100 shrink-0">Reading pages</h3>
           <div className="flex items-center gap-2">
             {processed.length > 1 && <Nav />}
+            <button
+              className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+              onClick={openLineReview}
+              title="Review long lines"
+              aria-label="Review long lines"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M4 6h11M4 11h11M4 16h7M14 17l2.5 2.5L21 15" />
+              </svg>
+            </button>
             <button
               className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
               onClick={() => setFullscreen(true)}
@@ -529,63 +781,6 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
               P. {page.page}
             </span>
 
-            <div className="flex items-center gap-2 shrink-0">
-              <div className="flex items-center gap-1 rounded border border-gray-800 bg-gray-900 px-1.5 py-1">
-                <span className="px-1 text-[11px] text-gray-400 tabular-nums">
-                  {reviewOccurrences.length === 0
-                    ? '0 issues'
-                    : `${activeReviewIndex >= 0 ? activeReviewIndex + 1 : '-'} / ${reviewOccurrences.length}`}
-                </span>
-                <button
-                  className="w-6 h-6 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
-                  onClick={prevReview}
-                  disabled={reviewOccurrences.length === 0}
-                  title="Previous long line"
-                  aria-label="Previous long line"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 15l-6-6-6 6" />
-                  </svg>
-                </button>
-                <button
-                  className="w-6 h-6 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
-                  onClick={nextReview}
-                  disabled={reviewOccurrences.length === 0}
-                  title="Next long line"
-                  aria-label="Next long line"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 9l6 6 6-6" />
-                  </svg>
-                </button>
-              </div>
-              <input
-                type="number"
-                value={minLen}
-                onChange={e => setMinLen(Math.max(0, parseInt(e.target.value, 10) || 0))}
-                className="w-14 h-7 px-1 text-center text-xs bg-gray-800 border border-gray-700 rounded text-gray-200 outline-none focus:border-gray-500"
-                title="Min line length — don't break before this many characters"
-              />
-              <span className="text-gray-600 text-xs">–</span>
-              <input
-                type="number"
-                value={maxLen}
-                onChange={e => setMaxLen(Math.max(0, parseInt(e.target.value, 10) || 0))}
-                className="w-14 h-7 px-1 text-center text-xs bg-gray-800 border border-gray-700 rounded text-gray-200 outline-none focus:border-gray-500"
-                title="Max line length — longer lines are flagged and scanned for a break point"
-              />
-              <button
-                className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
-                onClick={breakLine}
-                title="Break the first long line at the next ; : or ,"
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z" />
-                </svg>
-              </button>
-            </div>
-
             <button
               className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors shrink-0"
               onClick={() => { saveDraft(); setFullscreen(false); }}
@@ -608,10 +803,255 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                 onChange: changeDraft,
                 onBlur: saveDraft,
                 onUndo: undoDraft,
-                warnOver: maxLen,
-                activeLine: activeReview?.page === page.page ? activeReview.lineIdx : null,
+                warnOver: Number.POSITIVE_INFINITY,
+                activeLine: null,
               }}
             />
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {lineReviewFullscreen && createPortal(
+        <div className="fixed inset-0 z-50 h-[100dvh] w-screen bg-gray-950 flex flex-col">
+          <div className="relative flex items-center gap-4 px-6 py-4 border-b border-gray-800 shrink-0">
+            <div className="flex items-center gap-3 flex-1 min-w-0">
+              <h2 className="font-semibold text-gray-100">Line review</h2>
+              <p className="text-xs text-gray-500">
+                P. {page.page}
+                <span className="ml-1">· {currentPageIssueCount} on this page</span>
+              </p>
+              {showSaved && (
+                <span className="flex items-center gap-1 text-xs text-emerald-400 shrink-0">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Saved
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-gray-500">Target</span>
+              <input
+                type="number"
+                value={minLen}
+                onChange={e => setMinLen(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                className="w-14 h-7 px-1 text-center text-xs bg-gray-800 border border-gray-700 rounded text-gray-200 outline-none focus:border-gray-500"
+                title="Min line length"
+              />
+              <span className="text-gray-600 text-xs">-</span>
+              <input
+                type="number"
+                value={maxLen}
+                onChange={e => setMaxLen(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                className="w-14 h-7 px-1 text-center text-xs bg-gray-800 border border-gray-700 rounded text-gray-200 outline-none focus:border-gray-500"
+                title="Max line length"
+              />
+            </div>
+
+            <button
+              className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors shrink-0"
+              onClick={() => { saveDraft(); setLineReviewFullscreen(false); }}
+              title="Close (Esc)"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="border-b border-gray-800 bg-gray-900/80 px-6 py-3 shrink-0">
+              <div className="mb-2 flex h-7 items-center justify-between gap-2">
+                <span className="text-[11px] font-medium uppercase tracking-wide text-gray-500 tabular-nums">
+                  {reviewOccurrences.length === 0
+                    ? '0 issues'
+                    : `${activeReviewIndex >= 0 ? activeReviewIndex + 1 : '-'} / ${reviewOccurrences.length}`}
+                </span>
+                <div className="flex items-center gap-1">
+                  {splitStrategy === 'slm' && (
+                    <button
+                      className="h-7 max-w-48 rounded px-2 flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                      onClick={() => setShowSlmModelPicker(true)}
+                      title="Choose SLM model"
+                      aria-label="Choose SLM model"
+                    >
+                      <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M12 3l1.6 4.6L18 9l-4.4 1.4L12 15l-1.6-4.6L6 9l4.4-1.4L12 3zM5 14l.8 2.2L8 17l-2.2.8L5 20l-.8-2.2L2 17l2.2-.8L5 14zM19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14z" />
+                      </svg>
+                      <span className="truncate">{activeSlmModel || 'Choose model'}</span>
+                    </button>
+                  )}
+                  <button
+                    className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
+                    onClick={prevReview}
+                    disabled={reviewOccurrences.length === 0}
+                    title="Previous long line"
+                    aria-label="Previous long line"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+                  <button
+                    className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
+                    onClick={breakLine}
+                    disabled={!canAcceptSplit}
+                    title="Accept current long-line split"
+                    aria-label="Accept current long-line split"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  </button>
+                  <button
+                    className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
+                    onClick={nextReview}
+                    disabled={reviewOccurrences.length === 0}
+                    title="Next long line"
+                    aria-label="Next long line"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                  <button
+                    className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                    onClick={cycleSplitStrategy}
+                    title={`Try another split strategy (${splitStrategy === 'punctuation' ? 'punctuation' : splitStrategy === 'conjunction' ? 'and/e' : activeSlmModel || 'SLM'})`}
+                    aria-label="Try another split strategy"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M20 11a8.1 8.1 0 00-15.5-2M4 5v4h4M4 13a8.1 8.1 0 0015.5 2M20 19v-4h-4" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                <div className="min-w-0">
+                  <div className="mb-1 flex h-7 items-center">
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">Current</p>
+                  </div>
+                  <p className="min-h-9 rounded border border-red-900/50 bg-red-950/20 px-3 py-2 font-mono text-xs leading-relaxed text-red-100 break-words">
+                    {showSplitComparison ? activeSplitPreview?.original ?? activeSplitLine : null}
+                  </p>
+                </div>
+                <div className="min-w-0">
+                  <div className="mb-1 flex h-7 items-center">
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">After Accept</p>
+                  </div>
+                  <div className="min-h-9 space-y-4 rounded border border-emerald-900/50 bg-emerald-950/20 px-3 py-2 font-mono text-xs leading-relaxed text-emerald-100 break-words">
+                    {!showSplitComparison ? null : showSlmLoading ? (
+                      <p className="text-emerald-100/60">Thinking…</p>
+                    ) : activeSplitPreview ? (
+                      <>
+                        <p>{activeSplitPreview.left}</p>
+                        <p>{activeSplitPreview.right}</p>
+                      </>
+                    ) : (
+                      <p className="text-emerald-100/60">{slmError ?? 'No split available for this strategy.'}</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          <div className="flex-1 min-h-0 p-4">
+            <div className="h-full min-h-0 rounded-lg bg-gray-800/50 p-3">
+              <div className="flex h-full min-h-0 flex-col">
+                <p className="text-[11px] text-gray-500 mb-2 shrink-0">
+                  One sentence per line · blank line separates paragraphs
+                </p>
+                <HighlightEditor
+                  draft={draft}
+                  onChange={changeDraft}
+                  onBlur={saveDraft}
+                  onUndo={undoDraft}
+                  warnOver={maxLen}
+                  activeLine={activeReview?.page === page.page ? activeReview.lineIdx : null}
+                />
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {showSlmModelPicker && createPortal(
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 px-4">
+          <div className="w-full max-w-md rounded-lg border border-gray-800 bg-gray-950 shadow-xl">
+            <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
+              <h3 className="font-semibold text-gray-100">Select SLM models</h3>
+              <button
+                className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                onClick={closeSlmModelPicker}
+                title="Close"
+                aria-label="Close"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="space-y-2 p-4">
+              {slmModelsLoading ? (
+                <p className="text-sm text-gray-400">Loading models…</p>
+              ) : slmModelsError ? (
+                <p className="text-sm text-red-300">{slmModelsError}</p>
+              ) : slmModels.length === 0 ? (
+                <p className="text-sm text-gray-400">No SLM models available.</p>
+              ) : (
+                slmModels.map(model => (
+                  <button
+                    key={model.id}
+                    className={`flex w-full items-center justify-between gap-3 rounded border px-3 py-2 text-left text-sm transition-colors ${
+                      selectedSlmModels.includes(model.id)
+                        ? 'border-gray-600 bg-gray-800 text-gray-100'
+                        : 'border-gray-800 bg-gray-900 text-gray-200 hover:border-gray-700 hover:bg-gray-800'
+                    }`}
+                    onClick={() => toggleSlmModel(model.id)}
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate">{model.label || model.id}</span>
+                      <span className="block truncate font-mono text-[11px] text-gray-500">{model.id}</span>
+                    </span>
+                    <span className="w-5 h-5 shrink-0 rounded border border-gray-600 flex items-center justify-center">
+                      {selectedSlmModels.includes(model.id) && (
+                        <svg className="w-3.5 h-3.5 text-gray-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </span>
+                  </button>
+                ))
+              )}
+              {!slmModelsLoading && !slmModelsError && slmModels.length > 0 && (
+                <button
+                  className="btn-primary w-full justify-center"
+                  disabled={selectedSlmModels.length === 0}
+                  onClick={closeSlmModelPicker}
+                >
+                  Done
+                </button>
+              )}
+              {slmModelsError && (
+                <button
+                  className="btn-secondary w-full justify-center"
+                  onClick={() => {
+                    setSlmModelsLoading(true);
+                    setSlmModelsError(null);
+                    api.get<{ id: string; label: string }[]>('/api/books/line-split/models')
+                      .then(res => setSlmModels(res.data))
+                      .catch(err => setSlmModelsError(err?.response?.data?.error || err?.message || 'Failed to list SLM models'))
+                      .finally(() => setSlmModelsLoading(false));
+                  }}
+                >
+                  Retry
+                </button>
+              )}
+            </div>
           </div>
         </div>,
         document.body,

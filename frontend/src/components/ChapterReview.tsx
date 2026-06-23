@@ -1,4 +1,4 @@
-import { useState, useEffect, forwardRef, useImperativeHandle } from 'react';
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
 import { useDispatch } from 'react-redux';
 import { AppDispatch } from '../store';
 import { updateChapters } from '../store/booksSlice';
@@ -94,8 +94,13 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
   const [suggestions, setSuggestions] = useState<ChapterSuggestion[] | null>(null);
   const [previewPage, setPreviewPage] = useState(book.summaryPage);
   const [editingIdx,  setEditingIdx]  = useState<number | null>(null);
+  const suggestionsRef = useRef<ChapterSuggestion[] | null>(null);
+  const pageRepeatDelayRef = useRef<number | null>(null);
+  const pageRepeatIntervalRef = useRef<number | null>(null);
 
   const previewTotal = book.totalPages || book.lastPage;
+
+  useEffect(() => { suggestionsRef.current = suggestions; }, [suggestions]);
 
   useEffect(() => {
     if (!showSummary) return;
@@ -103,6 +108,19 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [showSummary]);
+
+  const stopPageRepeat = () => {
+    if (pageRepeatDelayRef.current !== null) {
+      window.clearTimeout(pageRepeatDelayRef.current);
+      pageRepeatDelayRef.current = null;
+    }
+    if (pageRepeatIntervalRef.current !== null) {
+      window.clearInterval(pageRepeatIntervalRef.current);
+      pageRepeatIntervalRef.current = null;
+    }
+  };
+
+  useEffect(() => stopPageRepeat, []);
 
   const readSummary = async () => {
     setDetecting(true);
@@ -151,10 +169,23 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
   const shiftAllPages = (delta: number) =>
     setSuggestions(prev => (prev ? prev.map(s => withFoundAt(s, pageOf(s) + delta)) : prev));
 
-  const setPageAndPreview = (idx: number, newPage: number) => {
-    const np = Math.max(1, newPage);
-    setSuggestions(prev => (prev ? prev.map((s, i) => (i === idx ? withFoundAt(s, np) : s)) : prev));
+  const stepSuggestionPage = (idx: number, delta: number) => {
+    const current = suggestionsRef.current?.[idx];
+    if (!current) return;
+    const np = Math.max(1, pageOf(current) + delta);
+    const next = suggestionsRef.current?.map((s, i) => (i === idx ? withFoundAt(s, np) : s)) ?? null;
+    suggestionsRef.current = next;
+    setSuggestions(next);
     setPreviewPage(Math.min(previewTotal, np));
+  };
+
+  const startPageRepeat = (idx: number, delta: number) => {
+    stopPageRepeat();
+    stepSuggestionPage(idx, delta);
+    pageRepeatDelayRef.current = window.setTimeout(() => {
+      stepSuggestionPage(idx, delta);
+      pageRepeatIntervalRef.current = window.setInterval(() => stepSuggestionPage(idx, delta), 75);
+    }, 350);
   };
 
   // Only import suggestions whose chosen page falls within the reading range —
@@ -496,7 +527,19 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                           <div className="flex items-center shrink-0">
                             <button
                               className="w-6 h-7 rounded-l flex items-center justify-center text-gray-400 hover:text-gray-100 hover:bg-gray-800 transition-colors"
-                              onClick={() => setPageAndPreview(i, pageOf(s) - 1)}
+                              onPointerDown={e => {
+                                if (e.button !== 0) return;
+                                e.preventDefault();
+                                e.currentTarget.setPointerCapture(e.pointerId);
+                                startPageRepeat(i, -1);
+                              }}
+                              onPointerUp={e => {
+                                stopPageRepeat();
+                                if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+                              }}
+                              onPointerCancel={stopPageRepeat}
+                              onBlur={stopPageRepeat}
+                              onClick={e => { if (e.detail === 0) stepSuggestionPage(i, -1); }}
                               title="Page −1 and preview"
                               aria-label="Page back by one"
                             >
@@ -513,7 +556,19 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                             </button>
                             <button
                               className="w-6 h-7 rounded-r flex items-center justify-center text-gray-400 hover:text-gray-100 hover:bg-gray-800 transition-colors"
-                              onClick={() => setPageAndPreview(i, pageOf(s) + 1)}
+                              onPointerDown={e => {
+                                if (e.button !== 0) return;
+                                e.preventDefault();
+                                e.currentTarget.setPointerCapture(e.pointerId);
+                                startPageRepeat(i, 1);
+                              }}
+                              onPointerUp={e => {
+                                stopPageRepeat();
+                                if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+                              }}
+                              onPointerCancel={stopPageRepeat}
+                              onBlur={stopPageRepeat}
+                              onClick={e => { if (e.detail === 0) stepSuggestionPage(i, 1); }}
                               title="Page +1 and preview"
                               aria-label="Page forward by one"
                             >

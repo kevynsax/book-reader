@@ -5,6 +5,8 @@ export const PORT = parseInt(process.env.PORT || '3001');
 export const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/book-reader';
 export const QWENVL_API = process.env.QWENVL_API || 'https://qwenvl.kevyn.com.br';
 export const QWENVL_MODEL = process.env.QWENVL_MODEL || 'Qwen/Qwen2.5-VL-7B-Instruct-AWQ';
+export const SLM_API = process.env.SLM_API || 'https://slm.kevyn.com.br';
+export const SLM_MODEL = process.env.SLM_MODEL || 'qwen2.5:3b';
 export const TTS_API = process.env.TTS_API || 'http://127.0.0.1:8000';
 
 // TTS servers run the same OpenAI-compatible API (see ../tts-2). Each loads one
@@ -33,6 +35,10 @@ export const TTS_SERVERS: TtsServerConfig[] = parseServers();
 export const DATA_DIR = process.env.DATA_DIR || './data';
 export const DEFAULT_VOICE = process.env.TTS_VOICE || 'chatterbox:pt-BR-FranciscaNeural';
 export const TTS_SPEED = parseFloat(process.env.TTS_SPEED || '1.0');
+// Max sentence syntheses in flight at once, balanced across the ready servers.
+export const TTS_CONCURRENCY = parseInt(process.env.TTS_CONCURRENCY || '5');
+// How long a server that errored is parked before the balancer re-probes it.
+export const TTS_SERVER_COOLDOWN_MS = parseInt(process.env.TTS_SERVER_COOLDOWN_MS || '15000');
 export const TTS_VOLUME_GAIN = parseFloat(process.env.TTS_VOLUME_GAIN || '1.15');
 export const TITLE_MAX_WORDS = parseInt(process.env.TITLE_MAX_WORDS || '5');
 export const TITLE_SILENCE_SECS = parseFloat(process.env.TITLE_SILENCE_SECS || '0.7');
@@ -100,4 +106,17 @@ export const TOC_PAGE_PROMPT = [
   'This image is the table of contents / index page of a book.',
   'Extract every chapter or section listed together with the page number shown for it.',
   'Read titles exactly as printed and keep them in the order they appear.',
+].join(' ');
+
+export const LANG_SYSTEM_PROMPT = [
+  'You identify the primary written language of a book page.',
+  'Return one valid JSON object and nothing else.',
+  'The JSON object must have this exact shape: {"language":"pt"}',
+  'Use a lowercase ISO 639-1 code such as "pt", "en", "es", or "unknown".',
+  'Never add explanations, markdown fences, or any text outside the JSON object.',
+].join(' ');
+
+export const LANG_PAGE_PROMPT = [
+  'Identify the primary language the readable body text on this page is written in.',
+  'Ignore isolated foreign quotations, names, and scripture references.',
 ].join(' ');

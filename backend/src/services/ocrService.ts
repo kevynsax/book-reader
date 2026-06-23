@@ -1,9 +1,11 @@
 import fs from 'fs/promises';
 import {
   QWENVL_API, QWENVL_MODEL, QWENVL_MAX_TOKENS,
+  SLM_API, SLM_MODEL,
   OCR_SYSTEM_PROMPT, OCR_PAGE_PROMPT,
   TITLE_SYSTEM_PROMPT, TITLE_PAGE_PROMPT,
   TOC_SYSTEM_PROMPT, TOC_PAGE_PROMPT,
+  LANG_SYSTEM_PROMPT, LANG_PAGE_PROMPT,
 } from '../config.js';
 import { sanitizePageText } from '../lib/sanitize.js';
 
@@ -17,6 +19,11 @@ export interface ChapterSuggestion {
   page: number;
   startChar: number;
   found: boolean;
+}
+
+export interface SplitLineSuggestion {
+  left: string;
+  right: string;
 }
 
 interface TocEntry {
@@ -71,6 +78,20 @@ function parseTocEntries(raw: string): TocEntry[] {
     .filter(e => e.title.length > 0);
 }
 
+function parseSplitLineSuggestion(raw: string): SplitLineSuggestion | null {
+  const text = stripMarkdownFence(raw.trim());
+  const parsed =
+    (() => { try { return JSON.parse(text); } catch { return extractLooseJson(text); } })();
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const left = (parsed as Record<string, unknown>).left;
+  const right = (parsed as Record<string, unknown>).right;
+  if (typeof left !== 'string' || typeof right !== 'string') return null;
+  const cleanLeft = sanitizePageText(left).trim();
+  const cleanRight = sanitizePageText(right).trim();
+  if (!cleanLeft || !cleanRight) return null;
+  return { left: cleanLeft, right: cleanRight };
+}
+
 async function callQwen(systemPrompt: string, userContent: unknown[]): Promise<string> {
   const res = await fetch(`${QWENVL_API}/v1/chat/completions`, {
     method: 'POST',
@@ -97,6 +118,51 @@ async function callQwen(systemPrompt: string, userContent: unknown[]): Promise<s
   return content.trim();
 }
 
+export async function fetchSlmModels(): Promise<{ id: string; label: string }[]> {
+  const res = await fetch(`${SLM_API.replace(/\/+$/, '')}/v1/models`, {
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!res.ok) {
+    const err = await res.text().catch(() => '');
+    throw new Error(err || `SLM models returned ${res.status}`);
+  }
+
+  const data = await res.json() as { data?: unknown };
+  const list = Array.isArray(data?.data) ? data.data : [];
+  const models = list
+    .map(item => item as Record<string, unknown>)
+    .map(item => typeof item.id === 'string' ? item.id : typeof item.model === 'string' ? item.model : '')
+    .filter(Boolean)
+    .map(id => ({ id, label: id }));
+  return models.length ? models : [{ id: SLM_MODEL, label: SLM_MODEL }];
+}
+
+async function callSlm(systemPrompt: string, userText: string, model = SLM_MODEL): Promise<string> {
+  const res = await fetch(`${SLM_API.replace(/\/+$/, '')}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      temperature: 0,
+      max_tokens: 512,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userText },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text().catch(() => '');
+    throw new Error(err || `SLM API returned ${res.status}`);
+  }
+
+  const data = await res.json() as { choices?: { message?: { content?: string } }[] };
+  const content = data?.choices?.[0]?.message?.content ?? '';
+  if (typeof content !== 'string') throw new Error('Empty response from SLM');
+  return content.trim();
+}
+
 export async function extractBookTitle(coverImagePath: string): Promise<string> {
   const buffer = await fs.readFile(coverImagePath);
   const dataUrl = `data:image/jpeg;base64,${buffer.toString('base64')}`;
@@ -111,6 +177,43 @@ export async function extractBookTitle(coverImagePath: string): Promise<string> 
     (() => { try { return JSON.parse(text); } catch { return extractLooseJson(text); } })();
   const title = (parsed as Record<string, unknown>)?.title;
   return typeof title === 'string' ? title.trim() : '';
+}
+
+export async function splitLineIntoSentences(line: string, model?: string): Promise<SplitLineSuggestion | null> {
+  const raw = await callSlm(
+    [
+      'You split a single long book sentence into two complete, natural, valid sentences for text-to-speech review.',
+      'Return one valid JSON object and nothing else.',
+      'The JSON object must have this exact shape: {"left":"...","right":"..."}',
+      'Preserve the original language, meaning, named entities, and reading order.',
+      'Keep left and right close to the same character length whenever possible.',
+      'Prefer a split point near the middle of the original line, but never at the cost of producing unnatural or invalid sentences.',
+      'You may add or adjust only minimal punctuation and capitalization needed to make both outputs complete sentences.',
+      'Do not summarize, translate, expand, omit meaning, add commentary, or use markdown.',
+      'If the line cannot be split into two valid sentences, return {"left":"","right":""}.',
+    ].join(' '),
+    line,
+    model || SLM_MODEL,
+  );
+  return parseSplitLineSuggestion(raw);
+}
+
+// Ask Qwen for the page's primary language once (e.g. from the summary page) so
+// the whole book reads in one language instead of re-detecting per page.
+export async function detectLanguage(imagePath: string): Promise<string> {
+  const buffer = await fs.readFile(imagePath);
+  const dataUrl = `data:image/jpeg;base64,${buffer.toString('base64')}`;
+
+  const raw = await callQwen(LANG_SYSTEM_PROMPT, [
+    { type: 'text', text: LANG_PAGE_PROMPT },
+    { type: 'image_url', image_url: { url: dataUrl } },
+  ]);
+
+  const text = stripMarkdownFence(raw.trim());
+  const parsed =
+    (() => { try { return JSON.parse(text); } catch { return extractLooseJson(text); } })();
+  const language = (parsed as Record<string, unknown>)?.language;
+  return typeof language === 'string' ? language.toLowerCase().trim() : 'unknown';
 }
 
 export async function ocrPage(imagePath: string): Promise<OcrResult> {

@@ -6,16 +6,15 @@ import os from 'os';
 
 const exec = promisify(execFile);
 
-// Re-mux the concatenated mp3, optionally scaling volume. A gain other than 1
-// forces a re-encode (the volume filter can't run on a copied stream).
-export async function normalizeMp3(input: string, output: string, volume = 1): Promise<void> {
-  const args = ['-y', '-v', 'error', '-i', input];
-  if (volume !== 1) {
-    args.push('-filter:a', `volume=${volume}`, '-c:a', 'libmp3lame', '-q:a', '2');
-  } else {
-    args.push('-c:a', 'copy');
-  }
-  args.push('-write_xing', '1', output);
+// Concatenate the audio files listed in a concat-demuxer manifest into one mp3,
+// optionally scaling volume. Always decodes and re-encodes: raw mp3 byte-concat
+// drops ~20ms of audio at every segment boundary (frames aren't independently
+// joinable), which desyncs the read-along timeline; decoding to PCM first makes
+// the join sample-accurate so segment durations sum exactly to the output.
+export async function concatAudio(listPath: string, output: string, volume = 1): Promise<void> {
+  const args = ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', listPath];
+  if (volume !== 1) args.push('-filter:a', `volume=${volume}`);
+  args.push('-c:a', 'libmp3lame', '-q:a', '2', '-write_xing', '1', output);
   await exec('ffmpeg', args);
 }
 
@@ -77,6 +76,21 @@ export async function generateSilence(durationSecs: number, sampleRate: number, 
   } finally {
     await fs.unlink(tmp).catch(() => {});
   }
+}
+
+// True decoded duration in seconds: the number of samples the decoder actually
+// emits, which is what concat and playback use. This differs from format=duration
+// for files carrying a LAME/Xing gapless tag (libmp3lame output — generated
+// silence, re-encoded title boosts), where format=duration counts the encoder
+// delay/padding the decoder strips. Summed decoded durations equal the concat
+// output exactly, so the read-along timeline stays locked to the audio.
+export async function decodedDurationSecs(file: string): Promise<number> {
+  const { stdout } = await exec('ffmpeg', ['-v', 'error', '-i', file, '-f', 'null', '-progress', 'pipe:1', '-']);
+  const matches = stdout.match(/out_time_us=(\d+)|out_time_ms=(\d+)/g) ?? [];
+  const last = matches[matches.length - 1];
+  const us = last ? parseInt(last.split('=')[1], 10) : NaN;
+  if (!isFinite(us) || us <= 0) throw new Error(`ffmpeg returned no duration for ${file}`);
+  return us / 1e6;
 }
 
 export async function probeDurationSecs(file: string): Promise<number> {

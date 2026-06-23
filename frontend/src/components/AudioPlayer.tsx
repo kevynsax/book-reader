@@ -175,10 +175,10 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
     const onTimeUpd = () => {
       setCurrentTime(audio.currentTime);
       if (timelineRef.current.length) {
-        const idx = activeLineAt(timelineRef.current, audio.currentTime + 0.7);
+        const idx = activeLineAt(timelineRef.current, audio.currentTime + 0.15);
         setActiveLine(prev => (prev === idx ? prev : idx));
       }
-      if (audio.currentTime - lastSave.current >= 5) {
+      if (Math.abs(audio.currentTime - lastSave.current) >= 5) {
         savePos();
         lastSave.current = audio.currentTime;
       }
@@ -197,6 +197,19 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
       audio.removeEventListener('timeupdate', onTimeUpd);
     };
   }, [bookId, voice, readyChapters.length, savePos]);
+
+  // Persist the last played position when the tab is hidden/closed or the
+  // player unmounts, so resume always lands on the most recent spot.
+  useEffect(() => {
+    const flush = () => savePos();
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', flush);
+      savePos();
+    };
+  }, [savePos]);
 
   const applySpeed = (next: number) => {
     setSpeed(next);
@@ -291,26 +304,28 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
         <div className="progress-fill" style={{ width: `${pct}%` }} />
       </div>
 
-      {timeline.length > 0 && (
-        <div className="min-h-[4rem] flex flex-col items-center justify-center text-center gap-1 px-1">
-          <p
-            className="text-base sm:text-lg text-gray-100 leading-snug cursor-pointer"
-            onClick={() => seekTo((activeLine >= 0 ? timeline[activeLine] : timeline[0]).start)}
-            title="Replay this line"
-          >
-            {(activeLine >= 0 ? timeline[activeLine] : timeline[0]).text}
-          </p>
-          {activeLine + 1 < timeline.length && (
+      <div className="min-h-[7rem] flex flex-col items-center justify-center text-center gap-1 px-1">
+        {timeline.length > 0 && (
+          <>
             <p
-              className="text-xs text-gray-600 leading-snug line-clamp-1 cursor-pointer hover:text-gray-400"
-              onClick={() => seekTo(timeline[activeLine + 1].start)}
-              title="Skip ahead"
+              className="text-base sm:text-lg text-gray-100 leading-snug cursor-pointer"
+              onClick={() => seekTo((activeLine >= 0 ? timeline[activeLine] : timeline[0]).start)}
+              title="Replay this line"
             >
-              {timeline[activeLine + 1].text}
+              {(activeLine >= 0 ? timeline[activeLine] : timeline[0]).text}
             </p>
-          )}
-        </div>
-      )}
+            {activeLine + 1 < timeline.length && (
+              <p
+                className="text-xs text-gray-600 leading-snug line-clamp-1 cursor-pointer hover:text-gray-400"
+                onClick={() => seekTo(timeline[activeLine + 1].start)}
+                title="Skip ahead"
+              >
+                {timeline[activeLine + 1].text}
+              </p>
+            )}
+          </>
+        )}
+      </div>
 
       <div className="flex items-center justify-center gap-2">
         <button className="p-1.5 text-gray-300 hover:text-amber-400 transition-colors disabled:opacity-30 disabled:hover:text-gray-300"

@@ -67,6 +67,9 @@ export interface IOcrPage {
 export interface IBook extends Document {
   name: string;
   status: BookStatus;
+  // Book-wide language (ISO 639-1), detected once from the summary page. Used for
+  // speech normalization in place of per-page detection.
+  language?: string;
   folderPath: string;
   filePath: string;
   coverImagePath?: string;
@@ -192,6 +195,7 @@ const BookSchema = new Schema<IBook>(
       ],
       default: 'uploading',
     },
+    language: { type: String },
     folderPath: { type: String, required: true },
     filePath: { type: String, required: true },
     coverImagePath: { type: String },
