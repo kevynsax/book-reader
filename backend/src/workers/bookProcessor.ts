@@ -5,10 +5,13 @@ import { Book, IBook, IChapter, IVoiceTrack, freshTracks, trackForVoice, deriveT
 import { splitPdfIntoPages, findPageImagePath, getAllPagePaths, copyPageAsCover } from '../services/pdfService.js';
 import { ocrPage, detectChapters, extractBookTitle } from '../services/ocrService.js';
 import { sanitizePageText } from '../lib/sanitize.js';
-import { synthesizeSegment, assembleChapter, buildSpeakableSentences } from '../services/ttsService.js';
+import { synthesizeSegment, assembleChapter } from '../services/ttsService.js';
+import { reflowSentences, splitLongSentence } from '../lib/sentences.js';
+import { normalizeForSpeech } from '../services/textNormalizer.js';
 import { parseVoice } from '../services/ttsEngines.js';
 import { readyServersFor, pickReadyServer, TtsServer } from '../services/ttsServers.js';
 import { DEFAULT_LANGUAGE } from '../config.js';
+import { resolveLang } from '../data/bibleBooks.js';
 
 function emit(io: SocketServer, book: IBook, update: Record<string, unknown>) {
   io.emit('book:update', { bookId: book._id.toString(), updatedAt: book.updatedAt, ...update });
@@ -26,12 +29,14 @@ class SaveLock {
   }
 }
 
-function extractChapterText(
+// The chapter's text sliced per page (by startChar/endChar), kept as separate
+// strings so phase 2 can apply the cross-page sentence-continuation rule.
+function extractChapterPageTexts(
   chapters: IBook['chapters'],
   idx: number,
   ocrPages: IBook['ocrPages'],
   lastPage: number,
-): string {
+): string[] {
   const chapter   = chapters[idx];
   const next      = chapters[idx + 1];
   const startPage = chapter.startPage;
@@ -51,11 +56,44 @@ function extractChapterText(
     if (isFirst) return text.slice(startChar);
     if (isLast)  return endChar >= 0 ? text.slice(0, endChar) : text;
     return text;
-  }).join('\n\n').trim();
+  });
+}
+
+// A page's own language for speech normalization, falling back to the default
+// when OCR couldn't determine it.
+export function speechLanguage(language: string | undefined): string {
+  return language && language !== 'unknown' ? resolveLang(language) : resolveLang(DEFAULT_LANGUAGE);
+}
+
+function startsLowercase(s: string): boolean {
+  const m = s.match(/\p{L}/u);
+  if (!m) return false;
+  const ch = m[0];
+  return ch !== ch.toUpperCase() && ch === ch.toLowerCase();
+}
+
+// Phase 2: each line of the (phase-1 reflowed) page text is a sentence. At a page
+// seam, a first line that starts lowercase continues the previous page's last
+// sentence; one that starts with a capital begins a new sentence.
+function assembleSentences(pageTexts: string[]): string[] {
+  const out: string[] = [];
+  pageTexts.forEach((pageText, pi) => {
+    const lines = pageText.split('\n').map(l => l.trim()).filter(Boolean);
+    lines.forEach((line, li) => {
+      if (pi > 0 && li === 0 && out.length > 0 && startsLowercase(line)) {
+        out[out.length - 1] = `${out[out.length - 1]} ${line}`;
+      } else {
+        out.push(line);
+      }
+    });
+  });
+  return out;
 }
 
 // Dominant language for a chapter: first non-'unknown' page language in its
-// page range, falling back to the configured default. Used as the TTS lang_code.
+// page range, falling back to the configured default. Resolved to a supported
+// ISO code so it doubles as the TTS lang_code (Kokoro maps 'pt'/'en', not raw
+// OCR strings like 'pt-br' or 'portuguese').
 function chapterLanguage(
   chapters: IBook['chapters'],
   idx: number,
@@ -68,7 +106,7 @@ function chapterLanguage(
     .filter(p => p.page >= startPage && p.page <= endPage && p.status === 'complete')
     .map(p => p.language)
     .find(l => l && l !== 'unknown');
-  return lang || DEFAULT_LANGUAGE;
+  return resolveLang(lang || DEFAULT_LANGUAGE);
 }
 
 async function setProgress(
@@ -143,8 +181,10 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
 
       try {
         const result = await ocrPage(imagePath);
-        book.ocrPages[i].text = result.content;
+        const reflowed = reflowSentences(result.content);
+        book.ocrPages[i].text = reflowed;
         book.ocrPages[i].language = result.language;
+        book.ocrPages[i].readText = await normalizeForSpeech(reflowed, speechLanguage(result.language));
         book.ocrPages[i].status = 'complete';
       } catch {
         book.ocrPages[i].status = 'error';
@@ -153,7 +193,7 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
       await book.save();
       emit(io, book, {
         progress: { current: i + 1, total: readPages.length, message: `OCR page ${pageNum}/${book.lastPage}…` },
-        ocrPage: { page: pageNum, text: book.ocrPages[i].text, status: book.ocrPages[i].status },
+        ocrPage: { page: pageNum, text: book.ocrPages[i].text, readText: book.ocrPages[i].readText, status: book.ocrPages[i].status },
       });
     }
 
@@ -234,7 +274,7 @@ function orderedSegmentInputs(chapter: IChapter, track: IVoiceTrack) {
     .sort((a, b) => a.order - b.order)
     .map(sen => {
       const seg = byId.get(String(sen._id));
-      return { audioPath: seg?.audioPath ?? '', durationSecs: seg?.durationSecs ?? 0, text: sen.text };
+      return { audioPath: seg?.audioPath ?? '', durationSecs: seg?.durationSecs ?? 0, text: sen.text, display: sen.display || sen.text };
     });
 }
 
@@ -244,12 +284,25 @@ async function buildSentences(book: IBook, idx: number, lock: SaveLock): Promise
   const chapter = book.chapters[idx];
   if (chapter.sentences.length > 0) return true;
 
-  const text = extractChapterText(book.chapters, idx, book.ocrPages, book.lastPage);
-  if (!text) return false;
+  const pageTexts = extractChapterPageTexts(book.chapters, idx, book.ocrPages, book.lastPage);
+  const units = assembleSentences(pageTexts);
+  if (units.length === 0) return false;
 
   const language = chapterLanguage(book.chapters, idx, book.ocrPages, book.lastPage);
-  const sentences = await buildSpeakableSentences(text, language);
-  setSubdoc(chapter, 'sentences', sentences.map((t, order) => ({ order, text: t })));
+  // `text` is what gets read (speech-normalized); `display` keeps the original
+  // reviewed text so the player shows it instead of the TTS conversions. A long
+  // sentence that splits for TTS falls back to the piece text for display.
+  const sentences: { text: string; display: string }[] = [];
+  for (const unit of units) {
+    const norm = (await normalizeForSpeech(unit, language)).trim();
+    if (!norm) continue;
+    const pieces = splitLongSentence(norm);
+    if (pieces.length === 1) sentences.push({ text: pieces[0], display: unit });
+    else for (const piece of pieces) sentences.push({ text: piece, display: piece });
+  }
+  if (sentences.length === 0) return false;
+
+  setSubdoc(chapter, 'sentences', sentences.map((s, order) => ({ order, ...s })));
   await lock.run(() => book.save());
   return true;
 }
@@ -535,6 +588,74 @@ export async function regenerateChapterAudio(bookId: string, chapterIdx: number,
   }
 }
 
+// Discard one voice's cached segments + audio files for a chapter so it
+// re-synthesizes from scratch. Keeps the chapter's shared sentences intact.
+async function clearTrackAudio(book: IBook, audioDir: string, chapterIdx: number, voice: string): Promise<void> {
+  const track = trackForVoice(book.chapters[chapterIdx], voice);
+  if (track) {
+    setSubdoc(track, 'segments', []);
+    track.audioStatus = 'pending';
+    track.audioError = undefined;
+    track.audioPath = undefined;
+    track.audioDurationSecs = undefined;
+  }
+  await fs.rm(segmentDir(audioDir, chapterIdx, voice), { recursive: true, force: true }).catch(() => {});
+  await fs.rm(chapterAudioPath(audioDir, chapterIdx, voice), { force: true }).catch(() => {});
+}
+
+// Regenerate one voice across every chapter (e.g. generation stalled or a server
+// restarted mid-run). Resets just that voice's tracks, then re-renders it.
+export async function regenerateVoiceAudio(bookId: string, voice: string, io: SocketServer): Promise<void> {
+  const book = await Book.findById(bookId);
+  if (!book) return;
+  if (!book.voices.includes(voice)) return;
+
+  const audioDir = path.join(book.folderPath, 'audio');
+  await fs.mkdir(audioDir, { recursive: true });
+
+  for (let idx = 0; idx < book.chapters.length; idx++) {
+    await clearTrackAudio(book, audioDir, idx, voice);
+  }
+  await book.save();
+  emit(io, book, { chapters: serializeChaptersForClient(book.chapters) });
+
+  try {
+    await generateForVoices(book, io, [voice], false);
+  } catch (err) {
+    console.error(`regenerateVoiceAudio ${bookId} ${voice} failed:`, err);
+  }
+}
+
+// Regenerate a single chapter for a single voice.
+export async function regenerateChapterVoiceAudio(bookId: string, chapterIdx: number, voice: string, io: SocketServer): Promise<void> {
+  const book = await Book.findById(bookId);
+  if (!book) return;
+
+  const chapter = book.chapters[chapterIdx];
+  if (!chapter || !book.voices.includes(voice)) return;
+
+  const audioDir = path.join(book.folderPath, 'audio');
+  await fs.mkdir(audioDir, { recursive: true });
+
+  await clearTrackAudio(book, audioDir, chapterIdx, voice);
+  await book.save();
+  emit(io, book, { chapterUpdate: { idx: chapterIdx, voice, audioStatus: 'pending' } });
+
+  const lock = new SaveLock();
+  const progress = { done: 0, total: 1 };
+  const { model } = parseVoice(voice);
+  const server = await pickReadyServer(model.id);
+  if (!server) {
+    const track = trackForVoice(chapter, voice);
+    const audioError = `No TTS server is online for model "${model.id}" — start the server and try again.`;
+    if (track) { track.audioStatus = 'error'; track.audioError = audioError; }
+    await book.save();
+    emit(io, book, { chapterUpdate: { idx: chapterIdx, voice, audioStatus: 'error', audioError } });
+    return;
+  }
+  await renderChapter(book, io, voice, chapterIdx, server, audioDir, lock, progress);
+}
+
 // Re-synthesize one sentence's segment for the given voices, then reassemble
 // each affected chapter mp3. Shared by edit + single-sentence regenerate.
 async function rerenderSegment(
@@ -611,6 +732,7 @@ export async function editSentence(
   if (!sentence) return;
 
   sentence.text = text;
+  sentence.display = text;
   for (const track of chapter.tracks) {
     const seg = track.segments.find(s => String(s.sentenceId) === sentenceId);
     if (seg) { seg.audioStatus = 'stale'; seg.audioError = undefined; }

@@ -33,6 +33,11 @@ export const TTS_SERVERS: TtsServerConfig[] = parseServers();
 export const DATA_DIR = process.env.DATA_DIR || './data';
 export const DEFAULT_VOICE = process.env.TTS_VOICE || 'chatterbox:pt-BR-FranciscaNeural';
 export const TTS_SPEED = parseFloat(process.env.TTS_SPEED || '1.0');
+export const TTS_VOLUME_GAIN = parseFloat(process.env.TTS_VOLUME_GAIN || '1.15');
+export const TITLE_MAX_WORDS = parseInt(process.env.TITLE_MAX_WORDS || '5');
+export const TITLE_SILENCE_SECS = parseFloat(process.env.TITLE_SILENCE_SECS || '0.7');
+// Extra gain applied to title segments so headings read a touch louder than body.
+export const TITLE_VOLUME_GAIN = parseFloat(process.env.TITLE_VOLUME_GAIN || '1.1');
 export const DEFAULT_LANGUAGE = process.env.TTS_LANGUAGE || 'en';
 export const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
 

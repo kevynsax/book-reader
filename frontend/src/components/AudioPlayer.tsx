@@ -175,7 +175,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
     const onTimeUpd = () => {
       setCurrentTime(audio.currentTime);
       if (timelineRef.current.length) {
-        const idx = activeLineAt(timelineRef.current, audio.currentTime);
+        const idx = activeLineAt(timelineRef.current, audio.currentTime + 0.7);
         setActiveLine(prev => (prev === idx ? prev : idx));
       }
       if (audio.currentTime - lastSave.current >= 5) {
@@ -228,6 +228,32 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
     if (!audio) return;
     const max = audio.duration || duration || Infinity;
     audio.currentTime = Math.min(max, Math.max(0, audio.currentTime + delta));
+  };
+
+  const hasNext = activeLine + 1 < timeline.length || currentIdx < readyChapters.length - 1;
+  const hasPrev = activeLine > 0 || currentIdx > 0;
+
+  // Advance to the next sentence using the read-along timeline; only roll over to
+  // the next chapter once the current chapter's last sentence is reached.
+  const nextSentence = () => {
+    const next = activeLine + 1;
+    if (next < timeline.length) {
+      seekTo(timeline[next].start);
+    } else if (currentIdx < readyChapters.length - 1) {
+      savePos();
+      setCurrentIdx(i => i + 1);
+    }
+  };
+
+  // Go back to the previous sentence; only roll back to the prior chapter once
+  // the current chapter's first sentence is reached.
+  const prevSentence = () => {
+    if (activeLine > 0) {
+      seekTo(timeline[activeLine - 1].start);
+    } else if (currentIdx > 0) {
+      savePos();
+      setCurrentIdx(i => i - 1);
+    }
   };
 
   const chapterSecs    = readyChapters.map(c => trackFor(c, voice)?.audioDurationSecs ?? 0);
@@ -288,9 +314,9 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
 
       <div className="flex items-center justify-center gap-2">
         <button className="p-1.5 text-gray-300 hover:text-amber-400 transition-colors disabled:opacity-30 disabled:hover:text-gray-300"
-          onClick={() => { savePos(); setCurrentIdx(i => Math.max(0, i - 1)); }}
-          disabled={currentIdx === 0}
-          title="Previous chapter">
+          onClick={prevSentence}
+          disabled={!hasPrev}
+          title="Previous sentence">
           <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
             <rect x="4.3" y="4.5" width="2.2" height="15" rx="1" />
             <path d="M18 5.14v13.72a1 1 0 01-1.54.84L7.12 12.84a1 1 0 010-1.68l9.34-6.86A1 1 0 0118 5.14z" />
@@ -327,9 +353,9 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
         </button>
 
         <button className="p-1.5 text-gray-300 hover:text-amber-400 transition-colors disabled:opacity-30 disabled:hover:text-gray-300"
-          onClick={() => { savePos(); setCurrentIdx(i => Math.min(readyChapters.length - 1, i + 1)); }}
-          disabled={currentIdx >= readyChapters.length - 1}
-          title="Next chapter">
+          onClick={nextSentence}
+          disabled={!hasNext}
+          title="Next sentence">
           <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
             <path d="M6 5.14v13.72a1 1 0 001.54.84l9.34-6.86a1 1 0 000-1.68L7.54 4.3A1 1 0 006 5.14z" />
             <rect x="17.5" y="4.5" width="2.2" height="15" rx="1" />

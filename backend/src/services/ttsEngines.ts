@@ -31,7 +31,7 @@ const KOKORO_VOICES = [
 export const MODELS: TtsModel[] = [
   { id: 'chatterbox', label: 'Chatterbox', usesLanguage: true, named: false, fallbackVoices: CLONE_VOICES },
   { id: 'openaudio', label: 'OpenAudio (Fish)', usesLanguage: true, named: false, fallbackVoices: CLONE_VOICES },
-  { id: 'kokoro', label: 'Kokoro', usesLanguage: false, named: true, fallbackVoices: KOKORO_VOICES },
+  { id: 'kokoro', label: 'Kokoro', usesLanguage: true, named: true, fallbackVoices: KOKORO_VOICES },
 ];
 
 export function getModel(id: string): TtsModel | undefined {

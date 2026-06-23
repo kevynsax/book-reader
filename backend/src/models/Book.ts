@@ -39,7 +39,10 @@ export interface IVoiceTrack {
 export interface ISentence {
   _id: Types.ObjectId;
   order: number;
+  // The speech-ready text that is actually synthesized (references/acronyms
+  // expanded). `display` is the original reviewed text shown to the reader.
   text: string;
+  display?: string;
 }
 
 export interface IChapter {
@@ -54,6 +57,9 @@ export interface IChapter {
 export interface IOcrPage {
   page: number;
   text: string;
+  // The OCR'd, reviewed text rewritten for speech (references/acronyms expanded).
+  // What actually gets read; kept alongside `text` so the review UI can diff them.
+  readText?: string;
   language: string;
   status: 'pending' | 'processing' | 'complete' | 'error';
 }
@@ -151,6 +157,7 @@ const VoiceTrackSchema = new Schema<IVoiceTrack>(
 const SentenceSchema = new Schema<ISentence>({
   order: { type: Number, required: true },
   text: { type: String, default: '' },
+  display: { type: String, default: '' },
 });
 
 const ChapterSchema = new Schema<IChapter>({
@@ -164,6 +171,7 @@ const ChapterSchema = new Schema<IChapter>({
 const OcrPageSchema = new Schema<IOcrPage>({
   page: { type: Number, required: true },
   text: { type: String, default: '' },
+  readText: { type: String },
   language: { type: String, default: 'unknown' },
   status: {
     type: String,

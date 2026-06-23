@@ -1,16 +1,74 @@
-import { useState, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
+import { useState, useEffect, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
+import { createPortal } from 'react-dom';
+import { useDispatch } from 'react-redux';
+import { AppDispatch } from '../store';
+import { updatePageText } from '../store/booksSlice';
 import { OcrPage } from '../types';
-import { api } from '../api/booksApi';
+import { diffText } from '../lib/diff';
 import PagePreview from './PagePreview';
+
+// Render the reviewed text, highlighting spans that get rewritten for speech.
+// Hovering a highlight instantly reveals what will actually be read (a custom
+// portal tooltip — the native `title` delay is too slow, and a portal avoids the
+// scroll panel clipping it).
+function ReadDiff({ text, read }: { text: string; read?: string }) {
+  const segs = useMemo(
+    () => (read && read !== text ? diffText(text, read) : null),
+    [text, read],
+  );
+  const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
+
+  const base = 'font-mono text-xs leading-relaxed text-gray-200 whitespace-pre-wrap';
+  if (!segs) return <p className={base}>{text}</p>;
+
+  const show = (e: React.MouseEvent, spoken: string) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setTip({ text: spoken, x: r.left + r.width / 2, y: r.top });
+  };
+
+  return (
+    <>
+      <p className={base}>
+        {segs.map((s, i) => {
+          if (s.read === null) return <span key={i}>{s.text}</span>;
+          const spoken = s.read.trim() || 'omitted when read';
+          const cls = s.text === ''
+            ? 'bg-emerald-600/30 text-emerald-200 rounded-sm px-0.5 cursor-help'
+            : 'bg-amber-500/25 text-amber-200 rounded-sm cursor-help';
+          return (
+            <mark
+              key={i}
+              className={cls}
+              onMouseEnter={e => show(e, spoken)}
+              onMouseLeave={() => setTip(null)}
+            >
+              {s.text === '' ? '＋' : s.text}
+            </mark>
+          );
+        })}
+      </p>
+      {tip && createPortal(
+        <div
+          className="fixed z-50 -translate-x-1/2 -translate-y-full -mt-1 pointer-events-none max-w-xs
+                     rounded border border-gray-700 bg-gray-950 px-2 py-1 text-[11px] text-gray-100
+                     shadow-lg whitespace-normal break-words"
+          style={{ left: tip.x, top: tip.y }}
+        >
+          {tip.text}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
 
 interface Props {
   bookId: string;
   ocrPages: OcrPage[];
-  onTextSaved?: () => void;
 }
 
 export interface TextReviewHandle {
-  /** Open the fullscreen reader on the given (or nearest processed) page. */
+  /** Open the fullscreen editor on the given (or nearest processed) page. */
   openAt: (page: number) => void;
 }
 
@@ -24,38 +82,15 @@ interface PageViewProps {
   bookId: string;
   page: OcrPage;
   large?: boolean;
-  onTextSaved?: () => void;
   /** When set, the image is shown via the zoom/pan PagePreview instead of a plain <img>. */
   preview?: PreviewNav;
+  /** When set, the text panel becomes an auto-saving textarea. */
+  edit?: { draft: string; onChange: (text: string) => void; onBlur: () => void };
 }
 
-function PageView({ bookId, page, large, onTextSaved, preview }: PageViewProps) {
-  const [editText, setEditText] = useState(page.text ?? '');
-  const [dirty,    setDirty]    = useState(false);
-  const [saving,   setSaving]   = useState(false);
-  const [saveOk,   setSaveOk]   = useState(false);
-
-  useEffect(() => {
-    setEditText(page.text ?? '');
-    setDirty(false);
-    setSaveOk(false);
-  }, [page.page, page.text]);
-
-  const save = useCallback(async () => {
-    setSaving(true);
-    try {
-      await api.put(`/api/books/${bookId}/pages/${page.page}/text`, { text: editText });
-      setDirty(false);
-      setSaveOk(true);
-      setTimeout(() => setSaveOk(false), 2000);
-      onTextSaved?.();
-    } finally {
-      setSaving(false);
-    }
-  }, [bookId, page.page, editText]);
-
+function PageView({ bookId, page, large, preview, edit }: PageViewProps) {
   return (
-    <div className={`grid grid-cols-2 gap-4 ${large ? 'h-full min-h-0 grid-rows-1' : ''}`}>
+    <div className={`grid grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)] gap-4 ${large ? 'h-full min-h-0 grid-rows-1' : ''}`}>
       {preview ? (
         <div className="min-h-0">
           <PagePreview
@@ -77,35 +112,34 @@ function PageView({ bookId, page, large, onTextSaved, preview }: PageViewProps) 
           />
         </div>
       )}
-      <div className="flex flex-col gap-2">
-        {page.status === 'processing' ? (
-          <div className="flex-1 bg-gray-800/50 rounded-lg p-3 flex items-center">
-            <span className="text-xs text-amber-400 animate-pulse">Reading page…</span>
-          </div>
-        ) : (
-          <>
+      <div className={`bg-gray-800/50 rounded-lg p-3 overflow-y-auto min-h-0 ${large ? '' : 'max-h-[70vh]'}`}>
+        {edit ? (
+          <div className="flex flex-col h-full min-h-0">
+            <p className="text-[11px] text-gray-500 mb-2 shrink-0">
+              One sentence per line · blank line separates paragraphs
+            </p>
             <textarea
-              className="input font-mono text-sm leading-relaxed resize-none flex-1"
-              style={{ minHeight: 0 }}
-              value={editText}
-              onChange={e => { setEditText(e.target.value); setDirty(true); setSaveOk(false); }}
-              onBlur={() => { if (dirty && editText.trim()) save(); }}
-              spellCheck={false}
-              placeholder="No text extracted for this page"
+              autoFocus
+              className="w-full flex-1 min-h-[60vh] bg-transparent font-mono text-xs leading-relaxed text-gray-200 resize-none outline-none"
+              value={edit.draft}
+              onChange={e => edit.onChange(e.target.value)}
+              onBlur={edit.onBlur}
             />
-            <div className="h-5 flex items-center gap-3">
-              {saving  && <span className="text-xs text-gray-500">Saving…</span>}
-              {saveOk  && <span className="text-xs text-green-400">✓ Saved</span>}
-              {dirty && !saving && !saveOk && <span className="text-xs text-amber-400">Unsaved changes</span>}
-            </div>
-          </>
+          </div>
+        ) : page.status === 'processing' ? (
+          <span className="text-xs text-amber-400 animate-pulse">Reading page…</span>
+        ) : page.text?.trim() ? (
+          <ReadDiff text={page.text} read={page.readText} />
+        ) : (
+          <span className="text-xs text-gray-500">No text extracted for this page</span>
         )}
       </div>
     </div>
   );
 }
 
-const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ bookId, ocrPages, onTextSaved }, ref) {
+const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ bookId, ocrPages }, ref) {
+  const dispatch = useDispatch<AppDispatch>();
   const processed = ocrPages.filter(p => p.status === 'complete' || p.status === 'processing');
   const done      = ocrPages.filter(p => p.status === 'complete').length;
   const total     = ocrPages.length;
@@ -114,6 +148,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
   const [idx,        setIdx]        = useState(0);
   const [userMoved,  setUserMoved]  = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [draft,      setDraft]      = useState('');
 
   useEffect(() => {
     if (!userMoved && processed.length > 0) setIdx(processed.length - 1);
@@ -142,14 +177,24 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     openAt: (page: number) => { goToPage(page); setFullscreen(true); },
   }), [goToPage]);
 
+  const safeIdx = Math.min(idx, Math.max(0, processed.length - 1));
+  const page    = processed[safeIdx];
+
+  // Keep the editor draft in sync with the page being shown.
+  useEffect(() => { setDraft(page?.text ?? ''); }, [page?.page, page?.text, fullscreen]);
+
   if (processed.length === 0) return null;
 
-  const safeIdx = Math.min(idx, processed.length - 1);
-  const page    = processed[safeIdx];
   const minPage = processed[0].page;
   const maxPage = processed[processed.length - 1].page;
   const prev = () => { setUserMoved(true); setIdx(i => Math.max(0, i - 1)); };
   const next = () => { setUserMoved(true); setIdx(i => Math.min(processed.length - 1, i + 1)); };
+
+  const saveDraft = () => {
+    if (draft !== (page.text ?? '')) {
+      dispatch(updatePageText({ bookId, page: page.page, text: draft }));
+    }
+  };
 
   const Nav = () => (
     <div className="flex items-center gap-1 shrink-0">
@@ -182,11 +227,11 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
             <button
               className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
               onClick={() => setFullscreen(true)}
-              title="Fullscreen"
+              title="Edit"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" />
+                  d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
               </svg>
             </button>
           </div>
@@ -203,7 +248,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
           <span className="text-gray-500"> · {safeIdx + 1}/{processed.length}</span>
         </div>
 
-        <PageView bookId={bookId} page={page} onTextSaved={onTextSaved} />
+        <PageView bookId={bookId} page={page} />
       </div>
 
       {fullscreen && (
@@ -224,7 +269,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
 
             <button
               className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors shrink-0"
-              onClick={() => setFullscreen(false)}
+              onClick={() => { saveDraft(); setFullscreen(false); }}
               title="Close (Esc)"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -238,8 +283,8 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
               bookId={bookId}
               page={page}
               large
-              onTextSaved={onTextSaved}
-              preview={{ totalPages: maxPage, minPage, onPageChange: goToPage }}
+              preview={{ totalPages: maxPage, minPage, onPageChange: (p) => { saveDraft(); goToPage(p); } }}
+              edit={{ draft, onChange: setDraft, onBlur: saveDraft }}
             />
           </div>
         </div>

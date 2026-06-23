@@ -25,9 +25,16 @@ export const updateChapters = createAsyncThunk(
 
 export const confirmChapters = createAsyncThunk(
   'books/confirmChapters',
-  async ({ bookId, chapters, voice }: { bookId: string; chapters: { title: string; startPage: number; startChar: number }[]; voice?: string }) => {
-    await api.put(`/api/books/${bookId}/chapters`, { chapters, voice });
+  async ({ bookId, chapters, voices }: { bookId: string; chapters: { title: string; startPage: number; startChar: number }[]; voices?: string[] }) => {
+    await api.put(`/api/books/${bookId}/chapters`, { chapters, voices });
     return bookId;
+  }
+);
+
+export const updatePageText = createAsyncThunk(
+  'books/updatePageText',
+  async ({ bookId, page, text }: { bookId: string; page: number; text: string }) => {
+    await api.put(`/api/books/${bookId}/pages/${page}/text`, { text });
   }
 );
 
@@ -63,6 +70,20 @@ export const removeVoice = createAsyncThunk(
   'books/removeVoice',
   async ({ bookId, voice }: { bookId: string; voice: string }) => {
     await api.delete(`/api/books/${bookId}/voices/${encodeURIComponent(voice)}`);
+  }
+);
+
+export const regenerateVoice = createAsyncThunk(
+  'books/regenerateVoice',
+  async ({ bookId, voice }: { bookId: string; voice: string }) => {
+    await api.post(`/api/books/${bookId}/voices/${encodeURIComponent(voice)}/regenerate`);
+  }
+);
+
+export const regenerateChapterVoice = createAsyncThunk(
+  'books/regenerateChapterVoice',
+  async ({ bookId, chapterIdx, voice }: { bookId: string; chapterIdx: number; voice: string }) => {
+    await api.post(`/api/books/${bookId}/chapters/${chapterIdx}/voices/${encodeURIComponent(voice)}/regenerate`);
   }
 );
 
@@ -102,10 +123,11 @@ const booksSlice = createSlice({
       if (patch.chapters) book.chapters = patch.chapters as Chapter[];
 
       if (patch.ocrPage) {
-        const up = patch.ocrPage as { page: number; text?: string; status?: OcrPage['status'] };
+        const up = patch.ocrPage as { page: number; text?: string; readText?: string; status?: OcrPage['status'] };
         const pageIdx = book.ocrPages.findIndex(p => p.page === up.page);
         if (pageIdx !== -1) {
           if (up.text !== undefined) book.ocrPages[pageIdx].text = up.text;
+          if (up.readText !== undefined) book.ocrPages[pageIdx].readText = up.readText;
           if (up.status !== undefined) book.ocrPages[pageIdx].status = up.status;
         }
       }

@@ -64,6 +64,7 @@ export interface Chapter {
 export interface OcrPage {
   page: number;
   text: string;
+  readText?: string;
   language: string;
   status: 'pending' | 'processing' | 'complete' | 'error';
 }

@@ -1,9 +1,9 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { TTS_SPEED, DEFAULT_LANGUAGE } from '../config.js';
-import { normalizeMp3, probeDurationSecs, probeMp3Buffer } from './audioProbe.js';
+import { TTS_SPEED, DEFAULT_LANGUAGE, TTS_VOLUME_GAIN, TITLE_MAX_WORDS, TITLE_SILENCE_SECS, TITLE_VOLUME_GAIN } from '../config.js';
+import { normalizeMp3, probeDurationSecs, probeMp3Buffer, probeAudioFormat, generateSilence, applyVolume } from './audioProbe.js';
 import { normalizeForSpeech } from './textNormalizer.js';
-import { splitIntoSentences } from '../lib/sentences.js';
+import { isTitle } from '../lib/sentences.js';
 import { parseVoice, TtsModel } from './ttsEngines.js';
 import { pickReadyServer } from './ttsServers.js';
 
@@ -21,14 +21,6 @@ const CHUNK_RETRIES = 2;
 // Path of the read-along timeline JSON for a given chapter audio file.
 export function timelinePathFor(audioPath: string): string {
   return `${audioPath}.timeline.json`;
-}
-
-// Speech-ready sentences for a chapter: normalize once, then split. The result
-// is what gets stored as the editable source of truth (no re-normalization on
-// edit, so a fix renders exactly what you typed).
-export async function buildSpeakableSentences(text: string, language: string): Promise<string[]> {
-  const speakable = await normalizeForSpeech(text, language);
-  return splitIntoSentences(speakable);
 }
 
 export async function synthesizeSample(text: string, voice: string): Promise<Buffer> {
@@ -108,7 +100,7 @@ export async function synthesizeSegment(
 // read-along timeline. Segment durations are summed then scaled to the probed
 // file duration so highlight anchoring survives the concat/re-encode.
 export async function assembleChapter(
-  segments: { audioPath: string; durationSecs: number; text: string }[],
+  segments: { audioPath: string; durationSecs: number; text: string; display?: string }[],
   outputPath: string,
 ): Promise<number> {
   if (segments.length === 0) throw new Error('No segments to assemble');
@@ -117,17 +109,33 @@ export async function assembleChapter(
   const rawPath = path.join(tmpDir, `_raw_${path.basename(outputPath)}.mp3`);
 
   try {
+    let silence: Buffer | null = null;
+    if (segments.some(s => isTitle(s.text, TITLE_MAX_WORDS))) {
+      const { sampleRate, channels } = await probeAudioFormat(segments[0].audioPath);
+      silence = await generateSilence(TITLE_SILENCE_SECS, sampleRate, channels);
+    }
+
     const buffers: Buffer[] = [];
     const timeline: TimelineEntry[] = [];
     let cursor = 0;
     for (const seg of segments) {
-      buffers.push(await fs.readFile(seg.audioPath));
-      timeline.push({ text: seg.text, start: cursor, end: cursor + seg.durationSecs });
+      const title = silence && isTitle(seg.text, TITLE_MAX_WORDS);
+      if (title) {
+        buffers.push(silence!);
+        cursor += TITLE_SILENCE_SECS;
+      }
+      const segBuf = await fs.readFile(seg.audioPath);
+      buffers.push(title ? await applyVolume(segBuf, TITLE_VOLUME_GAIN) : segBuf);
+      timeline.push({ text: seg.display ?? seg.text, start: cursor, end: cursor + seg.durationSecs });
       cursor += seg.durationSecs;
+      if (title) {
+        buffers.push(silence!);
+        cursor += TITLE_SILENCE_SECS;
+      }
     }
 
     await fs.writeFile(rawPath, Buffer.concat(buffers));
-    await normalizeMp3(rawPath, outputPath);
+    await normalizeMp3(rawPath, outputPath, TTS_VOLUME_GAIN);
     const finalDuration = await probeDurationSecs(outputPath);
 
     const scale = cursor > 0 ? finalDuration / cursor : 1;

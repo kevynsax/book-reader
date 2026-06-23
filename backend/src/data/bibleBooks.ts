@@ -4,18 +4,21 @@
 // that immediately precedes a `chapter:verse` reference.
 
 export interface Connectives {
+  lang: string;
   chapter: string;
+  chapters: string;
   verse: string;
   verses: string;
   through: string;
   and: string;
   page: string;
   pages: string;
+  point: string;
 }
 
 export const CONNECTIVES: Record<string, Connectives> = {
-  en: { chapter: 'chapter', verse: 'verse', verses: 'verses', through: 'through', and: 'and', page: 'on the page', pages: 'on the pages' },
-  pt: { chapter: 'capítulo', verse: 'versículo', verses: 'versículos', through: 'a', and: 'e', page: 'na página', pages: 'nas páginas' },
+  en: { lang: 'en', chapter: 'chapter', chapters: 'chapters', verse: 'verse', verses: 'verses', through: 'through', and: 'and', page: 'on the page', pages: 'on the pages', point: 'point' },
+  pt: { lang: 'pt', chapter: 'capítulo', chapters: 'capítulos', verse: 'versículo', verses: 'versículos', through: 'a', and: 'e', page: 'na página', pages: 'nas páginas', point: 'vírgula' },
 };
 
 interface BookDef { say: string; aliases: string[]; }
@@ -104,12 +107,12 @@ const PT_BOOKS: BookDef[] = [
   { say: 'josué', aliases: ['josué', 'js', 'jos'] },
   { say: 'juízes', aliases: ['juízes', 'jz', 'juí'] },
   { say: 'rute', aliases: ['rute', 'rt'] },
-  { say: 'primeiro samuel', aliases: ['1 samuel', '1 sm', '1 sam'] },
-  { say: 'segundo samuel', aliases: ['2 samuel', '2 sm', '2 sam'] },
-  { say: 'primeiro reis', aliases: ['1 reis', '1 rs', '1 re'] },
-  { say: 'segundo reis', aliases: ['2 reis', '2 rs', '2 re'] },
-  { say: 'primeiro crônicas', aliases: ['1 crônicas', '1 cr'] },
-  { say: 'segundo crônicas', aliases: ['2 crônicas', '2 cr'] },
+  { say: 'primeira samuel', aliases: ['1 samuel', '1 sm', '1 sam'] },
+  { say: 'segunda samuel', aliases: ['2 samuel', '2 sm', '2 sam'] },
+  { say: 'primeira reis', aliases: ['1 reis', '1 rs', '1 re'] },
+  { say: 'segunda reis', aliases: ['2 reis', '2 rs', '2 re'] },
+  { say: 'primeira crônicas', aliases: ['1 crônicas', '1 cr'] },
+  { say: 'segunda crônicas', aliases: ['2 crônicas', '2 cr'] },
   { say: 'esdras', aliases: ['esdras', 'ed', 'esd'] },
   { say: 'neemias', aliases: ['neemias', 'ne', 'nee'] },
   { say: 'ester', aliases: ['ester', 'et', 'est'] },
@@ -176,8 +179,23 @@ export const BIBLE_BOOKS: Record<string, Map<string, string>> = {
   pt: buildMap(PT_BOOKS),
 };
 
+// OCR-detected language strings vary ("pt-br", "portuguese", "português"); map
+// the common variants onto the supported ISO code before table lookup.
+const LANG_ALIASES: Record<string, string> = {
+  por: 'pt', 'pt-br': 'pt', 'pt-pt': 'pt', portuguese: 'pt', 'português': 'pt', portugues: 'pt',
+  eng: 'en', 'en-us': 'en', 'en-gb': 'en', english: 'en',
+};
+
+// Resolve a detected language to a supported table key, falling back to English.
+export function resolveLang(language: string | undefined): string {
+  if (!language) return 'en';
+  const lc = language.toLowerCase();
+  const canonical = BIBLE_BOOKS[lc] ? lc : (LANG_ALIASES[lc] ?? lc.split(/[-_]/)[0]);
+  return BIBLE_BOOKS[canonical] ? canonical : 'en';
+}
+
 // Resolve language to a supported table, falling back to English.
 export function bookTableFor(language: string): { books: Map<string, string>; conn: Connectives } {
-  const lang = BIBLE_BOOKS[language] ? language : 'en';
+  const lang = resolveLang(language);
   return { books: BIBLE_BOOKS[lang], conn: CONNECTIVES[lang] };
 }

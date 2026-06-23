@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { AppDispatch, RootState } from '../store';
-import { confirmChapters, deleteBook, renameBook, generateBook, addVoice } from '../store/booksSlice';
+import { confirmChapters, deleteBook, renameBook, generateBook, regenerateVoice, regenerateChapterVoice } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus } from '../types';
 import { chapterStatus, bookVoices, trackFor, friendlyVoice, hasPlayableAudio } from '../lib/format';
@@ -225,7 +225,17 @@ const TRACK_TEXT: Record<string, string> = {
   pending:    'text-gray-500',
 };
 
+function RegenIcon({ className = 'w-3.5 h-3.5' }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+    </svg>
+  );
+}
+
 function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
+  const dispatch   = useDispatch<AppDispatch>();
   const statuses   = book.chapters.map(c => trackFor(c, voice)?.audioStatus ?? 'pending');
   const total      = statuses.length;
   const done       = statuses.filter(s => s === 'complete').length;
@@ -245,7 +255,17 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
             {generating ? 'generating…' : allDone ? 'done' : errored ? 'failed' : 'waiting'}
           </span>
         </span>
-        <span className="text-xs text-gray-500 tabular-nums shrink-0">{done}/{total}</span>
+        <span className="flex items-center gap-2 shrink-0">
+          <span className="text-xs text-gray-500 tabular-nums">{done}/{total}</span>
+          <button
+            className="flex items-center gap-1 text-xs text-gray-400 hover:text-amber-400 disabled:opacity-40 disabled:hover:text-gray-400 transition-colors"
+            disabled={generating}
+            onClick={() => dispatch(regenerateVoice({ bookId: book._id, voice }))}
+            title="Regenerate this voice for every chapter"
+          >
+            <RegenIcon /> Regenerate
+          </button>
+        </span>
       </div>
 
       <div className="border-t border-gray-800 divide-y divide-gray-800/60 max-h-56 overflow-y-auto">
@@ -263,6 +283,14 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
                 <span className={`text-[11px] shrink-0 ${TRACK_TEXT[s] ?? 'text-gray-500'}`}>
                   {TRACK_LABEL[s] ?? s}
                 </span>
+                <button
+                  className="text-gray-600 hover:text-amber-400 disabled:opacity-30 disabled:hover:text-gray-600 transition-colors shrink-0"
+                  disabled={s === 'generating'}
+                  onClick={() => dispatch(regenerateChapterVoice({ bookId: book._id, chapterIdx: i, voice }))}
+                  title="Regenerate this chapter for this voice"
+                >
+                  <RegenIcon className="w-3 h-3" />
+                </button>
               </div>
               {err && <p className="text-[11px] text-red-400/90 pl-9 mt-0.5 break-words">{err}</p>}
             </div>
@@ -286,7 +314,7 @@ export default function EditBookPage() {
   const chapterReviewRef = useRef<ChapterReviewHandle>(null);
   const textReviewRef = useRef<TextReviewHandle>(null);
   const generatedRef = useRef(false);
-  const voiceRef = useRef<string | undefined>(undefined);
+  const voiceRef = useRef<string[] | undefined>(undefined);
 
   useEffect(() => { if (id) requestBook(id); }, [id]);
 
@@ -310,7 +338,7 @@ export default function EditBookPage() {
   };
 
   const handleConfirmChapters = async (chapters: { title: string; startPage: number; startChar: number }[]) => {
-    await dispatch(confirmChapters({ bookId: id!, chapters, voice: voiceRef.current })).unwrap();
+    await dispatch(confirmChapters({ bookId: id!, chapters, voices: voiceRef.current })).unwrap();
   };
 
   const runGenerate = async (voices?: string[]) => {
@@ -319,11 +347,8 @@ export default function EditBookPage() {
     generatedRef.current = true;
     try {
       if (voices && voices.length) {
-        voiceRef.current = voices[0];
+        voiceRef.current = voices;
         await chapterReviewRef.current?.submit();
-        if (voices.length > 1) {
-          await dispatch(addVoice({ bookId: id!, voice: voices.slice(1) })).unwrap();
-        }
       } else {
         await chapterReviewRef.current?.save();
         await dispatch(generateBook(id!)).unwrap();
@@ -333,7 +358,14 @@ export default function EditBookPage() {
 
   const hasOcrPages   = book.ocrPages.length > 0;
   const hasChapters   = book.chapters.length > 0;
-  const isGenerating  = book.status === 'generating_audio' || book.chapters.some(c => chapterStatus(c) === 'generating');
+  // A newly added voice renders in the background while the book stays 'complete'
+  // (so it remains listenable), leaving its tracks pending/generating — treat that
+  // as active generation so the progress section shows.
+  const voiceRendering = book.status === 'complete'
+    && book.chapters.some(c => c.tracks?.some(t => t.audioStatus === 'pending' || t.audioStatus === 'generating'));
+  const isGenerating  = book.status === 'generating_audio'
+    || book.chapters.some(c => chapterStatus(c) === 'generating')
+    || voiceRendering;
   const hasAudioError = book.chapters.some(c => chapterStatus(c) === 'error');
   const showStatus    = book.status !== 'complete' && book.status !== 'error' && !isGenerating;
   const showGenerate  = (book.status === 'awaiting_chapter_review' || book.status === 'complete' || book.status === 'error') && !isGenerating;
@@ -343,7 +375,7 @@ export default function EditBookPage() {
   return (
     <div className="min-h-screen">
       <header className="border-b border-gray-800 bg-gray-900/50 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-3xl mx-auto px-6 py-4 flex items-center gap-4">
+        <div className="w-[min(64rem,95vw)] mx-auto px-6 py-4 flex items-center gap-4">
           <button className="text-gray-500 hover:text-gray-300 transition-colors" onClick={() => navigate(backTo)}>
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -355,6 +387,17 @@ export default function EditBookPage() {
           >
             {book.name || 'Untitled'}
           </button>
+          {canListenNow && (
+            <button
+              className="text-gray-500 hover:text-emerald-400 transition-colors"
+              aria-label="Start listening to ready chapters"
+              onClick={() => navigate(`/books/${book._id}`)}
+            >
+              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </button>
+          )}
           <button
             className="text-gray-500 hover:text-red-400 transition-colors"
             aria-label="Delete book"
@@ -368,7 +411,7 @@ export default function EditBookPage() {
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-6 py-6 space-y-5">
+      <main className="w-[min(64rem,95vw)] mx-auto px-6 py-6 space-y-5">
 
         <div className="card flex gap-5 items-start">
           <EditableCover bookId={book._id} coverVersion={book.coverVersion ?? 0} onClick={() => setShowCoverPicker(true)} size="md" />
@@ -376,7 +419,7 @@ export default function EditBookPage() {
             <EditableTitle book={book} />
             {book.totalPages > 0 && <p>{book.totalPages} pages</p>}
             {(book.status === 'complete' || book.status === 'generating_audio') && (
-              <VoiceManager book={book} editable={book.status === 'complete'} />
+              <VoiceManager book={book} editable={book.status === 'complete'} allowModify />
             )}
           </div>
         </div>
@@ -390,8 +433,6 @@ export default function EditBookPage() {
           </div>
         )}
 
-        {hasOcrPages && <TextReview ref={textReviewRef} bookId={book._id} ocrPages={book.ocrPages} />}
-
         {hasChapters && (
           <>
             <div className="card">
@@ -402,29 +443,6 @@ export default function EditBookPage() {
                 onOpenPage={hasOcrPages ? (page => textReviewRef.current?.openAt(page)) : undefined}
               />
             </div>
-
-            {(isGenerating || hasAudioError) && (
-              <div className="card space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-semibold text-gray-100">{isGenerating ? 'Generating audio' : 'Generation results'}</h3>
-                  <span className="text-xs text-gray-500">
-                    green = ready · pulsing = rendering · red = failed
-                  </span>
-                </div>
-                {book.progress.message && <p className="text-sm text-gray-400">{book.progress.message}</p>}
-                {bookVoices(book).map(voice => (
-                  <VoiceGenProgress key={voice} book={book} voice={voice} />
-                ))}
-                {canListenNow && (
-                  <button
-                    className="btn-primary w-full justify-center"
-                    onClick={() => navigate(`/books/${book._id}`)}
-                  >
-                    Start listening to ready chapters
-                  </button>
-                )}
-              </div>
-            )}
 
             {hasStaleAudio && !isGenerating && (
               <div className="flex items-start gap-3 rounded-lg border border-amber-700 bg-amber-950/30 px-4 py-3">
@@ -437,17 +455,34 @@ export default function EditBookPage() {
                 </p>
               </div>
             )}
-
-            {showGenerate && (
-              <button
-                className="btn-primary w-full justify-center"
-                disabled={generating}
-                onClick={() => book.status === 'complete' || book.status === 'error' ? runGenerate() : setShowVoiceDialog(true)}
-              >
-                {generating ? 'Generating…' : book.status === 'error' ? 'Retry' : 'Generate'}
-              </button>
-            )}
           </>
+        )}
+
+        {hasOcrPages && <TextReview ref={textReviewRef} bookId={book._id} ocrPages={book.ocrPages} />}
+
+        {hasChapters && (isGenerating || hasAudioError) && (
+          <div className="card space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-gray-100">{isGenerating ? 'Generating audio' : 'Generation results'}</h3>
+              <span className="text-xs text-gray-500">
+                green = ready · pulsing = rendering · red = failed
+              </span>
+            </div>
+            {book.progress.message && <p className="text-sm text-gray-400">{book.progress.message}</p>}
+            {bookVoices(book).map(voice => (
+              <VoiceGenProgress key={voice} book={book} voice={voice} />
+            ))}
+          </div>
+        )}
+
+        {hasChapters && showGenerate && (
+          <button
+            className="btn-primary w-full justify-center"
+            disabled={generating}
+            onClick={() => book.status === 'complete' || book.status === 'error' ? runGenerate() : setShowVoiceDialog(true)}
+          >
+            {generating ? 'Generating…' : book.status === 'error' ? 'Retry' : 'Generate'}
+          </button>
         )}
 
       </main>

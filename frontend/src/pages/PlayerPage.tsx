@@ -6,7 +6,6 @@ import { requestBook } from '../hooks/useWebSocket';
 import { bookVoices, fmtRemaining, hasPlayableAudio, trackFor } from '../lib/format';
 import AudioPlayer from '../components/AudioPlayer';
 import VoiceManager from '../components/VoiceManager';
-import SentenceEditor from '../components/SentenceEditor';
 
 const VOICE_KEY = (id: string) => `br_voice_${id}`;
 
@@ -15,8 +14,6 @@ export default function PlayerPage() {
   const navigate = useNavigate();
   const book     = useSelector((s: RootState) => s.books.books.find(b => b._id === id));
   const [remaining, setRemaining] = useState(0);
-  const [chapterIdx, setChapterIdx] = useState(-1);
-  const [showEditor, setShowEditor] = useState(false);
   const [activeVoice, setActiveVoice] = useState<string>(() =>
     (id && localStorage.getItem(VOICE_KEY(id))) || ''
   );
@@ -104,22 +101,7 @@ export default function PlayerPage() {
           chapters={book.chapters}
           voice={activeVoice}
           onProgress={setRemaining}
-          onChapterChange={setChapterIdx}
         />
-
-        {chapterIdx >= 0 && (
-          <div className="space-y-3">
-            <button
-              className="btn-secondary w-full justify-center text-sm"
-              onClick={() => setShowEditor(v => !v)}
-            >
-              {showEditor ? 'Hide sentence editor' : 'Edit sentences in this chapter'}
-            </button>
-            {showEditor && (
-              <SentenceEditor bookId={book._id} chapterIdx={chapterIdx} voice={activeVoice} />
-            )}
-          </div>
-        )}
 
       </main>
     </div>

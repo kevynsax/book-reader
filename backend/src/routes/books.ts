@@ -6,7 +6,8 @@ import { createReadStream, existsSync } from 'fs';
 import { Server as SocketServer } from 'socket.io';
 import { Book, IVoiceTrack, ISegment, ISentence, freshTracks, trackForVoice, serializeChaptersForClient } from '../models/Book.js';
 import { DATA_DIR } from '../config.js';
-import { processBook, generateBookAudio, generateVoiceAudio, regenerateChapterAudio, editSentence, regenerateSegment } from '../workers/bookProcessor.js';
+import { processBook, generateBookAudio, generateVoiceAudio, regenerateChapterAudio, regenerateVoiceAudio, regenerateChapterVoiceAudio, editSentence, regenerateSegment, speechLanguage } from '../workers/bookProcessor.js';
+import { normalizeForSpeech } from '../services/textNormalizer.js';
 import { findPageImagePath, copyPageAsCover } from '../services/pdfService.js';
 import { detectChapters } from '../services/ocrService.js';
 import { synthesizeSample, timelinePathFor } from '../services/ttsService.js';
@@ -309,16 +310,20 @@ export function booksRouter(io: SocketServer) {
     const book = await Book.findById(req.params.id);
     if (!book) return res.status(404).json({ error: 'Not found' });
 
-    const { chapters, voice } = req.body as {
+    const { chapters, voice, voices } = req.body as {
       chapters: { title: string; startPage: number; startChar?: number }[];
       voice?: string;
+      voices?: string[];
     };
 
     if (!Array.isArray(chapters) || chapters.length === 0) {
       return res.status(400).json({ error: 'chapters array is required' });
     }
 
-    if (voice && voice.trim()) book.voices = [voice.trim()];
+    const requestedVoices = Array.from(
+      new Set((voices ?? (voice ? [voice] : [])).map(v => v.trim()).filter(Boolean))
+    );
+    if (requestedVoices.length) book.voices = requestedVoices;
 
     book.chapters = chapters.map(c => ({
       title: c.title,
@@ -328,6 +333,12 @@ export function booksRouter(io: SocketServer) {
     })) as unknown as typeof book.chapters;
 
     await book.save();
+    io.emit('book:update', {
+      bookId: book._id.toString(),
+      updatedAt: book.updatedAt,
+      voices: book.voices,
+      chapters: serializeChaptersForClient(book.chapters),
+    });
     res.json({ message: 'Chapters saved. Audio generation started.' });
 
     generateBookAudio(book._id.toString(), io).catch(err =>
@@ -421,12 +432,14 @@ export function booksRouter(io: SocketServer) {
     if (!pageDoc) return res.status(404).json({ error: 'Page not found' });
 
     pageDoc.text = text;
+    pageDoc.readText = await normalizeForSpeech(text, speechLanguage(pageDoc.language));
 
     let anyStale = false;
     for (let i = 0; i < book.chapters.length; i++) {
       const chStart = book.chapters[i].startPage;
       const chEnd   = i + 1 < book.chapters.length ? book.chapters[i + 1].startPage : book.lastPage;
       if (pageNum >= chStart && pageNum <= chEnd) {
+        book.chapters[i].set('sentences', []);
         for (const track of book.chapters[i].tracks) {
           if (track.audioStatus === 'complete') { track.audioStatus = 'stale'; anyStale = true; }
         }
@@ -437,7 +450,7 @@ export function booksRouter(io: SocketServer) {
     io.emit('book:update', {
       bookId: book._id.toString(),
       updatedAt: book.updatedAt,
-      ocrPage: { page: pageNum, text, status: 'complete' },
+      ocrPage: { page: pageNum, text, readText: pageDoc.readText, status: 'complete' },
     });
     if (anyStale) {
       io.emit('book:update', {
@@ -463,6 +476,51 @@ export function booksRouter(io: SocketServer) {
 
     regenerateChapterAudio(book._id.toString(), idx, io).catch(err =>
       console.error(`regenerateChapterAudio ${book._id} ch${idx} failed:`, err)
+    );
+  });
+
+  // Regenerate one voice across all chapters (recover from a stalled run / server restart).
+  router.post('/:id/voices/:voice/regenerate', async (req, res) => {
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).json({ error: 'Not found' });
+
+    const voice = req.params.voice;
+    if (!book.voices.includes(voice)) return res.status(404).json({ error: 'Voice not found' });
+
+    for (const chapter of book.chapters) {
+      const track = trackForVoice(chapter, voice);
+      if (track) track.audioStatus = 'generating';
+    }
+    await book.save();
+    io.emit('book:update', { bookId: book._id.toString(), updatedAt: book.updatedAt, chapters: serializeChaptersForClient(book.chapters) });
+
+    res.json({ message: 'Voice regeneration started' });
+
+    regenerateVoiceAudio(book._id.toString(), voice, io).catch(err =>
+      console.error(`regenerateVoiceAudio ${book._id} ${voice} failed:`, err)
+    );
+  });
+
+  // Regenerate a single chapter for a single voice.
+  router.post('/:id/chapters/:idx/voices/:voice/regenerate', async (req, res) => {
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).json({ error: 'Not found' });
+
+    const idx = parseInt(req.params.idx);
+    if (!book.chapters[idx]) return res.status(404).json({ error: 'Chapter not found' });
+
+    const voice = req.params.voice;
+    if (!book.voices.includes(voice)) return res.status(404).json({ error: 'Voice not found' });
+
+    const track = trackForVoice(book.chapters[idx], voice);
+    if (track) track.audioStatus = 'generating';
+    await book.save();
+    io.emit('book:update', { bookId: book._id.toString(), updatedAt: book.updatedAt, chapters: serializeChaptersForClient(book.chapters) });
+
+    res.json({ message: 'Regeneration started' });
+
+    regenerateChapterVoiceAudio(book._id.toString(), idx, voice, io).catch(err =>
+      console.error(`regenerateChapterVoiceAudio ${book._id} ch${idx} ${voice} failed:`, err)
     );
   });
 

@@ -41,6 +41,8 @@ const DEFAULT_ACRONYMS: Record<string, IAcronym[]> = {
     { term: 'CSB', say: 'Christian Standard Bible' },
     { term: 'ASV', say: 'American Standard Version' },
     { term: 'AMP', say: 'Amplified Bible' },
+    { term: 'e.g.', say: 'for example' },
+    { term: 'i.e.', say: 'that is' },
   ],
   pt: [
     { term: 'NVI', say: 'Nova Versão Internacional' },
@@ -51,10 +53,14 @@ const DEFAULT_ACRONYMS: Record<string, IAcronym[]> = {
     { term: 'NAA', say: 'Nova Almeida Atualizada' },
     { term: 'NVT', say: 'Nova Versão Transformadora' },
     { term: 'KJA', say: 'King James Atualizada' },
+    { term: 'e.g.', say: 'por exemplo' },
+    { term: 'i.e.', say: 'isto é' },
   ],
 };
 
-// Insert a default doc per language only when missing — never clobber edits.
+// Seed the per-language doc when missing, and add any default terms absent from
+// an existing doc (e.g. defaults shipped after first seed) without clobbering
+// user edits.
 export async function seedLexicons(): Promise<void> {
   for (const [language, acronyms] of Object.entries(DEFAULT_ACRONYMS)) {
     await Lexicon.updateOne(
@@ -62,5 +68,13 @@ export async function seedLexicons(): Promise<void> {
       { $setOnInsert: { language, acronyms } },
       { upsert: true },
     );
+    const doc = await Lexicon.findOne({ language });
+    if (!doc) continue;
+    const have = new Set(doc.acronyms.map(a => a.term));
+    const missing = acronyms.filter(a => !have.has(a.term));
+    if (missing.length) {
+      doc.acronyms.push(...missing);
+      await doc.save();
+    }
   }
 }
