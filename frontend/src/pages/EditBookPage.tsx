@@ -5,7 +5,7 @@ import { AppDispatch, RootState } from '../store';
 import { confirmChapters, deleteBook, renameBook, generateBook, addVoice } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus } from '../types';
-import { chapterStatus, bookVoices, trackFor, friendlyVoice } from '../lib/format';
+import { chapterStatus, bookVoices, trackFor, friendlyVoice, hasPlayableAudio } from '../lib/format';
 import ChapterReview, { ChapterReviewHandle } from '../components/ChapterReview';
 import TextReview, { TextReviewHandle } from '../components/OcrPageReview';
 import CoverPickerModal from '../components/CoverPickerModal';
@@ -338,6 +338,7 @@ export default function EditBookPage() {
   const showStatus    = book.status !== 'complete' && book.status !== 'error' && !isGenerating;
   const showGenerate  = (book.status === 'awaiting_chapter_review' || book.status === 'complete' || book.status === 'error') && !isGenerating;
   const hasStaleAudio = book.chapters.some(c => chapterStatus(c) === 'stale');
+  const canListenNow  = isGenerating && hasPlayableAudio(book);
 
   return (
     <div className="min-h-screen">
@@ -414,6 +415,14 @@ export default function EditBookPage() {
                 {bookVoices(book).map(voice => (
                   <VoiceGenProgress key={voice} book={book} voice={voice} />
                 ))}
+                {canListenNow && (
+                  <button
+                    className="btn-primary w-full justify-center"
+                    onClick={() => navigate(`/books/${book._id}`)}
+                  >
+                    Start listening to ready chapters
+                  </button>
+                )}
               </div>
             )}
 

@@ -4,7 +4,7 @@ import { useDispatch } from 'react-redux';
 import { AppDispatch } from '../store';
 import { deleteBook } from '../store/booksSlice';
 import { Book, BookStatus } from '../types';
-import { bookVoices, trackFor } from '../lib/format';
+import { bookVoices, trackFor, hasPlayableAudio } from '../lib/format';
 import ConfirmDialog from './ConfirmDialog';
 
 function formatDuration(totalSecs: number): string {
@@ -45,6 +45,7 @@ export default function BookCard({ book }: { book: Book }) {
   const dispatch = useDispatch<AppDispatch>();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const isComplete   = book.status === 'complete';
+  const canPlay      = isComplete || hasPlayableAudio(book);
 
   const primaryVoice = bookVoices(book)[0] ?? '';
   const readyDurations = book.chapters
@@ -72,7 +73,7 @@ export default function BookCard({ book }: { book: Book }) {
   return (
     <div
       className="card cursor-pointer hover:border-gray-600 transition-colors group relative"
-      onClick={() => navigate(book.status === 'complete' ? `/books/${book._id}` : `/books/${book._id}/edit`)}
+      onClick={() => navigate(canPlay ? `/books/${book._id}` : `/books/${book._id}/edit`)}
     >
       <button
         className="absolute top-2 right-2 z-10 w-7 h-7 rounded-full bg-gray-800/80 flex items-center justify-center text-gray-500 hover:bg-red-700 hover:text-white transition-all opacity-0 group-hover:opacity-100"

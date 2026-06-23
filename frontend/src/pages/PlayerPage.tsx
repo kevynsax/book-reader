@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store';
 import { requestBook } from '../hooks/useWebSocket';
-import { bookVoices, fmtRemaining } from '../lib/format';
+import { bookVoices, fmtRemaining, hasPlayableAudio, trackFor } from '../lib/format';
 import AudioPlayer from '../components/AudioPlayer';
 import VoiceManager from '../components/VoiceManager';
 import SentenceEditor from '../components/SentenceEditor';
@@ -34,15 +34,21 @@ export default function PlayerPage() {
     if (id) { try { localStorage.setItem(VOICE_KEY(id), v); } catch { } }
   };
 
+  // Allow the player while audio is still generating, as long as at least one
+  // chapter is ready; only bounce back to editing when there's nothing to play.
+  const playable = book ? hasPlayableAudio(book) : false;
   useEffect(() => {
-    if (book && book.status !== 'complete') {
+    if (book && book.status !== 'complete' && !playable) {
       navigate(`/books/${id}/edit`, { replace: true });
     }
-  }, [book?.status, id, navigate]);
+  }, [book?.status, playable, id, navigate]);
 
   if (!book) {
     return <div className="min-h-screen flex items-center justify-center"><p className="text-gray-500">Loading…</p></div>;
   }
+
+  const generating = book.status === 'generating_audio';
+  const readyCount = book.chapters.filter(c => trackFor(c, activeVoice)?.audioStatus === 'complete').length;
 
   return (
     <div className="min-h-screen">
@@ -79,6 +85,19 @@ export default function PlayerPage() {
             )}
           </div>
         </div>
+
+        {generating && (
+          <button
+            className="w-full flex items-center justify-between gap-3 rounded-lg border border-amber-700/60 bg-amber-950/20 px-4 py-2.5 text-sm hover:bg-amber-950/40 transition-colors"
+            onClick={() => navigate(`/books/${book._id}/edit`)}
+          >
+            <span className="flex items-center gap-2 text-amber-300 min-w-0">
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
+              <span className="truncate">Generating audio · {readyCount}/{book.chapters.length} chapters ready</span>
+            </span>
+            <span className="text-amber-400/80 shrink-0">View progress →</span>
+          </button>
+        )}
 
         <AudioPlayer
           bookId={book._id}

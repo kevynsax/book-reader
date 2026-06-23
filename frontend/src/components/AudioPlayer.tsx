@@ -39,15 +39,24 @@ function loadJson<T>(key: string, fallback: T): T {
 }
 
 export default function AudioPlayer({ bookId, chapters, voice, onProgress, onChapterChange }: Props) {
-  const audioRef   = useRef<HTMLAudioElement>(null);
-  const idxRef     = useRef(0);
-  const seekOnLoad = useRef(-1);
-  const lastSave   = useRef(0);
+  const audioRef     = useRef<HTMLAudioElement>(null);
+  const idxRef       = useRef(0);
+  const seekOnLoad   = useRef(-1);
+  const lastSave     = useRef(0);
+  const waitingNext  = useRef(false);
+  const morePendingRef = useRef(false);
 
   const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
   const [speed, setSpeed] = useState(1);
 
   const readyChapters = chapters.filter(c => trackFor(c, voice)?.audioStatus === 'complete');
+  // More chapters for this voice are still on the way (so we should keep the
+  // player alive past the last ready chapter and auto-resume when they land).
+  const morePending = chapters.some(c => {
+    const s = trackFor(c, voice)?.audioStatus;
+    return s === 'pending' || s === 'generating' || s === 'stale';
+  });
+  morePendingRef.current = morePending;
 
   const [currentIdx, setCurrentIdx] = useState<number>(() => {
     const saved = loadJson<{ chapterIdx: number }>(POS_KEY(bookId), { chapterIdx: 0 });
@@ -66,6 +75,16 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
   const [activeLine, setActiveLine] = useState(-1);
 
   useEffect(() => { idxRef.current = currentIdx; }, [currentIdx]);
+
+  // We ran out of ready chapters mid-playback; once the next one finishes
+  // rendering, pick up where we left off automatically.
+  useEffect(() => {
+    if (waitingNext.current && readyChapters.length - 1 > idxRef.current) {
+      waitingNext.current = false;
+      setPlaying(true);
+      setCurrentIdx(i => i + 1);
+    }
+  }, [readyChapters.length]);
 
   useEffect(() => {
     setCurrentIdx(i => Math.min(i, Math.max(0, readyChapters.length - 1)));
@@ -136,6 +155,11 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
     const onEnded   = () => {
       if (idxRef.current < readyChapters.length - 1) {
         setCurrentIdx(i => i + 1);
+      } else if (morePendingRef.current) {
+        // Reached the end of what's rendered so far — pause and resume once the
+        // next chapter finishes generating.
+        waitingNext.current = true;
+        setPlaying(false);
       } else {
         setPlaying(false);
       }
@@ -216,7 +240,9 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
   useEffect(() => { onProgress?.(remaining); }, [remaining, onProgress]);
 
   if (readyChapters.length === 0) return (
-    <div className="card text-center text-gray-500 py-8">No audio ready yet.</div>
+    <div className="card text-center text-gray-500 py-8">
+      {morePending ? 'Generating audio — the first chapter will start playing as soon as it’s ready…' : 'No audio ready yet.'}
+    </div>
   );
 
   const pct = duration > 0 ? (currentTime / duration) * 100 : 0;
@@ -334,6 +360,13 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
           <span className="text-[11px] text-gray-500">Chapters</span>
         </button>
       </div>
+
+      {morePending && (
+        <p className="flex items-center justify-center gap-2 text-xs text-amber-400/80">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+          More chapters are still generating…
+        </p>
+      )}
 
       {totalDuration > 0 && (
         <div className="flex items-center justify-between text-xs text-gray-500 pt-1 border-t border-gray-800">

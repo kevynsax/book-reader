@@ -50,6 +50,13 @@ export function chapterStatus(chapter: Chapter, voices?: string[]): AudioStatus 
   return 'pending';
 }
 
+// True once at least one chapter has finished rendering in some voice — i.e.
+// there is something to listen to even while the rest is still generating.
+export function hasPlayableAudio(book: Book): boolean {
+  const voices = bookVoices(book);
+  return book.chapters.some(c => voices.some(v => trackFor(c, v)?.audioStatus === 'complete'));
+}
+
 export function fmtRemaining(s: number): string {
   if (!isFinite(s) || s <= 0) return '';
   if (s >= 3600) {
