@@ -144,31 +144,62 @@ async function callQwen(systemPrompt: string, userContent: unknown[], baseUrl: s
   return content.trim();
 }
 
-// SLM endpoints. Calls are round-robined across the configured servers to spread
-// load, all configured servers are raced against each other: the first one to
-// answer 2xx wins and the slower requests are aborted. The whole race is capped
-// by a timeout so a stuck server can't hold up the response.
+// SLM endpoints support two dispatch modes against the configured servers:
+//
+//  - 'balance': round-robin one server per call, falling back to the others when
+//    the chosen one throws. Used by the bulk typo scan, where many lines fire in
+//    parallel and the goal is to spread load across servers.
+//  - 'race': hit every server at once and take the first 2xx, aborting the rest.
+//    Used by the one-at-a-time line review/split, where the goal is low latency
+//    for a single request. Capped by a timeout so a stuck server can't stall it.
 const SLM_RACE_TIMEOUT_MS = 10_000;
+
+type SlmMode = 'balance' | 'race';
 
 function slmBases(): string[] {
   return [...new Set([SLM_API, SLM_API_FALLBACK].filter(Boolean).map(b => b.replace(/\/+$/, '')))];
 }
 
-async function slmFetch(path: string, init: RequestInit, timeoutMs = SLM_RACE_TIMEOUT_MS): Promise<Response> {
+let slmCursor = 0;
+function balancedBases(): string[] {
+  const bases = slmBases();
+  if (bases.length <= 1) return bases;
+  const start = slmCursor++ % bases.length;
+  return [...bases.slice(start), ...bases.slice(0, start)];
+}
+
+async function slmFetchOne(base: string, path: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
+  const res = await fetch(`${base}${path}`, { ...init, signal });
+  if (!res.ok) {
+    const err = await res.text().catch(() => '');
+    throw new Error(err || `SLM API returned ${res.status}`);
+  }
+  return res;
+}
+
+async function balanceFetch(path: string, init: RequestInit, timeoutMs?: number): Promise<Response> {
+  const bases = balancedBases();
+  if (bases.length === 0) throw new Error('No SLM servers configured (set SLM_API)');
+  let lastErr: unknown;
+  for (const base of bases) {
+    try {
+      const signal = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
+      return await slmFetchOne(base, path, init, signal);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr;
+}
+
+async function raceFetch(path: string, init: RequestInit, timeoutMs = SLM_RACE_TIMEOUT_MS): Promise<Response> {
   const bases = slmBases();
   if (bases.length === 0) throw new Error('No SLM servers configured (set SLM_API)');
 
   const controllers = bases.map(() => new AbortController());
   const timer = setTimeout(() => controllers.forEach(c => c.abort()), timeoutMs);
 
-  const attempts = bases.map(async (base, i) => {
-    const res = await fetch(`${base}${path}`, { ...init, signal: controllers[i].signal });
-    if (!res.ok) {
-      const err = await res.text().catch(() => '');
-      throw new Error(err || `SLM API returned ${res.status}`);
-    }
-    return { res, i };
-  });
+  const attempts = bases.map(async (base, i) => ({ res: await slmFetchOne(base, path, init, controllers[i].signal), i }));
 
   try {
     const { res, i } = await Promise.any(attempts);
@@ -182,8 +213,12 @@ async function slmFetch(path: string, init: RequestInit, timeoutMs = SLM_RACE_TI
   }
 }
 
+function slmFetch(path: string, init: RequestInit, mode: SlmMode = 'balance', timeoutMs?: number): Promise<Response> {
+  return mode === 'race' ? raceFetch(path, init, timeoutMs) : balanceFetch(path, init, timeoutMs);
+}
+
 export async function fetchSlmModels(): Promise<{ id: string; label: string }[]> {
-  const res = await slmFetch('/v1/models', {}, 5000);
+  const res = await slmFetch('/v1/models', {}, 'race', 5000);
 
   const data = await res.json() as { data?: unknown };
   const list = Array.isArray(data?.data) ? data.data : [];
@@ -195,7 +230,7 @@ export async function fetchSlmModels(): Promise<{ id: string; label: string }[]>
   return models.length ? models : [{ id: SLM_MODEL, label: SLM_MODEL }];
 }
 
-async function callSlm(systemPrompt: string, userText: string, model = SLM_MODEL): Promise<string> {
+async function callSlm(systemPrompt: string, userText: string, model = SLM_MODEL, mode: SlmMode = 'balance'): Promise<string> {
   const res = await slmFetch('/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -208,7 +243,7 @@ async function callSlm(systemPrompt: string, userText: string, model = SLM_MODEL
         { role: 'user', content: userText },
       ],
     }),
-  });
+  }, mode);
 
   const data = await res.json() as { choices?: { message?: { content?: string } }[] };
   const content = data?.choices?.[0]?.message?.content ?? '';
@@ -248,6 +283,7 @@ export async function splitLineIntoSentences(line: string, model?: string): Prom
     ].join(' '),
     line,
     model || SLM_MODEL,
+    'race',
   );
   return parseSplitLineSuggestion(raw);
 }
