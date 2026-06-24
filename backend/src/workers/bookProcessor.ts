@@ -12,7 +12,7 @@ import { normalizeForSpeech } from '../services/textNormalizer.js';
 import { parseVoice } from '../services/ttsEngines.js';
 import { readyServersFor, pickReadyServer } from '../services/ttsServers.js';
 import { TtsServerPool, runPool } from '../services/ttsPool.js';
-import { DEFAULT_LANGUAGE, TTS_CONCURRENCY } from '../config.js';
+import { DEFAULT_LANGUAGE, TTS_CONCURRENCY, QWENVL_SERVERS } from '../config.js';
 import { resolveLang } from '../data/bibleBooks.js';
 
 function emit(io: SocketServer, book: IBook, update: Record<string, unknown>) {
@@ -214,36 +214,69 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
 
     const allPagePaths = await getAllPagePaths(book.folderPath);
 
-    for (let i = 0; i < readPages.length; i++) {
-      const pageNum = readPages[i];
-      const pageIdx = pageNum - 1;
-      const imagePath = allPagePaths[pageIdx];
-      if (!imagePath) continue;
+    // One worker per QwenVL server, each pulling the next unclaimed page as soon
+    // as it's free, so a faster server simply OCRs more pages instead of idling
+    // for a slower one. Pages thus finish out of order; book.save() is serialized
+    // through SaveLock to avoid concurrent saves on the shared Mongoose document.
+    const servers = QWENVL_SERVERS;
+    if (servers.length === 0) throw new Error('No QwenVL servers configured (set QWENVL_SERVERS)');
+    const ocrLock = new SaveLock();
+    let nextPage = 0;
+    let doneCount = 0;
 
-      book.ocrPages[i].status = 'processing';
-      await book.save();
-      emit(io, book, {
-        progress: { current: i + 1, total: readPages.length, message: `OCR page ${pageNum}/${book.lastPage}…` },
-        ocrPage: { page: pageNum, status: 'processing' },
-      });
-
-      try {
-        const result = await ocrPage(imagePath);
-        const reflowed = reflowSentences(result.content);
-        book.ocrPages[i].text = reflowed;
-        book.ocrPages[i].language = result.language;
-        book.ocrPages[i].readText = await normalizeForSpeech(reflowed, bookSpeechLanguage(book, result.language));
-        book.ocrPages[i].status = 'complete';
-      } catch {
-        book.ocrPages[i].status = 'error';
+    // Try the worker's own server first, then fall back to the others so a page
+    // isn't lost when a single server errors. Each server carries its own model
+    // name (backends differ). Throws only if every server fails.
+    const ocrWithFallback = async (imagePath: string, own: typeof servers[number]) => {
+      const ordered = [own, ...servers.filter(s => s.url !== own.url)];
+      let lastErr: unknown;
+      for (const s of ordered) {
+        try {
+          return await ocrPage(imagePath, s.url, s.model);
+        } catch (err) {
+          lastErr = err;
+        }
       }
+      throw lastErr;
+    };
 
-      await book.save();
-      emit(io, book, {
-        progress: { current: i + 1, total: readPages.length, message: `OCR page ${pageNum}/${book.lastPage}…` },
-        ocrPage: { page: pageNum, text: book.ocrPages[i].text, readText: book.ocrPages[i].readText, status: book.ocrPages[i].status },
-      });
-    }
+    const ocrWorker = async (server: typeof servers[number]): Promise<void> => {
+      while (true) {
+        const i = nextPage++;
+        if (i >= readPages.length) return;
+        const pageNum = readPages[i];
+        const imagePath = allPagePaths[pageNum - 1];
+        if (!imagePath) continue;
+
+        book.ocrPages[i].status = 'processing';
+        await ocrLock.run(() => book.save());
+        emit(io, book, { ocrPage: { page: pageNum, status: 'processing' } });
+
+        try {
+          const result = await ocrWithFallback(imagePath, server);
+          const reflowed = reflowSentences(result.content);
+          book.ocrPages[i].text = reflowed;
+          book.ocrPages[i].language = result.language;
+          book.ocrPages[i].readText = await normalizeForSpeech(reflowed, bookSpeechLanguage(book, result.language));
+          book.ocrPages[i].status = 'complete';
+          book.ocrPages[i].error = undefined;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`OCR failed for page ${pageNum} of book ${bookId}: ${message}`);
+          book.ocrPages[i].status = 'error';
+          book.ocrPages[i].error = message;
+        }
+
+        doneCount++;
+        await ocrLock.run(() => book.save());
+        emit(io, book, {
+          progress: { current: doneCount, total: readPages.length, message: `OCR page ${pageNum}/${book.lastPage}…` },
+          ocrPage: { page: pageNum, text: book.ocrPages[i].text, readText: book.ocrPages[i].readText, status: book.ocrPages[i].status, error: book.ocrPages[i].error },
+        });
+      }
+    };
+
+    await Promise.all(servers.map(s => ocrWorker(s)));
 
     await setProgress(io, book, 0, 1, 'Detecting chapters…', 'detecting_chapters');
     const completedPages = book.ocrPages
@@ -879,6 +912,59 @@ export async function editSentence(
   emit(io, book, { sentenceUpdate: { chapterIdx, sentenceId, text: trimmed } });
 
   await rerenderSegment(book, io, chapterIdx, sentenceId, book.voices);
+}
+
+// Delete a sentence and reassemble each voice from the remaining cached segments.
+export async function deleteSentence(
+  bookId: string,
+  chapterIdx: number,
+  sentenceId: string,
+  io: SocketServer,
+): Promise<void> {
+  const book = await Book.findById(bookId);
+  if (!book) return;
+  const chapter = book.chapters[chapterIdx];
+  if (!chapter) return;
+  if (!chapter.sentences.some(s => String(s._id) === sentenceId)) return;
+  if (chapter.sentences.length <= 1) return;
+
+  const audioDir = path.join(book.folderPath, 'audio');
+  const deletedAudio = chapter.tracks.flatMap(t =>
+    t.segments
+      .filter(s => String(s.sentenceId) === sentenceId)
+      .map(s => s.audioPath)
+      .filter((p): p is string => Boolean(p))
+  );
+
+  setSubdoc(chapter, 'sentences', chapter.sentences
+    .filter(s => String(s._id) !== sentenceId)
+    .sort((a, b) => a.order - b.order)
+    .map((s, order) => ({ _id: s._id, order, text: s.text, display: s.display })));
+
+  for (const track of chapter.tracks) {
+    setSubdoc(track, 'segments', track.segments
+      .filter(s => String(s.sentenceId) !== sentenceId)
+      .map(s => ({
+        sentenceId: s.sentenceId,
+        audioPath: s.audioPath,
+        durationSecs: s.durationSecs,
+        audioStatus: s.audioStatus,
+        audioError: s.audioError,
+      })));
+  }
+
+  await book.save();
+  emit(io, book, {
+    sentenceDeleted: { chapterIdx, sentenceId },
+    chapters: serializeChaptersForClient(book.chapters),
+  });
+
+  await Promise.all(deletedAudio.map(p => fs.unlink(p).catch(() => {})));
+
+  const lock = new SaveLock();
+  for (const voice of book.voices) {
+    await finalizeTrack(book, io, chapterIdx, voice, audioDir, lock);
+  }
 }
 
 // Re-render one sentence's segment without changing its text (e.g. it errored).

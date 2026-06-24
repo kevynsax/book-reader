@@ -6,10 +6,10 @@ import { createReadStream, existsSync } from 'fs';
 import { Server as SocketServer } from 'socket.io';
 import { Book, IVoiceTrack, ISegment, ISentence, freshTracks, trackForVoice, serializeChaptersForClient } from '../models/Book.js';
 import { DATA_DIR } from '../config.js';
-import { processBook, generateBookAudio, generateVoiceAudio, regenerateChapterAudio, regenerateVoiceAudio, regenerateChapterVoiceAudio, reassembleBookAudio, editSentence, regenerateSegment, bookSpeechLanguage } from '../workers/bookProcessor.js';
+import { processBook, generateBookAudio, generateVoiceAudio, regenerateChapterAudio, regenerateVoiceAudio, regenerateChapterVoiceAudio, reassembleBookAudio, editSentence, deleteSentence, regenerateSegment, bookSpeechLanguage } from '../workers/bookProcessor.js';
 import { normalizeForSpeech } from '../services/textNormalizer.js';
 import { findPageImagePath, copyPageAsCover } from '../services/pdfService.js';
-import { detectChapters, fetchSlmModels, splitLineIntoSentences } from '../services/ocrService.js';
+import { detectChapters, fetchSlmModels, splitLineIntoSentences, reviewLineGrammar } from '../services/ocrService.js';
 import { synthesizeSample, timelinePathFor } from '../services/ttsService.js';
 import { sanitizePageText } from '../lib/sanitize.js';
 
@@ -141,6 +141,40 @@ export function booksRouter(io: SocketServer) {
     await book.save();
     io.emit('book:update', { bookId: book._id.toString(), updatedAt: book.updatedAt, name: book.name });
     res.json({ message: 'Renamed' });
+  });
+
+  // Re-run the whole import pipeline from the already-stored PDF and page
+  // settings, so a failed/partial run can be retried without re-uploading or
+  // re-entering cover/summary/first/last page numbers.
+  router.post('/:id/reprocess', async (req, res) => {
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).json({ error: 'Not found' });
+    if (!book.filePath || book.filePath === 'pending' || !existsSync(book.filePath)) {
+      return res.status(409).json({ error: 'Original PDF is no longer available' });
+    }
+
+    book.status = 'splitting_pages';
+    book.errorMessage = undefined;
+    book.progress = { current: 0, total: 1, message: 'Restarting import…' };
+    book.chapters.splice(0, book.chapters.length);
+    book.ocrPages.splice(0, book.ocrPages.length);
+    await book.save();
+
+    const bookId = book._id.toString();
+    io.emit('book:update', {
+      bookId,
+      updatedAt: book.updatedAt,
+      status: book.status,
+      progress: book.progress,
+      chapters: serializeChaptersForClient(book.chapters),
+      ocrPages: book.ocrPages,
+    });
+
+    res.json({ message: 'Reprocessing started.' });
+
+    processBook(bookId, io).catch(err =>
+      console.error(`processBook ${bookId} failed:`, err)
+    );
   });
 
   router.get('/:id/sample', async (req, res) => {
@@ -500,6 +534,24 @@ export function booksRouter(io: SocketServer) {
     }
   });
 
+  router.post('/:id/line-typos', async (req, res) => {
+    const book = await Book.findById(req.params.id).lean();
+    if (!book) return res.status(404).json({ error: 'Not found' });
+
+    const { line, model } = req.body as { line?: string; model?: string };
+    if (typeof line !== 'string' || !line.trim()) {
+      return res.status(400).json({ error: 'line is required' });
+    }
+
+    try {
+      const review = await reviewLineGrammar(sanitizePageText(line).trim(), typeof model === 'string' ? model : undefined);
+      res.json({ corrected: review?.corrected ?? '' });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to review line';
+      res.status(502).json({ error: message });
+    }
+  });
+
   router.post('/:id/chapters/:idx/regenerate', async (req, res) => {
     const book = await Book.findById(req.params.id);
     if (!book) return res.status(404).json({ error: 'Not found' });
@@ -626,6 +678,28 @@ export function booksRouter(io: SocketServer) {
 
     editSentence(book._id.toString(), idx, req.params.sentenceId, text.trim(), io).catch(err =>
       console.error(`editSentence ${book._id} ch${idx} ${req.params.sentenceId} failed:`, err)
+    );
+  });
+
+  // Delete one sentence and reassemble chapter audio from the remaining segments.
+  router.delete('/:id/chapters/:idx/sentences/:sentenceId', async (req, res) => {
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).json({ error: 'Not found' });
+
+    const idx = parseInt(req.params.idx);
+    const chapter = book.chapters[idx];
+    if (!chapter) return res.status(404).json({ error: 'Chapter not found' });
+    if (!chapter.sentences.some(s => String(s._id) === req.params.sentenceId)) {
+      return res.status(404).json({ error: 'Sentence not found' });
+    }
+    if (chapter.sentences.length <= 1) {
+      return res.status(400).json({ error: 'Cannot delete the only sentence in a chapter' });
+    }
+
+    res.json({ message: 'Sentence deleted. Reassembling audio.' });
+
+    deleteSentence(book._id.toString(), idx, req.params.sentenceId, io).catch(err =>
+      console.error(`deleteSentence ${book._id} ch${idx} ${req.params.sentenceId} failed:`, err)
     );
   });
 

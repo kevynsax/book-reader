@@ -67,6 +67,7 @@ export interface OcrPage {
   readText?: string;
   language: string;
   status: 'pending' | 'processing' | 'complete' | 'error';
+  error?: string;
 }
 
 export interface Progress {

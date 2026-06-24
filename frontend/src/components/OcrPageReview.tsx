@@ -83,6 +83,77 @@ interface LineOccurrence {
   pageIdx: number;
   page: number;
   lineIdx: number;
+  kind: 'long' | 'typo';
+  suggestion?: string;
+}
+
+interface TypoFinding {
+  page: number;
+  lineIdx: number;
+  original: string;
+  corrected: string;
+}
+
+// A single word-level change within a line's correction. Each one is reviewed
+// and approved independently, so one line with two typos yields two items.
+interface TypoChange {
+  pageIdx: number;
+  page: number;
+  lineIdx: number;
+  original: string;
+  corrected: string;
+  segIdx: number;
+  oldSeg: string;
+  newSeg: string;
+}
+
+function deriveTypoChanges(
+  findings: TypoFinding[],
+  processed: OcrPage[],
+  currentIdx: number,
+  currentDraft: string,
+): TypoChange[] {
+  const items: TypoChange[] = [];
+  processed.forEach((p, pageIdx) => {
+    const lines = (pageIdx === currentIdx ? currentDraft : (p.text ?? '')).split('\n');
+    findings.filter(t => t.page === p.page).forEach(t => {
+      if (lines[t.lineIdx] !== t.original) return;
+      diffText(t.original, t.corrected).forEach((seg, segIdx) => {
+        if (seg.read === null) return;
+        if (seg.text.trim() === '' && seg.read.trim() === '') return;
+        items.push({
+          pageIdx, page: p.page, lineIdx: t.lineIdx,
+          original: t.original, corrected: t.corrected,
+          segIdx, oldSeg: seg.text, newSeg: seg.read,
+        });
+      });
+    });
+  });
+  return items.sort((a, b) => a.pageIdx - b.pageIdx || a.lineIdx - b.lineIdx || a.segIdx - b.segIdx);
+}
+
+// Apply only the change at `segIdx` to `original`, leaving the line's other
+// pending changes as-is.
+function applyTypoChange(original: string, corrected: string, segIdx: number): string {
+  return diffText(original, corrected)
+    .map((seg, idx) => (seg.read === null ? seg.text : idx === segIdx ? seg.read : seg.text))
+    .join('');
+}
+
+// New corrected target with the change at `segIdx` discarded (reverted to the
+// original) while the line's other pending corrections remain.
+function discardTypoChange(original: string, corrected: string, segIdx: number): string {
+  return diffText(original, corrected)
+    .map((seg, idx) => (seg.read === null ? seg.text : idx === segIdx ? seg.text : seg.read))
+    .join('');
+}
+
+async function runPool<T>(items: T[], size: number, worker: (item: T) => Promise<void>): Promise<void> {
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(size, items.length) }, async () => {
+    while (cursor < items.length) await worker(items[cursor++]);
+  });
+  await Promise.all(runners);
 }
 
 interface SplitProposal {
@@ -95,6 +166,17 @@ type SplitStrategy = 'punctuation' | 'conjunction' | 'slm';
 
 const SPLIT_STRATEGIES: SplitStrategy[] = ['punctuation', 'conjunction', 'slm'];
 const SLM_MODEL_SESSION_KEY = 'book-reader:line-review-slm-model';
+const REVIEW_MODEL_SESSION_KEY = 'book-reader:reading-review-model';
+
+function storedReviewModel(): string {
+  if (typeof window === 'undefined') return '';
+  return sessionStorage.getItem(REVIEW_MODEL_SESSION_KEY)?.trim() || '';
+}
+
+function prettyModel(id: string): string {
+  const base = id.split(':')[0].trim();
+  return base ? base.charAt(0).toUpperCase() + base.slice(1) : id;
+}
 
 function storedSlmModels(): string[] {
   if (typeof window === 'undefined') return [];
@@ -123,7 +205,14 @@ interface PageViewProps {
     onUndo: () => void;
     warnOver: number;
     activeLine: number | null;
+    /** lineIdx → corrected text + active change for pending review findings. */
+    findings?: Map<number, { corrected: string; activeSegIdx: number | null }>;
+    /** Speech-normalized text; spans that get rewritten for reading are marked,
+     *  with a hover tooltip showing what is actually spoken (like the read card). */
+    readText?: string;
   };
+  /** Rendered above the editor (right column), e.g. a review toolbar. */
+  editHeader?: React.ReactNode;
 }
 
 // Find the first matching character between the target min/max positions.
@@ -267,12 +356,24 @@ function breakLongLine(
 // background. A plain <textarea> can't style individual lines, so a synced
 // highlight backdrop sits behind a transparent-background textarea.
 function HighlightEditor(
-  { draft, onChange, onBlur, onUndo, warnOver, activeLine }: NonNullable<PageViewProps['edit']>,
+  { draft, onChange, onBlur, onUndo, warnOver, activeLine, findings, readText }: NonNullable<PageViewProps['edit']>,
 ) {
   const backdropRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lines = draft.split('\n');
+  const readLines = readText !== undefined ? readText.split('\n') : null;
+  const readAligned = !!readLines && readLines.length === lines.length;
   const shared = 'p-0 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words';
+  // With findings or speech marks the backdrop becomes the visible, hoverable layer
+  // (above a transparent textarea) so changes render inline and the read-diff marks
+  // can show their hover tooltip.
+  const overlay = (!!findings && findings.size > 0) || readAligned;
+  const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
+
+  const showTip = (e: React.MouseEvent, spoken: string) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setTip({ text: spoken, x: r.left + r.width / 2, y: r.top });
+  };
 
   useEffect(() => {
     if (activeLine === null) return;
@@ -288,37 +389,86 @@ function HighlightEditor(
       <div
         ref={backdropRef}
         aria-hidden
-        className={`absolute inset-0 overflow-hidden pointer-events-none text-transparent ${shared}`}
+        className={`absolute inset-0 overflow-hidden pointer-events-none ${overlay ? 'z-10 text-gray-200' : 'text-transparent'} ${shared}`}
       >
-        {lines.map((line, i) => (
+        {lines.map((line, i) => {
+          const finding = findings?.get(i);
+          const isActive = i === activeLine;
+          const diff = overlay && finding && line.length ? diffText(line, finding.corrected) : null;
+          if (diff) {
+            return (
+              <div key={i}>
+                {diff.map((seg, k) => {
+                  if (seg.read === null) return <span key={k}>{seg.text}</span>;
+                  const on = finding!.activeSegIdx === k;
+                  const redCls = `rounded-sm px-0.5 ${on ? 'bg-red-500/55 text-red-50' : 'bg-red-500/10 text-red-300/80'}`;
+                  const greenCls = `rounded-sm px-0.5 ${on ? 'bg-emerald-500/55 text-emerald-50' : 'bg-emerald-500/5 text-emerald-300/50'}`;
+                  return (
+                    <span key={k}>
+                      {seg.text && <span className={redCls}>{seg.text}</span>}
+                      {seg.text && seg.read && <span className="text-gray-500"> → </span>}
+                      {seg.read && <span className={greenCls}>{seg.read}</span>}
+                    </span>
+                  );
+                })}
+              </div>
+            );
+          }
+          const readLine = readAligned && !finding ? readLines![i] : undefined;
+          const readSegs = readLine !== undefined && readLine !== line ? diffText(line, readLine) : null;
+          if (readSegs) {
+            return (
+              <div key={i}>
+                {readSegs.map((s, k) => {
+                  if (s.read === null) return <span key={k}>{s.text}</span>;
+                  const spoken = s.read.trim() || 'omitted when read';
+                  const cls = s.text === ''
+                    ? 'bg-emerald-600/30 text-emerald-200 rounded-sm px-0.5 cursor-help pointer-events-auto'
+                    : 'bg-amber-500/25 text-amber-200 rounded-sm cursor-help pointer-events-auto';
+                  return (
+                    <mark
+                      key={k}
+                      className={cls}
+                      onMouseEnter={e => showTip(e, spoken)}
+                      onMouseLeave={() => setTip(null)}
+                    >
+                      {s.text === '' ? '＋' : s.text}
+                    </mark>
+                  );
+                })}
+              </div>
+            );
+          }
+          return (
           <div
             key={i}
             className={
-              i === activeLine
+              isActive
                 ? 'bg-amber-500/35 outline outline-1 outline-amber-400/50 rounded-sm'
-                : line.length > warnOver ? 'bg-amber-500/15 rounded-sm' : ''
+                : finding !== undefined
+                  ? 'bg-sky-500/10 rounded-sm'
+                  : line.length > warnOver ? 'bg-amber-500/15 rounded-sm' : ''
             }
           >
             {line.length ? line : ' '}
             {line.length > warnOver && (
               <span
                 className={`relative -top-2 ml-1 text-[9px] leading-none ${
-                  i === activeLine
-                    ? 'text-gray-500'
-                    : 'text-gray-600'
+                  isActive ? 'text-gray-500' : 'text-gray-600'
                 }`}
               >
                 {line.length}
               </span>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
       <textarea
         ref={textareaRef}
         autoFocus
         spellCheck={false}
-        className={`absolute inset-0 w-full h-full overflow-auto bg-transparent text-gray-200 resize-none outline-none ${shared}`}
+        className={`absolute inset-0 w-full h-full overflow-auto bg-transparent resize-none outline-none ${overlay ? 'text-transparent caret-gray-200' : 'text-gray-200'} ${shared}`}
         value={draft}
         onChange={e => onChange(e.target.value)}
         onKeyDown={e => {
@@ -333,11 +483,22 @@ function HighlightEditor(
           if (el) { el.scrollTop = e.currentTarget.scrollTop; el.scrollLeft = e.currentTarget.scrollLeft; }
         }}
       />
+      {tip && createPortal(
+        <div
+          className="fixed z-50 -translate-x-1/2 -translate-y-full -mt-1 pointer-events-none max-w-xs
+                     rounded border border-gray-700 bg-gray-950 px-2 py-1 text-[11px] text-gray-100
+                     shadow-lg whitespace-normal break-words"
+          style={{ left: tip.x, top: tip.y }}
+        >
+          {tip.text}
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }
 
-function PageView({ bookId, page, large, preview, edit }: PageViewProps) {
+function PageView({ bookId, page, large, preview, edit, editHeader }: PageViewProps) {
   return (
     <div
       className={`grid gap-4 ${
@@ -370,6 +531,7 @@ function PageView({ bookId, page, large, preview, edit }: PageViewProps) {
       <div className={`bg-gray-800/50 rounded-lg p-3 overflow-y-auto min-h-0 ${large ? '' : 'max-h-[70vh]'}`}>
         {edit ? (
           <div className="flex flex-col h-full min-h-0">
+            {editHeader}
             <p className="text-[11px] text-gray-500 mb-2 shrink-0">
               One sentence per line · blank line separates paragraphs
             </p>
@@ -377,6 +539,13 @@ function PageView({ bookId, page, large, preview, edit }: PageViewProps) {
           </div>
         ) : page.status === 'processing' ? (
           <span className="text-xs text-amber-400 animate-pulse">Reading page…</span>
+        ) : page.status === 'error' ? (
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-red-400">OCR failed for this page</p>
+            <p className="text-xs text-red-300 break-words whitespace-pre-wrap">
+              {page.error || 'No details reported by the OCR server.'}
+            </p>
+          </div>
         ) : page.text?.trim() ? (
           <ReadDiff text={page.text} read={page.readText} />
         ) : (
@@ -389,8 +558,9 @@ function PageView({ bookId, page, large, preview, edit }: PageViewProps) {
 
 const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ bookId, ocrPages }, ref) {
   const dispatch = useDispatch<AppDispatch>();
-  const processed = ocrPages.filter(p => p.status === 'complete' || p.status === 'processing');
+  const processed = ocrPages.filter(p => p.status === 'complete' || p.status === 'processing' || p.status === 'error');
   const done      = ocrPages.filter(p => p.status === 'complete').length;
+  const failed    = ocrPages.filter(p => p.status === 'error').length;
   const total     = ocrPages.length;
   const current   = ocrPages.find(p => p.status === 'processing');
 
@@ -413,8 +583,16 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
   const [showSlmModelPicker, setShowSlmModelPicker] = useState(false);
   const [selectedSlmModels, setSelectedSlmModels] = useState<string[]>(storedSlmModels);
   const [slmModelIdx, setSlmModelIdx] = useState(0);
+  const [typos, setTypos] = useState<TypoFinding[]>([]);
+  const [activeTypoSel, setActiveTypoSel] = useState<{ page: number; lineIdx: number; segIdx: number } | null>(null);
+  const [reviewModel, setReviewModel] = useState<string>(storedReviewModel);
+  const [showReviewModelPicker, setShowReviewModelPicker] = useState(false);
+  const [typoScanLoading, setTypoScanLoading] = useState(false);
+  const [typoScanError, setTypoScanError] = useState<string | null>(null);
+  const [typoScanProgress, setTypoScanProgress] = useState<{ done: number; total: number } | null>(null);
   const savedTimer = useRef<ReturnType<typeof setTimeout>>();
   const undoStack = useRef<string[]>([]);
+  const pendingReviewScan = useRef(false);
 
   const flashSaved = useCallback(() => {
     setShowSaved(true);
@@ -474,7 +652,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     processed.forEach((p, pageIdx) => {
       const text = pageIdx === safeIdx ? draft : (p.text ?? '');
       text.split('\n').forEach((line, lineIdx) => {
-        if (line.length > maxLen) items.push({ pageIdx, page: p.page, lineIdx });
+        if (line.length > maxLen) items.push({ pageIdx, page: p.page, lineIdx, kind: 'long' });
       });
     });
     return items;
@@ -485,11 +663,35 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     : -1;
   const currentPageFirstReview = reviewOccurrences.find(o => o.pageIdx === safeIdx) ?? null;
   const currentPageIssueCount = draft.split('\n').filter(line => line.length > maxLen).length;
+
+  // Grammar/typo findings reviewed in the reading-pages fullscreen (where the PDF
+  // preview shows the original), kept separate from the long-line review above.
+  // One item per individual word-level change so each is approved on its own.
+  const typoList = useMemo(
+    () => deriveTypoChanges(typos, processed, safeIdx, draft),
+    [processed, safeIdx, draft, typos],
+  );
+
+  const activeTypoIndex = activeTypoSel
+    ? typoList.findIndex(t => t.page === activeTypoSel.page && t.lineIdx === activeTypoSel.lineIdx && t.segIdx === activeTypoSel.segIdx)
+    : -1;
+  const activeTypo = activeTypoIndex >= 0 ? typoList[activeTypoIndex] : null;
+  const currentPageFindings = useMemo(() => {
+    const m = new Map<number, { corrected: string; activeSegIdx: number | null }>();
+    typoList.filter(t => t.pageIdx === safeIdx).forEach(t => {
+      if (!m.has(t.lineIdx)) m.set(t.lineIdx, { corrected: t.corrected, activeSegIdx: null });
+    });
+    if (activeTypo && activeTypo.pageIdx === safeIdx) {
+      const entry = m.get(activeTypo.lineIdx);
+      if (entry) entry.activeSegIdx = activeTypo.segIdx;
+    }
+    return m;
+  }, [typoList, safeIdx, activeTypo]);
   const activeSplitLineIdx = useMemo(() => {
-    const reviewLine = activeReview?.page === page.page ? activeReview.lineIdx : undefined;
+    const reviewLine = activeReview && page && activeReview.page === page.page ? activeReview.lineIdx : undefined;
     const lines = draft.split('\n');
     return reviewLine ?? lines.findIndex(line => line.length > maxLen);
-  }, [activeReview, page.page, draft, maxLen]);
+  }, [activeReview, page?.page, draft, maxLen]);
   const activeSplitLine = activeSplitLineIdx >= 0 ? draft.split('\n')[activeSplitLineIdx] : '';
   const activeLocalSplitPreview = useMemo<SplitProposal | null>(() => {
     const lines = draft.split('\n');
@@ -512,14 +714,14 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
   }, [splitStrategy, selectedSlmModels.length]);
 
   useEffect(() => {
-    if (!showSlmModelPicker || slmModels.length || slmModelsLoading) return;
+    if ((!showSlmModelPicker && !showReviewModelPicker) || slmModels.length || slmModelsLoading) return;
     setSlmModelsLoading(true);
     setSlmModelsError(null);
     api.get<{ id: string; label: string }[]>('/api/books/line-split/models')
       .then(res => setSlmModels(res.data))
       .catch(err => setSlmModelsError(err?.response?.data?.error || err?.message || 'Failed to list SLM models'))
       .finally(() => setSlmModelsLoading(false));
-  }, [showSlmModelPicker, slmModels.length, slmModelsLoading]);
+  }, [showSlmModelPicker, showReviewModelPicker, slmModels.length, slmModelsLoading]);
 
   useEffect(() => {
     setSlmProposal(null);
@@ -559,6 +761,10 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     if (!activeReview) return;
     if (activeReviewIndex === -1) setActiveReview(null);
   }, [activeReview, activeReviewIndex]);
+
+  useEffect(() => {
+    if (activeTypoSel && activeTypoIndex === -1) setActiveTypoSel(null);
+  }, [activeTypoSel, activeTypoIndex]);
 
   // Keep the editor draft in sync with the page being shown.
   useEffect(() => {
@@ -628,6 +834,124 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     goToReview(previous[previous.length - 1] ?? reviewOccurrences[reviewOccurrences.length - 1]);
   };
 
+  const goToTypo = (t: TypoChange) => {
+    if (t.pageIdx !== safeIdx) {
+      saveDraft();
+      setDraft(processed[t.pageIdx]?.text ?? '');
+      undoStack.current = [];
+      setUserMoved(true);
+      setIdx(t.pageIdx);
+    }
+    setActiveTypoSel({ page: t.page, lineIdx: t.lineIdx, segIdx: t.segIdx });
+  };
+
+  const nextTypo = () => {
+    if (typoList.length === 0) return;
+    goToTypo(typoList[activeTypoIndex + 1] ?? typoList[0]);
+  };
+
+  const prevTypo = () => {
+    if (typoList.length === 0) return;
+    goToTypo(activeTypoIndex > 0 ? typoList[activeTypoIndex - 1] : typoList[typoList.length - 1]);
+  };
+
+  const acceptTypo = () => {
+    if (!activeTypo) return;
+    const lines = draft.split('\n');
+    if (lines[activeTypo.lineIdx] !== activeTypo.original) return;
+    const newLine = applyTypoChange(activeTypo.original, activeTypo.corrected, activeTypo.segIdx);
+    lines[activeTypo.lineIdx] = newLine;
+    const result = lines.join('\n');
+    changeDraft(result);
+    saveText(result);
+
+    const nextTypos = typos.flatMap(t => {
+      if (t.page !== activeTypo.page || t.lineIdx !== activeTypo.lineIdx) return [t];
+      return newLine === t.corrected ? [] : [{ ...t, original: newLine }];
+    });
+    setTypos(nextTypos);
+
+    // Same global index now points at the next change (the accepted one is gone).
+    const remaining = deriveTypoChanges(nextTypos, processed, safeIdx, result);
+    const upcoming = remaining[activeTypoIndex] ?? null;
+    if (!upcoming) setActiveTypoSel(null);
+    else if (upcoming.pageIdx === safeIdx) setActiveTypoSel({ page: upcoming.page, lineIdx: upcoming.lineIdx, segIdx: upcoming.segIdx });
+    else goToTypo(upcoming);
+  };
+
+  const discardTypo = () => {
+    if (!activeTypo) return;
+    const newCorrected = discardTypoChange(activeTypo.original, activeTypo.corrected, activeTypo.segIdx);
+    const nextTypos = typos.flatMap(t => {
+      if (t.page !== activeTypo.page || t.lineIdx !== activeTypo.lineIdx) return [t];
+      return newCorrected === t.original ? [] : [{ ...t, corrected: newCorrected }];
+    });
+    setTypos(nextTypos);
+
+    const remaining = deriveTypoChanges(nextTypos, processed, safeIdx, draft);
+    const upcoming = remaining[activeTypoIndex] ?? null;
+    if (!upcoming) setActiveTypoSel(null);
+    else if (upcoming.pageIdx === safeIdx) setActiveTypoSel({ page: upcoming.page, lineIdx: upcoming.lineIdx, segIdx: upcoming.segIdx });
+    else goToTypo(upcoming);
+  };
+
+  const scanTypos = async (
+    modelOverride?: string,
+    target?: { pageIdx: number; page: number; text: string },
+  ) => {
+    const model = modelOverride || reviewModel;
+    if (!model) { pendingReviewScan.current = true; setShowReviewModelPicker(true); return; }
+    setUserMoved(true);
+    const tgt = target ?? { pageIdx: safeIdx, page: page.page, text: draft };
+    const targetPage = tgt.page;
+    const targets = tgt.text.split('\n')
+      .map((line, lineIdx) => ({ line, lineIdx }))
+      .filter(t => t.line.trim().length > 0);
+
+    setTypoScanError(null);
+    setTypoScanLoading(true);
+    setTypoScanProgress({ done: 0, total: targets.length });
+    const found: TypoFinding[] = [];
+    let failures = 0;
+    let lastError = '';
+    // A single line's failure must not abort the whole page (so the page still
+    // gets marked reviewed); collect per-line errors instead of throwing.
+    await runPool(targets, 6, async ({ line, lineIdx }) => {
+      try {
+        const res = await api.post<{ corrected: string }>(`/api/books/${bookId}/line-typos`, { line, model });
+        const corrected = (res.data?.corrected ?? '').trim();
+        if (corrected && corrected !== line.trim()) {
+          found.push({ page: targetPage, lineIdx, original: line, corrected });
+        }
+      } catch (err: any) {
+        failures++;
+        lastError = err?.response?.data?.error || err?.message || 'Typo check failed';
+      } finally {
+        setTypoScanProgress(p => (p ? { done: p.done + 1, total: p.total } : p));
+      }
+    });
+
+    setTypoScanLoading(false);
+    setTypoScanProgress(null);
+
+    if (targets.length > 0 && failures === targets.length) {
+      setTypoScanError(lastError || 'Typo check failed');
+      return;
+    }
+
+    setTypoScanError(failures > 0 ? `${failures} line(s) could not be reviewed` : null);
+    const nextTypos = [...typos.filter(t => t.page !== targetPage), ...found];
+    setTypos(nextTypos);
+    const changes = deriveTypoChanges(nextTypos, processed, tgt.pageIdx, tgt.text);
+    const firstOnPage = changes.find(c => c.page === targetPage);
+    if (firstOnPage) {
+      setActiveTypoSel({ page: firstOnPage.page, lineIdx: firstOnPage.lineIdx, segIdx: firstOnPage.segIdx });
+    } else {
+      setActiveTypoSel(sel => (sel?.page === targetPage ? null : sel));
+    }
+  };
+
+
   const breakLine = () => {
     if (activeSplitPreview && activeSplitLineIdx >= 0) {
       const lines = draft.split('\n');
@@ -666,13 +990,21 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     });
   };
 
-  const toggleSlmModel = (model: string) => {
-    setSelectedSlmModels(prev => {
-      const next = prev.includes(model) ? prev.filter(id => id !== model) : [...prev, model];
-      sessionStorage.setItem(SLM_MODEL_SESSION_KEY, JSON.stringify(next));
-      setSlmModelIdx(0);
-      return next;
-    });
+  const selectSlmModel = (model: string) => {
+    sessionStorage.setItem(SLM_MODEL_SESSION_KEY, JSON.stringify([model]));
+    setSelectedSlmModels([model]);
+    setSlmModelIdx(0);
+    setShowSlmModelPicker(false);
+  };
+
+  const selectReviewModel = (model: string) => {
+    sessionStorage.setItem(REVIEW_MODEL_SESSION_KEY, model);
+    setReviewModel(model);
+    setShowReviewModelPicker(false);
+    if (pendingReviewScan.current) {
+      pendingReviewScan.current = false;
+      scanTypos(model);
+    }
   };
 
   const closeSlmModelPicker = () => {
@@ -746,6 +1078,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
         <p className="text-xs text-gray-500">
           {done} of {total} pages processed
           {current && <span className="text-amber-400"> · reading page {current.page}…</span>}
+          {failed > 0 && <span className="text-red-400"> · {failed} failed</span>}
         </p>
 
         {/* Page label, centered above the image/text area */}
@@ -765,6 +1098,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
               <p className="text-xs text-gray-500">
                 {done} of {total} pages
                 {current && <span className="text-amber-400 ml-1">· reading page {current.page}…</span>}
+                {failed > 0 && <span className="text-red-400 ml-1">· {failed} failed</span>}
               </p>
               {showSaved && (
                 <span className="flex items-center gap-1 text-xs text-emerald-400 shrink-0">
@@ -776,10 +1110,64 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
               )}
             </div>
 
-            {/* Page label centered in the header */}
-            <span className="absolute left-1/2 -translate-x-1/2 font-mono text-sm text-gray-200">
-              P. {page.page}
-            </span>
+            <div className="flex items-center shrink-0">
+              <button
+                className="h-7 w-7 rounded-l flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                onClick={() => setShowReviewModelPicker(true)}
+                title="Choose review model"
+                aria-label="Choose review model"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M12 3l1.6 4.6L18 9l-4.4 1.4L12 15l-1.6-4.6L6 9l4.4-1.4L12 3zM5 14l.8 2.2L8 17l-2.2.8L5 20l-.8-2.2L2 17l2.2-.8L5 14zM19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14z" />
+                </svg>
+              </button>
+              <button
+                className="h-7 rounded-r px-2 flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-40 transition-colors"
+                onClick={() => scanTypos()}
+                disabled={typoScanLoading}
+                title={typoScanError ? `Review failed: ${typoScanError}` : 'Review this page for grammar and typos'}
+                aria-label="Review this page for grammar and typos"
+              >
+                {typoScanLoading && (
+                  <svg className="w-4 h-4 shrink-0 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z" />
+                  </svg>
+                )}
+                <span className="whitespace-nowrap">
+                  {typoScanLoading && typoScanProgress
+                    ? `Reviewing ${typoScanProgress.done}/${typoScanProgress.total}`
+                    : reviewModel ? `Review by ${prettyModel(reviewModel)}` : 'Review with AI'}
+                </span>
+              </button>
+            </div>
+
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
+                onClick={() => { saveDraft(); prev(); }}
+                disabled={safeIdx === 0}
+                title="Previous page"
+                aria-label="Previous page"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+              <span className="font-mono text-sm text-gray-200 tabular-nums text-center min-w-[2.5ch]">{page.page}</span>
+              <button
+                className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
+                onClick={() => { saveDraft(); next(); }}
+                disabled={safeIdx === processed.length - 1}
+                title="Next page"
+                aria-label="Next page"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            </div>
 
             <button
               className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors shrink-0"
@@ -798,13 +1186,89 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
               page={page}
               large
               preview={{ totalPages: maxPage, minPage, onPageChange: (p) => { saveDraft(); goToPage(p); } }}
+              editHeader={(typoList.length > 0 || typoScanError) ? (
+                <div className="mb-2 shrink-0 rounded-lg border border-gray-800 bg-gray-900/70 p-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-gray-500 tabular-nums shrink-0">
+                      {typoList.length === 0
+                        ? 'No findings'
+                        : `${activeTypoIndex >= 0 ? activeTypoIndex + 1 : '-'} / ${typoList.length}`}
+                    </span>
+                    <div className="min-w-0 flex-1 rounded border border-gray-700/60 bg-gray-900/40 px-2 py-1.5">
+                      {activeTypo ? (
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs">
+                          {activeTypo.oldSeg.trim() && (
+                            <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-red-100">{activeTypo.oldSeg.trim()}</span>
+                          )}
+                          <span className="text-gray-500">→</span>
+                          {activeTypo.newSeg.trim()
+                            ? <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-emerald-100">{activeTypo.newSeg.trim()}</span>
+                            : <span className="text-[11px] uppercase tracking-wide text-gray-500">removed</span>}
+                        </div>
+                      ) : typoScanError ? (
+                        <p className="text-xs text-red-300">{typoScanError}</p>
+                      ) : (
+                        <p className="text-xs text-gray-500">Select a finding to review.</p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
+                        onClick={prevTypo}
+                        disabled={typoList.length === 0}
+                        title="Previous finding"
+                        aria-label="Previous finding"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                        </svg>
+                      </button>
+                      <button
+                        className="w-7 h-7 rounded flex items-center justify-center text-emerald-400 hover:text-emerald-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
+                        onClick={acceptTypo}
+                        disabled={!activeTypo}
+                        title="Accept grammar/typo fix"
+                        aria-label="Accept grammar/typo fix"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                      </button>
+                      <button
+                        className="w-7 h-7 rounded flex items-center justify-center text-red-400 hover:text-red-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
+                        onClick={discardTypo}
+                        disabled={!activeTypo}
+                        title="Discard this change"
+                        aria-label="Discard this change"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                      <button
+                        className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
+                        onClick={nextTypo}
+                        disabled={typoList.length === 0}
+                        title="Next finding"
+                        aria-label="Next finding"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               edit={{
                 draft,
                 onChange: changeDraft,
                 onBlur: saveDraft,
                 onUndo: undoDraft,
                 warnOver: Number.POSITIVE_INFINITY,
-                activeLine: null,
+                activeLine: activeTypo?.page === page.page ? activeTypo.lineIdx : null,
+                findings: currentPageFindings,
+                readText: page.readText,
               }}
             />
           </div>
@@ -983,7 +1447,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 px-4">
           <div className="w-full max-w-md rounded-lg border border-gray-800 bg-gray-950 shadow-xl">
             <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
-              <h3 className="font-semibold text-gray-100">Select SLM models</h3>
+              <h3 className="font-semibold text-gray-100">Select split model</h3>
               <button
                 className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                 onClick={closeSlmModelPicker}
@@ -1011,30 +1475,86 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                         ? 'border-gray-600 bg-gray-800 text-gray-100'
                         : 'border-gray-800 bg-gray-900 text-gray-200 hover:border-gray-700 hover:bg-gray-800'
                     }`}
-                    onClick={() => toggleSlmModel(model.id)}
+                    onClick={() => selectSlmModel(model.id)}
                   >
                     <span className="min-w-0">
                       <span className="block truncate">{model.label || model.id}</span>
                       <span className="block truncate font-mono text-[11px] text-gray-500">{model.id}</span>
                     </span>
-                    <span className="w-5 h-5 shrink-0 rounded border border-gray-600 flex items-center justify-center">
-                      {selectedSlmModels.includes(model.id) && (
-                        <svg className="w-3.5 h-3.5 text-gray-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                        </svg>
-                      )}
-                    </span>
+                    {selectedSlmModels.includes(model.id) && (
+                      <svg className="w-4 h-4 shrink-0 text-gray-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
                   </button>
                 ))
               )}
-              {!slmModelsLoading && !slmModelsError && slmModels.length > 0 && (
+              {slmModelsError && (
                 <button
-                  className="btn-primary w-full justify-center"
-                  disabled={selectedSlmModels.length === 0}
-                  onClick={closeSlmModelPicker}
+                  className="btn-secondary w-full justify-center"
+                  onClick={() => {
+                    setSlmModelsLoading(true);
+                    setSlmModelsError(null);
+                    api.get<{ id: string; label: string }[]>('/api/books/line-split/models')
+                      .then(res => setSlmModels(res.data))
+                      .catch(err => setSlmModelsError(err?.response?.data?.error || err?.message || 'Failed to list SLM models'))
+                      .finally(() => setSlmModelsLoading(false));
+                  }}
                 >
-                  Done
+                  Retry
                 </button>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {showReviewModelPicker && createPortal(
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 px-4">
+          <div className="w-full max-w-md rounded-lg border border-gray-800 bg-gray-950 shadow-xl">
+            <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
+              <h3 className="font-semibold text-gray-100">Select review model</h3>
+              <button
+                className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                onClick={() => { pendingReviewScan.current = false; setShowReviewModelPicker(false); }}
+                title="Close"
+                aria-label="Close"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="space-y-2 p-4">
+              {slmModelsLoading ? (
+                <p className="text-sm text-gray-400">Loading models…</p>
+              ) : slmModelsError ? (
+                <p className="text-sm text-red-300">{slmModelsError}</p>
+              ) : slmModels.length === 0 ? (
+                <p className="text-sm text-gray-400">No models available.</p>
+              ) : (
+                slmModels.map(model => (
+                  <button
+                    key={model.id}
+                    className={`flex w-full items-center justify-between gap-3 rounded border px-3 py-2 text-left text-sm transition-colors ${
+                      reviewModel === model.id
+                        ? 'border-gray-600 bg-gray-800 text-gray-100'
+                        : 'border-gray-800 bg-gray-900 text-gray-200 hover:border-gray-700 hover:bg-gray-800'
+                    }`}
+                    onClick={() => selectReviewModel(model.id)}
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate">{model.label || model.id}</span>
+                      <span className="block truncate font-mono text-[11px] text-gray-500">{model.id}</span>
+                    </span>
+                    {reviewModel === model.id && (
+                      <svg className="w-4 h-4 shrink-0 text-gray-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </button>
+                ))
               )}
               {slmModelsError && (
                 <button

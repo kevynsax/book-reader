@@ -46,6 +46,14 @@ export const generateBook = createAsyncThunk(
   }
 );
 
+export const reprocessBook = createAsyncThunk(
+  'books/reprocess',
+  async (bookId: string) => {
+    await api.post(`/api/books/${bookId}/reprocess`);
+    return bookId;
+  }
+);
+
 export const deleteBook = createAsyncThunk('books/delete', async (bookId: string) => {
   await api.delete(`/api/books/${bookId}`);
   return bookId;
@@ -123,12 +131,13 @@ const booksSlice = createSlice({
       if (patch.chapters) book.chapters = patch.chapters as Chapter[];
 
       if (patch.ocrPage) {
-        const up = patch.ocrPage as { page: number; text?: string; readText?: string; status?: OcrPage['status'] };
+        const up = patch.ocrPage as { page: number; text?: string; readText?: string; status?: OcrPage['status']; error?: string };
         const pageIdx = book.ocrPages.findIndex(p => p.page === up.page);
         if (pageIdx !== -1) {
           if (up.text !== undefined) book.ocrPages[pageIdx].text = up.text;
           if (up.readText !== undefined) book.ocrPages[pageIdx].readText = up.readText;
           if (up.status !== undefined) book.ocrPages[pageIdx].status = up.status;
+          if ('error' in up) book.ocrPages[pageIdx].error = up.error;
         }
       }
 

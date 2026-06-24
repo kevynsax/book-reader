@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { AppDispatch, RootState } from '../store';
-import { confirmChapters, deleteBook, renameBook, generateBook, regenerateVoice, regenerateChapterVoice } from '../store/booksSlice';
+import { confirmChapters, deleteBook, renameBook, generateBook, regenerateVoice, regenerateChapterVoice, reprocessBook } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus } from '../types';
 import { chapterStatus, bookVoices, trackFor, friendlyVoice, hasPlayableAudio } from '../lib/format';
@@ -311,6 +311,7 @@ export default function EditBookPage() {
   const [showVoiceDialog,  setShowVoiceDialog]  = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [generating,       setGenerating]       = useState(false);
+  const [reprocessing,     setReprocessing]     = useState(false);
   const chapterReviewRef = useRef<ChapterReviewHandle>(null);
   const textReviewRef = useRef<TextReviewHandle>(null);
   const generatedRef = useRef(false);
@@ -356,8 +357,22 @@ export default function EditBookPage() {
     } finally { setGenerating(false); }
   };
 
+  const handleReprocess = async () => {
+    if (reprocessing) return;
+    setReprocessing(true);
+    try {
+      await dispatch(reprocessBook(book._id)).unwrap();
+    } finally {
+      setReprocessing(false);
+    }
+  };
+
   const hasOcrPages   = book.ocrPages.length > 0;
   const hasChapters   = book.chapters.length > 0;
+  const failedPages   = book.ocrPages.filter(p => p.status === 'error').length;
+  // Offer a one-click restart (reusing the stored PDF + page settings) whenever
+  // a run failed or finished with some pages unreadable.
+  const canReprocess  = book.status === 'error' || failedPages > 0;
   // A newly added voice renders in the background while the book stays 'complete'
   // (so it remains listenable), leaving its tracks pending/generating — treat that
   // as active generation so the progress section shows.
@@ -430,6 +445,19 @@ export default function EditBookPage() {
           <div className="card border-red-800 bg-red-950/20">
             <p className="text-red-400 font-medium mb-1">Processing failed</p>
             <p className="text-sm text-red-300">{book.errorMessage}</p>
+          </div>
+        )}
+
+        {canReprocess && (
+          <div className="card flex items-center justify-between gap-4">
+            <p className="text-sm text-gray-400">
+              {book.status === 'error'
+                ? 'Import failed. Restart it using the same pages you already set.'
+                : `${failedPages} page${failedPages === 1 ? '' : 's'} failed to read. Restart the import with the same settings.`}
+            </p>
+            <button className="btn-secondary shrink-0" onClick={handleReprocess} disabled={reprocessing}>
+              {reprocessing ? 'Restarting…' : 'Restart import'}
+            </button>
           </div>
         )}
 

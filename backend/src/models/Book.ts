@@ -62,6 +62,7 @@ export interface IOcrPage {
   readText?: string;
   language: string;
   status: 'pending' | 'processing' | 'complete' | 'error';
+  error?: string;
 }
 
 export interface IBook extends Document {
@@ -181,6 +182,7 @@ const OcrPageSchema = new Schema<IOcrPage>({
     enum: ['pending', 'processing', 'complete', 'error'],
     default: 'pending',
   },
+  error: { type: String },
 });
 
 const BookSchema = new Schema<IBook>(

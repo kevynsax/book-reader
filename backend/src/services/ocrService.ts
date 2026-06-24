@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import {
-  QWENVL_API, QWENVL_MODEL, QWENVL_MAX_TOKENS,
-  SLM_API, SLM_MODEL,
+  QWENVL_SERVERS, QWENVL_MAX_TOKENS,
+  SLM_API, SLM_API_FALLBACK, SLM_MODEL,
   OCR_SYSTEM_PROMPT, OCR_PAGE_PROMPT,
   TITLE_SYSTEM_PROMPT, TITLE_PAGE_PROMPT,
   TOC_SYSTEM_PROMPT, TOC_PAGE_PROMPT,
@@ -24,6 +24,10 @@ export interface ChapterSuggestion {
 export interface SplitLineSuggestion {
   left: string;
   right: string;
+}
+
+export interface LineReviewSuggestion {
+  corrected: string;
 }
 
 interface TocEntry {
@@ -78,6 +82,17 @@ function parseTocEntries(raw: string): TocEntry[] {
     .filter(e => e.title.length > 0);
 }
 
+function parseLineReviewSuggestion(raw: string): LineReviewSuggestion | null {
+  const text = stripMarkdownFence(raw.trim());
+  const parsed =
+    (() => { try { return JSON.parse(text); } catch { return extractLooseJson(text); } })();
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const corrected = (parsed as Record<string, unknown>).corrected;
+  if (typeof corrected !== 'string') return null;
+  const clean = sanitizePageText(corrected).trim();
+  return clean ? { corrected: clean } : null;
+}
+
 function parseSplitLineSuggestion(raw: string): SplitLineSuggestion | null {
   const text = stripMarkdownFence(raw.trim());
   const parsed =
@@ -92,12 +107,20 @@ function parseSplitLineSuggestion(raw: string): SplitLineSuggestion | null {
   return { left: cleanLeft, right: cleanRight };
 }
 
-async function callQwen(systemPrompt: string, userContent: unknown[]): Promise<string> {
-  const res = await fetch(`${QWENVL_API}/v1/chat/completions`, {
+// One-off calls (title, language, table of contents) aren't load-balanced per
+// page, so they run on the first configured server.
+function primaryServer(): { url: string; model: string } {
+  const server = QWENVL_SERVERS[0];
+  if (!server) throw new Error('No QwenVL servers configured (set QWENVL_SERVERS)');
+  return server;
+}
+
+async function callQwen(systemPrompt: string, userContent: unknown[], baseUrl: string, model: string): Promise<string> {
+  const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: QWENVL_MODEL,
+      model,
       temperature: 0,
       max_tokens: QWENVL_MAX_TOKENS,
       messages: [
@@ -108,8 +131,11 @@ async function callQwen(systemPrompt: string, userContent: unknown[]): Promise<s
   });
 
   if (!res.ok) {
-    const err = await res.text().catch(() => '');
-    throw new Error(err || `Qwen API returned ${res.status}`);
+    const host = new URL(baseUrl).host;
+    const body = (await res.text().catch(() => '')).trim();
+    // Skip HTML bodies (e.g. nginx 502 pages) so the surfaced error stays readable.
+    const detail = body && !body.startsWith('<') ? `: ${body.slice(0, 200)}` : '';
+    throw new Error(`QwenVL ${host} returned ${res.status} ${res.statusText}${detail}`.trim());
   }
 
   const data = await res.json() as { choices?: { message?: { content?: string } }[] };
@@ -118,14 +144,42 @@ async function callQwen(systemPrompt: string, userContent: unknown[]): Promise<s
   return content.trim();
 }
 
-export async function fetchSlmModels(): Promise<{ id: string; label: string }[]> {
-  const res = await fetch(`${SLM_API.replace(/\/+$/, '')}/v1/models`, {
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!res.ok) {
-    const err = await res.text().catch(() => '');
-    throw new Error(err || `SLM models returned ${res.status}`);
+// SLM endpoints. Calls are round-robined across the configured servers to spread
+// load, and the remaining servers act as fallbacks when the chosen one throws
+// (network error or non-2xx). A fresh AbortSignal is built per attempt so one
+// server's timeout doesn't pre-cancel the next.
+function slmBases(): string[] {
+  return [...new Set([SLM_API, SLM_API_FALLBACK].filter(Boolean).map(b => b.replace(/\/+$/, '')))];
+}
+
+let slmCursor = 0;
+function balancedBases(): string[] {
+  const bases = slmBases();
+  if (bases.length <= 1) return bases;
+  const start = slmCursor++ % bases.length;
+  return [...bases.slice(start), ...bases.slice(0, start)];
+}
+
+async function slmFetch(path: string, init: RequestInit, timeoutMs?: number): Promise<Response> {
+  let lastErr: unknown;
+  for (const base of balancedBases()) {
+    try {
+      const signal = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
+      const res = await fetch(`${base}${path}`, { ...init, signal });
+      if (!res.ok) {
+        const err = await res.text().catch(() => '');
+        throw new Error(err || `SLM API returned ${res.status}`);
+      }
+      return res;
+    } catch (err) {
+      lastErr = err;
+    }
   }
+  throw lastErr;
+}
+
+export async function fetchSlmModels(): Promise<{ id: string; label: string }[]> {
+  const res = await slmFetch('/v1/models', {}, 5000);
 
   const data = await res.json() as { data?: unknown };
   const list = Array.isArray(data?.data) ? data.data : [];
@@ -138,7 +192,7 @@ export async function fetchSlmModels(): Promise<{ id: string; label: string }[]>
 }
 
 async function callSlm(systemPrompt: string, userText: string, model = SLM_MODEL): Promise<string> {
-  const res = await fetch(`${SLM_API.replace(/\/+$/, '')}/v1/chat/completions`, {
+  const res = await slmFetch('/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -152,11 +206,6 @@ async function callSlm(systemPrompt: string, userText: string, model = SLM_MODEL
     }),
   });
 
-  if (!res.ok) {
-    const err = await res.text().catch(() => '');
-    throw new Error(err || `SLM API returned ${res.status}`);
-  }
-
   const data = await res.json() as { choices?: { message?: { content?: string } }[] };
   const content = data?.choices?.[0]?.message?.content ?? '';
   if (typeof content !== 'string') throw new Error('Empty response from SLM');
@@ -167,10 +216,11 @@ export async function extractBookTitle(coverImagePath: string): Promise<string> 
   const buffer = await fs.readFile(coverImagePath);
   const dataUrl = `data:image/jpeg;base64,${buffer.toString('base64')}`;
 
+  const { url, model } = primaryServer();
   const raw = await callQwen(TITLE_SYSTEM_PROMPT, [
     { type: 'text', text: TITLE_PAGE_PROMPT },
     { type: 'image_url', image_url: { url: dataUrl } },
-  ]);
+  ], url, model);
 
   const text = stripMarkdownFence(raw.trim());
   const parsed =
@@ -198,16 +248,35 @@ export async function splitLineIntoSentences(line: string, model?: string): Prom
   return parseSplitLineSuggestion(raw);
 }
 
+export async function reviewLineGrammar(line: string, model?: string): Promise<LineReviewSuggestion | null> {
+  const raw = await callSlm(
+    [
+      'You proofread a single line from an OCR-extracted book for grammar mistakes and typos.',
+      'Return one valid JSON object and nothing else.',
+      'The JSON object must have this exact shape: {"corrected":"..."}',
+      'Fix only clear spelling, OCR, and grammar errors.',
+      'Preserve the original language, meaning, named entities, punctuation style, and reading order.',
+      'Do not rephrase, restyle, translate, summarize, expand, split, merge, or change text that is already correct.',
+      'Do not add commentary or markdown.',
+      'If the line has no errors, return it unchanged in the "corrected" field.',
+    ].join(' '),
+    line,
+    model || SLM_MODEL,
+  );
+  return parseLineReviewSuggestion(raw);
+}
+
 // Ask Qwen for the page's primary language once (e.g. from the summary page) so
 // the whole book reads in one language instead of re-detecting per page.
 export async function detectLanguage(imagePath: string): Promise<string> {
   const buffer = await fs.readFile(imagePath);
   const dataUrl = `data:image/jpeg;base64,${buffer.toString('base64')}`;
 
+  const { url, model } = primaryServer();
   const raw = await callQwen(LANG_SYSTEM_PROMPT, [
     { type: 'text', text: LANG_PAGE_PROMPT },
     { type: 'image_url', image_url: { url: dataUrl } },
-  ]);
+  ], url, model);
 
   const text = stripMarkdownFence(raw.trim());
   const parsed =
@@ -216,14 +285,14 @@ export async function detectLanguage(imagePath: string): Promise<string> {
   return typeof language === 'string' ? language.toLowerCase().trim() : 'unknown';
 }
 
-export async function ocrPage(imagePath: string): Promise<OcrResult> {
+export async function ocrPage(imagePath: string, baseUrl: string, model: string): Promise<OcrResult> {
   const buffer = await fs.readFile(imagePath);
   const dataUrl = `data:image/jpeg;base64,${buffer.toString('base64')}`;
 
   const raw = await callQwen(OCR_SYSTEM_PROMPT, [
     { type: 'text', text: OCR_PAGE_PROMPT },
     { type: 'image_url', image_url: { url: dataUrl } },
-  ]);
+  ], baseUrl, model);
 
   return parseOcrResult(raw);
 }
@@ -232,10 +301,11 @@ async function extractTableOfContents(imagePath: string): Promise<TocEntry[]> {
   const buffer = await fs.readFile(imagePath);
   const dataUrl = `data:image/jpeg;base64,${buffer.toString('base64')}`;
 
+  const { url, model } = primaryServer();
   const raw = await callQwen(TOC_SYSTEM_PROMPT, [
     { type: 'text', text: TOC_PAGE_PROMPT },
     { type: 'image_url', image_url: { url: dataUrl } },
-  ]);
+  ], url, model);
 
   return parseTocEntries(raw);
 }

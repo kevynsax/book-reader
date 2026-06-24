@@ -20,10 +20,8 @@ services:
     environment:
       PORT: 3001
       MONGODB_URI: mongodb://mongodb:27017/book-reader
-      QWENVL_API: ${QWENVL_API:-https://qwenvl.kevyn.com.br}
-      QWENVL_MODEL: ${QWENVL_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct-AWQ}
-      # Chatterbox TTS runs on the HOST (MLX needs the Mac GPU); reach it via host.docker.internal.
-      TTS_API: ${TTS_API:-http://host.docker.internal:8000}
+      # Server lists (QWENVL_SERVERS for OCR, TTS_SERVERS for synthesis) are read
+      # from backend/.env by dotenv, so config is identical across environments.
       DATA_DIR: /app/data
       TTS_VOICE: ${TTS_VOICE:-pt-BR-FranciscaNeural}
       TTS_SPEED: ${TTS_SPEED:-1.0}

@@ -3,35 +3,52 @@ dotenv.config();
 
 export const PORT = parseInt(process.env.PORT || '3001');
 export const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/book-reader';
-export const QWENVL_API = process.env.QWENVL_API || 'https://qwenvl.kevyn.com.br';
-export const QWENVL_MODEL = process.env.QWENVL_MODEL || 'Qwen/Qwen2.5-VL-7B-Instruct-AWQ';
 export const SLM_API = process.env.SLM_API || 'https://slm.kevyn.com.br';
+// Tried in order: SLM_API first, then SLM_API_FALLBACK when the primary errors.
+export const SLM_API_FALLBACK = process.env.SLM_API_FALLBACK || 'https://ollama-macbook.kevyn.com.br';
 export const SLM_MODEL = process.env.SLM_MODEL || 'qwen2.5:3b';
-export const TTS_API = process.env.TTS_API || 'http://127.0.0.1:8000';
 
 // TTS servers run the same OpenAI-compatible API (see ../tts-2). Each loads one
 // model at a time but can hot-swap. Synthesis is load-balanced across them.
-// Configure via TTS_SERVERS: "id|Label|url" entries, comma- or newline-separated.
+// Required — configure via TTS_SERVERS: "id|Label|url" entries, comma- or
+// newline-separated. Empty entries are dropped.
 export interface TtsServerConfig { id: string; label: string; url: string; }
 
 function parseServers(): TtsServerConfig[] {
-  const raw = (process.env.TTS_SERVERS || '').trim();
-  if (raw) {
-    const parsed = raw
-      .split(/[\n,]+/)
-      .map(s => s.trim())
-      .filter(Boolean)
-      .map(entry => {
-        const [id, label, url] = entry.split('|').map(x => x.trim());
-        return { id, label: label || id, url: (url || '').replace(/\/+$/, '') };
-      })
-      .filter(s => s.id && s.url);
-    if (parsed.length) return parsed;
-  }
-  return [{ id: 'macbook', label: 'MacBook', url: TTS_API.replace(/\/+$/, '') }];
+  return (process.env.TTS_SERVERS || '')
+    .split(/[\n,]+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(entry => {
+      const [id, label, url] = entry.split('|').map(x => x.trim());
+      return { id, label: label || id, url: (url || '').replace(/\/+$/, '') };
+    })
+    .filter(s => s.id && s.url);
 }
 
 export const TTS_SERVERS: TtsServerConfig[] = parseServers();
+
+// QwenVL OCR servers run the same OpenAI-compatible API. Pages are OCR'd across
+// them in parallel so a book is recognized faster, and a failed lane falls back
+// to the others. Required — configure via QWENVL_SERVERS: "id|Label|url|model"
+// entries, comma- or newline-separated. Each entry carries its own model so
+// backends can differ (e.g. Ollama "qwen2.5vl:7b-q8_0" vs vLLM
+// "Qwen/Qwen2.5-VL-7B-Instruct-AWQ"). Entries missing url or model are dropped.
+export interface QwenVlServerConfig { id: string; label: string; url: string; model: string; }
+
+function parseQwenVlServers(): QwenVlServerConfig[] {
+  return (process.env.QWENVL_SERVERS || '')
+    .split(/[\n,]+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(entry => {
+      const [id, label, url, model] = entry.split('|').map(x => x.trim());
+      return { id, label: label || id, url: (url || '').replace(/\/+$/, ''), model: (model || '').trim() };
+    })
+    .filter(s => s.id && s.url && s.model);
+}
+
+export const QWENVL_SERVERS: QwenVlServerConfig[] = parseQwenVlServers();
 export const DATA_DIR = process.env.DATA_DIR || './data';
 export const DEFAULT_VOICE = process.env.TTS_VOICE || 'chatterbox:pt-BR-FranciscaNeural';
 export const TTS_SPEED = parseFloat(process.env.TTS_SPEED || '1.0');
