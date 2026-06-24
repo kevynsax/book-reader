@@ -593,6 +593,11 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
   const savedTimer = useRef<ReturnType<typeof setTimeout>>();
   const undoStack = useRef<string[]>([]);
   const pendingReviewScan = useRef(false);
+  // Pages whose AI review has already run (foreground or prefetch), keyed
+  // `${page}:${model}`, plus the ones currently being prefetched — so the
+  // background prefetch never repeats or races a page.
+  const reviewedPages = useRef<Set<string>>(new Set());
+  const prefetchInFlight = useRef<Set<string>>(new Set());
 
   const flashSaved = useCallback(() => {
     setShowSaved(true);
@@ -772,6 +777,77 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     undoStack.current = [];
   }, [page?.page, fullscreen]);
 
+  // Run the per-line AI grammar/typo check for one page's text. Shared by the
+  // foreground "Review" button and the background prefetch.
+  const reviewLines = async (
+    text: string,
+    targetPage: number,
+    model: string,
+    pool: number,
+    onProgress?: () => void,
+  ): Promise<{ found: TypoFinding[]; failures: number; lastError: string; total: number }> => {
+    const targets = text.split('\n')
+      .map((line, lineIdx) => ({ line, lineIdx }))
+      .filter(t => t.line.trim().length > 0);
+    const found: TypoFinding[] = [];
+    let failures = 0;
+    let lastError = '';
+    await runPool(targets, pool, async ({ line, lineIdx }) => {
+      try {
+        const res = await api.post<{ corrected: string }>(`/api/books/${bookId}/line-typos`, { line, model });
+        const corrected = (res.data?.corrected ?? '').trim();
+        if (corrected && corrected !== line.trim()) {
+          found.push({ page: targetPage, lineIdx, original: line, corrected });
+        }
+      } catch (err: any) {
+        failures++;
+        lastError = err?.response?.data?.error || err?.message || 'Typo check failed';
+      } finally {
+        onProgress?.();
+      }
+    });
+    return { found, failures, lastError, total: targets.length };
+  };
+
+  // The up-to-3 complete pages ahead of the current one, serialized so the
+  // prefetch effect only re-fires when that set actually changes (not on every
+  // keystroke-driven re-render).
+  const prefetchPlan = useMemo(() => {
+    if (!fullscreen || !reviewModel) return '[]';
+    const out: { page: number; text: string }[] = [];
+    for (let offset = 1; offset <= 3; offset++) {
+      const t = processed[safeIdx + offset];
+      if (t && t.status === 'complete' && (t.text ?? '').trim()) out.push({ page: t.page, text: t.text ?? '' });
+    }
+    return JSON.stringify(out);
+  }, [fullscreen, reviewModel, processed, safeIdx]);
+
+  // Review the next pages in the background so findings are ready on arrival.
+  useEffect(() => {
+    if (!reviewModel) return;
+    const plan: { page: number; text: string }[] = JSON.parse(prefetchPlan);
+    if (plan.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      for (const target of plan) {
+        if (cancelled) return;
+        const key = `${target.page}:${reviewModel}`;
+        if (reviewedPages.current.has(key) || prefetchInFlight.current.has(key)) continue;
+        prefetchInFlight.current.add(key);
+        try {
+          const { found } = await reviewLines(target.text, target.page, reviewModel, 3);
+          reviewedPages.current.add(key);
+          setTypos(prev => [...prev.filter(t => t.page !== target.page), ...found]);
+        } catch {
+          // Prefetch is best-effort; a failed page just gets reviewed on arrival.
+        } finally {
+          prefetchInFlight.current.delete(key);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [prefetchPlan, reviewModel]);
+
   if (processed.length === 0) return null;
 
   const minPage = processed[0].page;
@@ -904,42 +980,28 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     setUserMoved(true);
     const tgt = target ?? { pageIdx: safeIdx, page: page.page, text: draft };
     const targetPage = tgt.page;
-    const targets = tgt.text.split('\n')
-      .map((line, lineIdx) => ({ line, lineIdx }))
-      .filter(t => t.line.trim().length > 0);
+    const lineCount = tgt.text.split('\n').filter(line => line.trim().length > 0).length;
 
     setTypoScanError(null);
     setTypoScanLoading(true);
-    setTypoScanProgress({ done: 0, total: targets.length });
-    const found: TypoFinding[] = [];
-    let failures = 0;
-    let lastError = '';
+    setTypoScanProgress({ done: 0, total: lineCount });
     // A single line's failure must not abort the whole page (so the page still
-    // gets marked reviewed); collect per-line errors instead of throwing.
-    await runPool(targets, 6, async ({ line, lineIdx }) => {
-      try {
-        const res = await api.post<{ corrected: string }>(`/api/books/${bookId}/line-typos`, { line, model });
-        const corrected = (res.data?.corrected ?? '').trim();
-        if (corrected && corrected !== line.trim()) {
-          found.push({ page: targetPage, lineIdx, original: line, corrected });
-        }
-      } catch (err: any) {
-        failures++;
-        lastError = err?.response?.data?.error || err?.message || 'Typo check failed';
-      } finally {
-        setTypoScanProgress(p => (p ? { done: p.done + 1, total: p.total } : p));
-      }
-    });
+    // gets marked reviewed); per-line errors are collected, not thrown.
+    const { found, failures, lastError, total } = await reviewLines(
+      tgt.text, targetPage, model, 6,
+      () => setTypoScanProgress(p => (p ? { done: p.done + 1, total: p.total } : p)),
+    );
 
     setTypoScanLoading(false);
     setTypoScanProgress(null);
 
-    if (targets.length > 0 && failures === targets.length) {
+    if (total > 0 && failures === total) {
       setTypoScanError(lastError || 'Typo check failed');
       return;
     }
 
     setTypoScanError(failures > 0 ? `${failures} line(s) could not be reviewed` : null);
+    reviewedPages.current.add(`${targetPage}:${model}`);
     const nextTypos = [...typos.filter(t => t.page !== targetPage), ...found];
     setTypos(nextTypos);
     const changes = deriveTypoChanges(nextTypos, processed, tgt.pageIdx, tgt.text);

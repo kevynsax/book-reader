@@ -145,37 +145,41 @@ async function callQwen(systemPrompt: string, userContent: unknown[], baseUrl: s
 }
 
 // SLM endpoints. Calls are round-robined across the configured servers to spread
-// load, and the remaining servers act as fallbacks when the chosen one throws
-// (network error or non-2xx). A fresh AbortSignal is built per attempt so one
-// server's timeout doesn't pre-cancel the next.
+// load, all configured servers are raced against each other: the first one to
+// answer 2xx wins and the slower requests are aborted. The whole race is capped
+// by a timeout so a stuck server can't hold up the response.
+const SLM_RACE_TIMEOUT_MS = 10_000;
+
 function slmBases(): string[] {
   return [...new Set([SLM_API, SLM_API_FALLBACK].filter(Boolean).map(b => b.replace(/\/+$/, '')))];
 }
 
-let slmCursor = 0;
-function balancedBases(): string[] {
+async function slmFetch(path: string, init: RequestInit, timeoutMs = SLM_RACE_TIMEOUT_MS): Promise<Response> {
   const bases = slmBases();
-  if (bases.length <= 1) return bases;
-  const start = slmCursor++ % bases.length;
-  return [...bases.slice(start), ...bases.slice(0, start)];
-}
+  if (bases.length === 0) throw new Error('No SLM servers configured (set SLM_API)');
 
-async function slmFetch(path: string, init: RequestInit, timeoutMs?: number): Promise<Response> {
-  let lastErr: unknown;
-  for (const base of balancedBases()) {
-    try {
-      const signal = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
-      const res = await fetch(`${base}${path}`, { ...init, signal });
-      if (!res.ok) {
-        const err = await res.text().catch(() => '');
-        throw new Error(err || `SLM API returned ${res.status}`);
-      }
-      return res;
-    } catch (err) {
-      lastErr = err;
+  const controllers = bases.map(() => new AbortController());
+  const timer = setTimeout(() => controllers.forEach(c => c.abort()), timeoutMs);
+
+  const attempts = bases.map(async (base, i) => {
+    const res = await fetch(`${base}${path}`, { ...init, signal: controllers[i].signal });
+    if (!res.ok) {
+      const err = await res.text().catch(() => '');
+      throw new Error(err || `SLM API returned ${res.status}`);
     }
+    return { res, i };
+  });
+
+  try {
+    const { res, i } = await Promise.any(attempts);
+    controllers.forEach((c, j) => { if (j !== i) c.abort(); });
+    return res;
+  } catch (err) {
+    if (err instanceof AggregateError) throw err.errors[err.errors.length - 1] ?? err.errors[0] ?? err;
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  throw lastErr;
 }
 
 export async function fetchSlmModels(): Promise<{ id: string; label: string }[]> {
