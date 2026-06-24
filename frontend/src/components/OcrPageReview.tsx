@@ -1416,22 +1416,22 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                         </svg>
                       </button>
                       <button
-                        className="h-7 max-w-[12rem] truncate rounded px-2.5 font-mono text-xs bg-sky-500/15 text-sky-100 hover:bg-sky-500/30 disabled:opacity-30 transition-colors"
+                        className="h-7 min-w-[1.5rem] max-w-[12rem] truncate rounded px-2.5 font-mono text-xs bg-sky-500/15 text-sky-100 hover:bg-sky-500/30 disabled:opacity-30 transition-colors"
                         onClick={discardTypo}
                         disabled={!activeTypo}
                         title={t('Keep the original OCR text')}
                         aria-label={t('Keep the original OCR text')}
                       >
-                        {activeTypo?.oldSeg.trim() || '∅'}
+                        {activeTypo?.oldSeg.trim()}
                       </button>
                       <button
-                        className="h-7 max-w-[12rem] truncate rounded px-2.5 font-mono text-xs bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/30 disabled:opacity-30 transition-colors"
+                        className="h-7 min-w-[1.5rem] max-w-[12rem] truncate rounded px-2.5 font-mono text-xs bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/30 disabled:opacity-30 transition-colors"
                         onClick={acceptTypo}
                         disabled={!activeTypo}
                         title={t('Accept the SLM correction')}
                         aria-label={t('Accept the SLM correction')}
                       >
-                        {activeTypo?.newSeg.trim() || '∅'}
+                        {activeTypo?.newSeg.trim()}
                       </button>
                       <button
                         className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
