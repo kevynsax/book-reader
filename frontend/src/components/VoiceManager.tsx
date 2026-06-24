@@ -6,6 +6,7 @@ import { Book } from '../types';
 import { bookVoices, friendlyVoice, chapterStatus } from '../lib/format';
 import GenerateVoiceModal from './GenerateVoiceModal';
 import ConfirmDialog from './ConfirmDialog';
+import { t } from '../i18n';
 
 interface Props {
   book: Book;
@@ -43,7 +44,7 @@ export default function VoiceManager({ book, activeVoice, onSelectVoice, editabl
 
   return (
     <div className="space-y-1.5">
-      <p className="text-xs text-gray-500">Voices</p>
+      <p className="text-xs text-gray-500">{t('Voices')}</p>
       <div className="flex flex-wrap items-center gap-2">
         {voices.map(voice => {
           const active = selectable && voice === activeVoice;
@@ -59,14 +60,14 @@ export default function VoiceManager({ book, activeVoice, onSelectVoice, editabl
               onClick={() => onSelectVoice?.(voice)}
             >
               {generating && (
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" title="Generating…" />
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" title={t('Generating…')} />
               )}
               {friendlyVoice(voice)}
               {editable && allowModify && !generating && (
                 <button
                   className="text-gray-500 hover:text-amber-400 leading-none"
                   onClick={e => handleRegenerate(e, voice)}
-                  title="Regenerate this voice"
+                  title={t('Regenerate this voice')}
                 >
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -78,7 +79,7 @@ export default function VoiceManager({ book, activeVoice, onSelectVoice, editabl
                 <button
                   className="text-gray-500 hover:text-red-400 leading-none text-base"
                   onClick={e => handleRemove(e, voice)}
-                  title="Remove voice"
+                  title={t('Remove voice')}
                 >
                   ×
                 </button>
@@ -92,7 +93,7 @@ export default function VoiceManager({ book, activeVoice, onSelectVoice, editabl
             className="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm border border-dashed border-gray-600 text-gray-400 hover:border-amber-500 hover:text-amber-400 transition-colors"
             onClick={() => setShowAdd(true)}
           >
-            <span className="text-base leading-none">+</span> Add
+            <span className="text-base leading-none">+</span> {t('Add')}
           </button>
         )}
       </div>
@@ -108,9 +109,9 @@ export default function VoiceManager({ book, activeVoice, onSelectVoice, editabl
 
       {removing && (
         <ConfirmDialog
-          title="Remove voice?"
-          message={`The ${friendlyVoice(removing)} narration and its audio will be deleted.`}
-          confirmLabel="Remove"
+          title={t('Remove voice?')}
+          message={t('The {voice} narration and its audio will be deleted.', { voice: friendlyVoice(removing) })}
+          confirmLabel={t('Remove')}
           danger
           onConfirm={() => { dispatch(removeVoice({ bookId: book._id, voice: removing })); setRemoving(null); }}
           onClose={() => setRemoving(null)}
@@ -119,9 +120,9 @@ export default function VoiceManager({ book, activeVoice, onSelectVoice, editabl
 
       {regenerating && (
         <ConfirmDialog
-          title="Regenerate voice?"
-          message={`The ${friendlyVoice(regenerating)} narration will be re-rendered from scratch for every chapter.`}
-          confirmLabel="Regenerate"
+          title={t('Regenerate voice?')}
+          message={t('The {voice} narration will be re-rendered from scratch for every chapter.', { voice: friendlyVoice(regenerating) })}
+          confirmLabel={t('Regenerate')}
           onConfirm={() => { dispatch(regenerateVoice({ bookId: book._id, voice: regenerating })); setRegenerating(null); }}
           onClose={() => setRegenerating(null)}
         />

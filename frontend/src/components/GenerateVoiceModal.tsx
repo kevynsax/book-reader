@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { friendlyVoice } from '../lib/format';
 import { TtsModel } from '../types';
 import ServerStatus from './ServerStatus';
+import { t } from '../i18n';
 
 interface Props {
   bookId: string;
@@ -12,8 +13,8 @@ interface Props {
 }
 
 const VOICE_LANGS = [
-  { id: 'pt', label: 'Portuguese' },
-  { id: 'en', label: 'English' },
+  { id: 'pt', label: t('Portuguese') },
+  { id: 'en', label: t('English') },
 ];
 
 const FALLBACK_MODELS: TtsModel[] = [
@@ -136,8 +137,8 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
       <div className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-md shadow-2xl flex flex-col max-h-[85vh]">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800 shrink-0">
           <div>
-            <h2 className="font-semibold text-gray-100">Choose voices</h2>
-            <p className="text-xs text-gray-500 mt-0.5">Pick one or more readers across models. Tap to select and preview.</p>
+            <h2 className="font-semibold text-gray-100">{t('Choose voices')}</h2>
+            <p className="text-xs text-gray-500 mt-0.5">{t('Pick one or more readers across models. Tap to select and preview.')}</p>
           </div>
           <button className="text-gray-500 hover:text-gray-300 text-xl leading-none" onClick={onClose}>×</button>
         </div>
@@ -146,7 +147,7 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
           <ServerStatus />
 
           <div>
-            <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">Model</p>
+            <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">{t('Model')}</p>
             <div className="flex flex-wrap gap-2">
               {models.map(m => (
                 <button
@@ -172,16 +173,15 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
 
           {voicesState === 'offline' ? (
             <div className="rounded-lg border border-amber-700/50 bg-amber-950/30 px-4 py-3 text-sm">
-              <p className="text-amber-300 font-medium">This model is offline</p>
+              <p className="text-amber-300 font-medium">{t('This model is offline')}</p>
               <p className="text-amber-200/70 mt-1">
-                The {models.find(m => m.id === model)?.label ?? model} server isn’t reachable
-                right now (it may be a laptop that’s turned off). Try again later or pick another model.
+                {t('The {model} server isn’t reachable right now (it may be a laptop that’s turned off). Try again later or pick another model.', { model: models.find(m => m.id === model)?.label ?? model })}
               </p>
             </div>
           ) : voicesState === 'loading' ? (
-            <p className="text-sm text-gray-500">Checking model…</p>
+            <p className="text-sm text-gray-500">{t('Checking model…')}</p>
           ) : filtered.length === 0 ? (
-            <p className="text-sm text-gray-500">No voices for this model and language.</p>
+            <p className="text-sm text-gray-500">{t('No voices for this model and language.')}</p>
           ) : (
             <div className="grid grid-cols-3 gap-2">
               {filtered.map(v => {
@@ -212,7 +212,7 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
 
           {selected.size > 0 && (
             <div>
-              <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">Selected ({selected.size})</p>
+              <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">{t('Selected ({n})', { n: selected.size })}</p>
               <div className="flex flex-wrap gap-2">
                 {[...selected].map(composite => (
                   <span
@@ -223,7 +223,7 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
                     <button
                       className="text-amber-400/60 hover:text-red-400 leading-none text-sm"
                       onClick={() => setSelected(prev => { const n = new Set(prev); n.delete(composite); return n; })}
-                      title="Remove"
+                      title={t('Remove')}
                     >
                       ×
                     </button>
@@ -250,7 +250,7 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
             className="btn-secondary relative overflow-hidden flex items-center gap-2 disabled:opacity-40"
             onClick={togglePlay}
             disabled={!preview || sampleState === 'loading' || sampleState === 'error'}
-            title="Play sample"
+            title={t('Play sample')}
           >
             <span
               className="absolute inset-y-0 left-0 bg-amber-500/30 pointer-events-none"
@@ -267,7 +267,7 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
               ) : (
                 <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
               )}
-              {sampleState === 'error' ? 'Sample failed' : 'Sample'}
+              {sampleState === 'error' ? t('Sample failed') : t('Sample')}
             </span>
           </button>
 
@@ -276,7 +276,7 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
             onClick={() => selected.size && onConfirm([...selected])}
             disabled={!selected.size}
           >
-            {selected.size > 1 ? `Generate ${selected.size} voices` : 'Generate'}
+            {selected.size > 1 ? t('Generate {n} voices', { n: selected.size }) : t('Generate')}
           </button>
         </div>
       </div>

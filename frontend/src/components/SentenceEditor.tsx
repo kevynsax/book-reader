@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { EditableSentence } from '../types';
 import { onBookUpdate } from '../hooks/useWebSocket';
 import { friendlyVoice } from '../lib/format';
+import { t } from '../i18n';
 
 interface Props {
   bookId: string;
@@ -94,7 +95,7 @@ export default function SentenceEditor({ bookId, chapterIdx, voice }: Props) {
 
   const deleteSentence = async (s: EditableSentence) => {
     if (sentences.length <= 1) return;
-    if (!window.confirm('Delete this sentence and rebuild the chapter audio without it?')) return;
+    if (!window.confirm(t('Delete this sentence and rebuild the chapter audio without it?'))) return;
     setDeletingId(s._id);
     setSentences(prev => prev
       .filter(x => x._id !== s._id)
@@ -126,13 +127,13 @@ export default function SentenceEditor({ bookId, chapterIdx, voice }: Props) {
   };
 
   if (state === 'loading') {
-    return <div className="card text-sm text-gray-500">Loading sentences...</div>;
+    return <div className="card text-sm text-gray-500">{t('Loading sentences...')}</div>;
   }
 
   if (state === 'empty') {
     return (
       <div className="card text-sm text-gray-500">
-        Sentence editing is not available for this book. Regenerate a chapter to enable it.
+        {t('Sentence editing is not available for this book. Regenerate a chapter to enable it.')}
       </div>
     );
   }
@@ -142,10 +143,10 @@ export default function SentenceEditor({ bookId, chapterIdx, voice }: Props) {
       <audio ref={audioRef} onEnded={() => setPreviewId(null)} />
 
       <div className="flex items-center justify-between gap-3">
-        <h3 className="font-semibold text-gray-100">Edit sentences</h3>
-        <span className="text-xs text-gray-500 shrink-0">{friendlyVoice(voice)} - {sentences.length} sentences</span>
+        <h3 className="font-semibold text-gray-100">{t('Edit sentences')}</h3>
+        <span className="text-xs text-gray-500 shrink-0">{friendlyVoice(voice)} - {t('{n} sentences', { n: sentences.length })}</span>
       </div>
-      <p className="text-xs text-gray-500">Fix one sentence or delete it; the chapter audio is rebuilt from sentence segments.</p>
+      <p className="text-xs text-gray-500">{t('Fix one sentence or delete it; the chapter audio is rebuilt from sentence segments.')}</p>
 
       <div className="divide-y divide-gray-800/60 max-h-[28rem] overflow-y-auto -mx-2">
         {sentences.map(s => {
@@ -174,9 +175,9 @@ export default function SentenceEditor({ bookId, chapterIdx, voice }: Props) {
                       }}
                     />
                     <div className="flex items-center gap-2">
-                      <button className="btn-primary text-xs py-1 px-3" onClick={() => saveEdit(s)}>Save &amp; re-render</button>
-                      <button className="btn-secondary text-xs py-1 px-3" onClick={() => setEditingId(null)}>Cancel</button>
-                      <span className="text-[11px] text-gray-600">Cmd+Enter to save - Esc to cancel</span>
+                      <button className="btn-primary text-xs py-1 px-3" onClick={() => saveEdit(s)}>{t('Save & re-render')}</button>
+                      <button className="btn-secondary text-xs py-1 px-3" onClick={() => setEditingId(null)}>{t('Cancel')}</button>
+                      <span className="text-[11px] text-gray-600">{t('Cmd+Enter to save - Esc to cancel')}</span>
                     </div>
                   </div>
                 ) : (
@@ -185,7 +186,7 @@ export default function SentenceEditor({ bookId, chapterIdx, voice }: Props) {
                       className="flex-1 text-left text-sm leading-relaxed text-gray-300 hover:text-amber-300 transition-colors disabled:cursor-not-allowed"
                       onClick={() => startEdit(s)}
                       disabled={deleting}
-                      title="Click to edit"
+                      title={t('Click to edit')}
                     >
                       {s.text}
                     </button>
@@ -194,8 +195,8 @@ export default function SentenceEditor({ bookId, chapterIdx, voice }: Props) {
                         className="p-1 text-gray-500 hover:text-amber-400 transition-colors disabled:opacity-30"
                         onClick={() => preview(s)}
                         disabled={s.audioStatus !== 'complete' || deleting}
-                        title="Preview this sentence"
-                        aria-label="Preview sentence"
+                        title={t('Preview this sentence')}
+                        aria-label={t('Preview sentence')}
                       >
                         {previewId === s._id
                           ? <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg>
@@ -205,8 +206,8 @@ export default function SentenceEditor({ bookId, chapterIdx, voice }: Props) {
                         <button
                           className="p-1 text-gray-500 hover:text-amber-400 transition-colors"
                           onClick={() => regenerate(s)}
-                          title="Retry"
-                          aria-label="Retry sentence"
+                          title={t('Retry')}
+                          aria-label={t('Retry sentence')}
                         >
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -218,8 +219,8 @@ export default function SentenceEditor({ bookId, chapterIdx, voice }: Props) {
                         className="p-1 text-gray-500 hover:text-red-400 transition-colors disabled:opacity-30"
                         onClick={() => deleteSentence(s)}
                         disabled={sentences.length <= 1 || deleting}
-                        title="Delete this sentence"
-                        aria-label="Delete sentence"
+                        title={t('Delete this sentence')}
+                        aria-label={t('Delete sentence')}
                       >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}

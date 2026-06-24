@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { t } from '../i18n';
 
 interface Props {
   title: string;
@@ -11,7 +12,7 @@ interface Props {
 }
 
 export default function ConfirmDialog({
-  title, message, confirmLabel = 'Confirm', cancelLabel = 'Cancel', danger, onConfirm, onClose,
+  title, message, confirmLabel = t('Confirm'), cancelLabel = t('Cancel'), danger, onConfirm, onClose,
 }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };

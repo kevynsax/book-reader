@@ -6,6 +6,7 @@ import { updatePageText, reocrPage } from '../store/booksSlice';
 import { OcrPage } from '../types';
 import { diffText } from '../lib/diff';
 import { api } from '../api/booksApi';
+import { t } from '../i18n';
 import PagePreview from './PagePreview';
 
 // Render the reviewed text, highlighting spans that get rewritten for speech.
@@ -32,7 +33,7 @@ function ReadDiff({ text, read }: { text: string; read?: string }) {
       <p className={base}>
         {segs.map((s, i) => {
           if (s.read === null) return <span key={i}>{s.text}</span>;
-          const spoken = s.read.trim() || 'omitted when read';
+          const spoken = s.read.trim() || t('omitted when read');
           const cls = s.text === ''
             ? 'bg-emerald-600/30 text-emerald-200 rounded-sm px-0.5 cursor-help'
             : 'bg-amber-500/25 text-amber-200 rounded-sm cursor-help';
@@ -390,6 +391,26 @@ function HighlightEditor(
   // can show their hover tooltip.
   const overlay = (!!findings && findings.size > 0) || readAligned;
   const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
+  // How many monospace characters fit on one visual row of the backdrop. Lines
+  // longer than this wrap purely because the pane is too narrow — not because of
+  // a deliberate break — so we flag them.
+  const [charsPerRow, setCharsPerRow] = useState<number | null>(null);
+  const measureRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    const backdrop = backdropRef.current;
+    const measure = measureRef.current;
+    if (!backdrop || !measure) return;
+    const recompute = () => {
+      const charW = measure.getBoundingClientRect().width / 10;
+      if (!charW) return;
+      setCharsPerRow(Math.max(1, Math.floor(backdrop.clientWidth / charW)));
+    };
+    recompute();
+    const ro = new ResizeObserver(recompute);
+    ro.observe(backdrop);
+    return () => ro.disconnect();
+  }, []);
 
   const showTip = (e: React.MouseEvent, spoken: string) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -415,10 +436,13 @@ function HighlightEditor(
         {lines.map((line, i) => {
           const finding = findings?.get(i);
           const isActive = i === activeLine;
+          const wraps = charsPerRow !== null && line.length > charsPerRow;
+          const wrapCls = wraps ? 'border-l-2 border-amber-400/60 pl-1.5' : '';
+          const wrapTitle = wraps ? t('Wrapped to fit the page width — not a deliberate break') : undefined;
           const diff = overlay && finding && line.length ? diffText(line, finding.corrected) : null;
           if (diff) {
             return (
-              <div key={i}>
+              <div key={i} className={wrapCls || undefined} title={wrapTitle}>
                 {diff.map((seg, k) => {
                   if (seg.read === null) return <span key={k}>{seg.text}</span>;
                   const on = finding!.activeSegIdx === k;
@@ -429,11 +453,9 @@ function HighlightEditor(
                         key={k}
                         type="button"
                         onClick={apply}
-                        title="Click to insert"
-                        className={`pointer-events-auto mx-0.5 rounded px-1 align-middle ${on ? 'bg-emerald-500/60 text-emerald-50' : 'bg-emerald-500/20 text-emerald-200'} hover:bg-emerald-500/70`}
-                      >
-                        {seg.read}
-                      </button>
+                        title={t('Click to insert')}
+                        className={`pointer-events-auto mx-0.5 inline-block h-3 w-5 rounded align-middle ${on ? 'bg-emerald-500/70' : 'bg-emerald-500/30'} hover:bg-emerald-500/70`}
+                      />
                     );
                   }
                   if (seg.text && !seg.read) {
@@ -442,7 +464,7 @@ function HighlightEditor(
                         key={k}
                         type="button"
                         onClick={apply}
-                        title="Click to remove"
+                        title={t('Click to remove')}
                         className={`pointer-events-auto mx-0.5 inline-block h-3 w-5 rounded align-middle ${on ? 'bg-sky-500/70' : 'bg-sky-500/30'} hover:bg-sky-500/70`}
                       />
                     );
@@ -464,10 +486,10 @@ function HighlightEditor(
           const readSegs = readLine !== undefined && readLine !== line ? diffText(line, readLine) : null;
           if (readSegs) {
             return (
-              <div key={i}>
+              <div key={i} className={wrapCls || undefined} title={wrapTitle}>
                 {readSegs.map((s, k) => {
                   if (s.read === null) return <span key={k}>{s.text}</span>;
-                  const spoken = s.read.trim() || 'omitted when read';
+                  const spoken = s.read.trim() || t('omitted when read');
                   const cls = s.text === ''
                     ? 'bg-emerald-600/30 text-emerald-200 rounded-sm px-0.5 cursor-help pointer-events-auto'
                     : 'bg-amber-500/25 text-amber-200 rounded-sm cursor-help pointer-events-auto';
@@ -488,17 +510,18 @@ function HighlightEditor(
           return (
           <div
             key={i}
-            className={
+            title={wrapTitle}
+            className={`${
               isActive
                 ? 'bg-amber-500/35 outline outline-1 outline-amber-400/50 rounded-sm'
                 : finding !== undefined
                   ? 'bg-sky-500/10 rounded-sm'
                   : line.length > warnOver ? 'bg-amber-500/15 rounded-sm' : ''
-            }
+            } ${wrapCls}`}
           >
             {line.length ? line : ' '}
             {isContinuedLine(line, lines[i + 1]) && (
-              <span className="text-sky-400/50 select-none" title="Line broken to fit (not a sentence end)"> _</span>
+              <span className="text-sky-400/50 select-none" title={t('Line broken to fit (not a sentence end)')}> _</span>
             )}
             {line.length > warnOver && (
               <span
@@ -513,6 +536,14 @@ function HighlightEditor(
           );
         })}
       </div>
+      <span
+        ref={measureRef}
+        aria-hidden
+        className="font-mono text-xs"
+        style={{ position: 'absolute', top: 0, left: 0, visibility: 'hidden', whiteSpace: 'pre', pointerEvents: 'none' }}
+      >
+        0000000000
+      </span>
       <textarea
         ref={textareaRef}
         autoFocus
@@ -571,7 +602,7 @@ function PageView({ bookId, page, large, preview, edit, editHeader }: PageViewPr
           <img
             key={page.page}
             src={`/api/books/${bookId}/pages/${page.page}`}
-            alt={`Page ${page.page}`}
+            alt={t('Page {page}', { page: page.page })}
             className={`w-full block object-contain ${large ? 'h-[calc(100vh-10rem)]' : 'h-auto'}`}
             loading="lazy"
           />
@@ -582,23 +613,23 @@ function PageView({ bookId, page, large, preview, edit, editHeader }: PageViewPr
           <div className="flex flex-col h-full min-h-0">
             {editHeader}
             <p className="text-[11px] text-gray-500 mb-2 shrink-0">
-              One sentence per line · blank line separates paragraphs
+              {t('One sentence per line · blank line separates paragraphs')}
             </p>
             <HighlightEditor {...edit} />
           </div>
         ) : page.status === 'processing' ? (
-          <span className="text-xs text-amber-400 animate-pulse">Reading page…</span>
+          <span className="text-xs text-amber-400 animate-pulse">{t('Reading page…')}</span>
         ) : page.status === 'error' ? (
           <div className="space-y-1">
-            <p className="text-xs font-medium text-red-400">OCR failed for this page</p>
+            <p className="text-xs font-medium text-red-400">{t('OCR failed for this page')}</p>
             <p className="text-xs text-red-300 break-words whitespace-pre-wrap">
-              {page.error || 'No details reported by the OCR server.'}
+              {page.error || t('No details reported by the OCR server.')}
             </p>
           </div>
         ) : page.text?.trim() ? (
           <ReadDiff text={page.text} read={page.readText} />
         ) : (
-          <span className="text-xs text-gray-500">No text extracted for this page</span>
+          <span className="text-xs text-gray-500">{t('No text extracted for this page')}</span>
         )}
       </div>
     </div>
@@ -787,7 +818,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     setSlmModelsError(null);
     api.get<{ id: string; label: string }[]>('/api/books/line-split/models')
       .then(res => setSlmModels(res.data))
-      .catch(err => setSlmModelsError(err?.response?.data?.error || err?.message || 'Failed to list SLM models'))
+      .catch(err => setSlmModelsError(err?.response?.data?.error || err?.message || t('Failed to list SLM models')))
       .finally(() => setSlmModelsLoading(false));
   }, [showSlmModelPicker, showReviewModelPicker, slmModels.length, slmModelsLoading]);
 
@@ -813,11 +844,11 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
         const left = res.data.left?.trim();
         const right = res.data.right?.trim();
         setSlmProposal(left && right ? { original: line, left, right } : null);
-        setSlmError(left && right ? null : 'No sentence split found');
+        setSlmError(left && right ? null : t('No sentence split found'));
       })
       .catch(err => {
         if (cancelled) return;
-        const msg = err?.response?.data?.error || err?.message || 'Failed to split line';
+        const msg = err?.response?.data?.error || err?.message || t('Failed to split line');
         setSlmError(msg);
       })
       .finally(() => { if (!cancelled) setSlmLoading(false); });
@@ -869,7 +900,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
         }
       } catch (err: any) {
         failures++;
-        lastError = err?.response?.data?.error || err?.message || 'Typo check failed';
+        lastError = err?.response?.data?.error || err?.message || t('Typo check failed');
       } finally {
         onProgress?.();
       }
@@ -1062,11 +1093,11 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     setTypoScanProgress(null);
 
     if (total > 0 && failures === total) {
-      setTypoScanError(lastError || 'Typo check failed');
+      setTypoScanError(lastError || t('Typo check failed'));
       return;
     }
 
-    setTypoScanError(failures > 0 ? `${failures} line(s) could not be reviewed` : null);
+    setTypoScanError(failures > 0 ? t('{failures} line(s) could not be reviewed', { failures }) : null);
     reviewedPages.current.add(`${targetPage}:${model}`);
     const nextTypos = [...typos.filter(t => t.page !== targetPage), ...found];
     setTypos(nextTypos);
@@ -1176,14 +1207,14 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     <>
       <div className="card space-y-4">
         <div className="flex items-center justify-between gap-4">
-          <h3 className="font-semibold text-gray-100 shrink-0">Reading pages</h3>
+          <h3 className="font-semibold text-gray-100 shrink-0">{t('Reading pages')}</h3>
           <div className="flex items-center gap-2">
             {processed.length > 1 && <Nav />}
             <button
               className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
               onClick={openLineReview}
-              title="Review long lines"
-              aria-label="Review long lines"
+              title={t('Review long lines')}
+              aria-label={t('Review long lines')}
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -1193,7 +1224,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
             <button
               className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
               onClick={() => setFullscreen(true)}
-              title="Edit"
+              title={t('Edit')}
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -1204,15 +1235,15 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
         </div>
 
         <p className="text-xs text-gray-500">
-          {done} of {total} pages processed
-          {current && <span className="text-amber-400"> · reading page {current.page}…</span>}
-          {failed > 0 && <span className="text-red-400"> · {failed} failed</span>}
+          {t('{done} of {total} pages processed', { done, total })}
+          {current && <span className="text-amber-400">{t(' · reading page {page}…', { page: current.page })}</span>}
+          {failed > 0 && <span className="text-red-400">{t(' · {failed} failed', { failed })}</span>}
         </p>
 
         {/* Page label, centered above the image/text area */}
         <div className="text-center font-mono text-sm text-gray-300">
-          P. {page.page}
-          <span className="text-gray-500"> · {safeIdx + 1}/{processed.length}</span>
+          {t('P. {page}', { page: page.page })}
+          <span className="text-gray-500">{t(' · {current}/{total}', { current: safeIdx + 1, total: processed.length })}</span>
         </div>
 
         <PageView bookId={bookId} page={page} />
@@ -1222,18 +1253,18 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
         <div className="fixed inset-0 z-50 h-[100dvh] w-screen bg-gray-950 flex flex-col">
           <div className="relative flex items-center gap-4 px-6 py-4 border-b border-gray-800 shrink-0">
             <div className="flex items-center gap-3 flex-1 min-w-0">
-              <h2 className="font-semibold text-gray-100">Reading pages</h2>
+              <h2 className="font-semibold text-gray-100">{t('Reading pages')}</h2>
               <p className="text-xs text-gray-500">
-                {done} of {total} pages
-                {current && <span className="text-amber-400 ml-1">· reading page {current.page}…</span>}
-                {failed > 0 && <span className="text-red-400 ml-1">· {failed} failed</span>}
+                {t('{done} of {total} pages', { done, total })}
+                {current && <span className="text-amber-400 ml-1">{t('· reading page {page}…', { page: current.page })}</span>}
+                {failed > 0 && <span className="text-red-400 ml-1">{t('· {failed} failed', { failed })}</span>}
               </p>
               {showSaved && (
                 <span className="flex items-center gap-1 text-xs text-emerald-400 shrink-0">
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
-                  Saved
+                  {t('Saved')}
                 </span>
               )}
             </div>
@@ -1243,22 +1274,22 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => dispatch(reocrPage({ bookId, page: page.page }))}
               disabled={page.status === 'processing'}
-              title="Re-run OCR on this page's image"
-              aria-label="Read image again"
+              title={t("Re-run OCR on this page's image")}
+              aria-label={t('Read image again')}
             >
               <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                   d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
               </svg>
-              <span className="whitespace-nowrap">Read image again</span>
+              <span className="whitespace-nowrap">{t('Read image again')}</span>
             </button>
 
             <div className="flex items-center shrink-0">
               <button
                 className="h-7 w-7 rounded-l flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                 onClick={() => setShowReviewModelPicker(true)}
-                title="Choose review model"
-                aria-label="Choose review model"
+                title={t('Choose review model')}
+                aria-label={t('Choose review model')}
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -1269,8 +1300,8 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                 className="h-7 rounded-r px-2 flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-40 transition-colors"
                 onClick={() => scanTypos()}
                 disabled={typoScanLoading}
-                title={typoScanError ? `Review failed: ${typoScanError}` : 'Review this page for grammar and typos'}
-                aria-label="Review this page for grammar and typos"
+                title={typoScanError ? t('Review failed: {error}', { error: typoScanError }) : t('Review this page for grammar and typos')}
+                aria-label={t('Review this page for grammar and typos')}
               >
                 {typoScanLoading && (
                   <svg className="w-4 h-4 shrink-0 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -1280,16 +1311,16 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                 )}
                 <span className="whitespace-nowrap">
                   {typoScanLoading && typoScanProgress
-                    ? `Reviewing ${typoScanProgress.done}/${typoScanProgress.total}`
-                    : reviewModel ? `Review by ${prettyModel(reviewModel)}` : 'Review with AI'}
+                    ? t('Reviewing {done}/{total}', { done: typoScanProgress.done, total: typoScanProgress.total })
+                    : reviewModel ? t('Review by {model}', { model: prettyModel(reviewModel) }) : t('Review with AI')}
                 </span>
               </button>
               <button
                 className="h-7 w-7 ml-1 rounded flex items-center justify-center text-gray-400 enabled:hover:text-red-300 enabled:hover:bg-gray-800 disabled:opacity-30 transition-colors"
                 onClick={clearReviewState}
                 disabled={typos.length === 0}
-                title="Clear all reviews"
-                aria-label="Clear all reviews"
+                title={t('Clear all reviews')}
+                aria-label={t('Clear all reviews')}
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"
                   strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}>
@@ -1304,8 +1335,8 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                 className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
                 onClick={() => { saveDraft(); prev(); }}
                 disabled={safeIdx === 0}
-                title="Previous page"
-                aria-label="Previous page"
+                title={t('Previous page')}
+                aria-label={t('Previous page')}
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -1316,8 +1347,8 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                 className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
                 onClick={() => { saveDraft(); next(); }}
                 disabled={safeIdx === processed.length - 1}
-                title="Next page"
-                aria-label="Next page"
+                title={t('Next page')}
+                aria-label={t('Next page')}
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -1328,7 +1359,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
             <button
               className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors shrink-0"
               onClick={() => { saveDraft(); setFullscreen(false); clearReviewState(); }}
-              title="Close (Esc)"
+              title={t('Close (Esc)')}
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -1347,8 +1378,8 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] font-medium uppercase tracking-wide text-gray-500 tabular-nums shrink-0">
                       {pageTypoList.length === 0
-                        ? 'No findings'
-                        : `${activeTypoIndex >= 0 ? activeTypoIndex + 1 : '-'} / ${pageTypoList.length}`}
+                        ? t('No findings')
+                        : t('{current} / {total}', { current: activeTypoIndex >= 0 ? activeTypoIndex + 1 : '-', total: pageTypoList.length })}
                     </span>
                     <div className="min-w-0 flex-1 rounded border border-gray-700/60 bg-gray-900/40 px-2 py-1.5">
                       {activeTypo ? (() => {
@@ -1362,14 +1393,14 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                             <span className="text-gray-500">→</span>
                             {activeTypo.newSeg.trim()
                               ? <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-emerald-100">{activeTypo.newSeg.trim()}</span>
-                              : <span className="text-[11px] uppercase tracking-wide text-gray-500">removed</span>}
+                              : <span className="text-[11px] uppercase tracking-wide text-gray-500">{t('removed')}</span>}
                             {ctx.after && <span className="text-gray-500">{ctx.after}…</span>}
                           </div>
                         );
                       })() : typoScanError ? (
                         <p className="text-xs text-red-300">{typoScanError}</p>
                       ) : (
-                        <p className="text-xs text-gray-500">Select a finding to review.</p>
+                        <p className="text-xs text-gray-500">{t('Select a finding to review.')}</p>
                       )}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
@@ -1377,8 +1408,8 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                         className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
                         onClick={prevTypo}
                         disabled={pageTypoList.length === 0}
-                        title="Previous finding"
-                        aria-label="Previous finding"
+                        title={t('Previous finding')}
+                        aria-label={t('Previous finding')}
                       >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -1388,8 +1419,8 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                         className="h-7 max-w-[12rem] truncate rounded px-2.5 font-mono text-xs bg-sky-500/15 text-sky-100 hover:bg-sky-500/30 disabled:opacity-30 transition-colors"
                         onClick={discardTypo}
                         disabled={!activeTypo}
-                        title="Keep the original OCR text"
-                        aria-label="Keep the original OCR text"
+                        title={t('Keep the original OCR text')}
+                        aria-label={t('Keep the original OCR text')}
                       >
                         {activeTypo?.oldSeg.trim() || '∅'}
                       </button>
@@ -1397,8 +1428,8 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                         className="h-7 max-w-[12rem] truncate rounded px-2.5 font-mono text-xs bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/30 disabled:opacity-30 transition-colors"
                         onClick={acceptTypo}
                         disabled={!activeTypo}
-                        title="Accept the SLM correction"
-                        aria-label="Accept the SLM correction"
+                        title={t('Accept the SLM correction')}
+                        aria-label={t('Accept the SLM correction')}
                       >
                         {activeTypo?.newSeg.trim() || '∅'}
                       </button>
@@ -1406,8 +1437,8 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                         className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
                         onClick={nextTypo}
                         disabled={pageTypoList.length === 0}
-                        title="Next finding"
-                        aria-label="Next finding"
+                        title={t('Next finding')}
+                        aria-label={t('Next finding')}
                       >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -1438,29 +1469,29 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
         <div className="fixed inset-0 z-50 h-[100dvh] w-screen bg-gray-950 flex flex-col">
           <div className="relative flex items-center gap-4 px-6 py-4 border-b border-gray-800 shrink-0">
             <div className="flex items-center gap-3 flex-1 min-w-0">
-              <h2 className="font-semibold text-gray-100">Line review</h2>
+              <h2 className="font-semibold text-gray-100">{t('Line review')}</h2>
               <p className="text-xs text-gray-500">
-                P. {page.page}
-                <span className="ml-1">· {currentPageIssueCount} on this page</span>
+                {t('P. {page}', { page: page.page })}
+                <span className="ml-1">{t('· {count} on this page', { count: currentPageIssueCount })}</span>
               </p>
               {showSaved && (
                 <span className="flex items-center gap-1 text-xs text-emerald-400 shrink-0">
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
-                  Saved
+                  {t('Saved')}
                 </span>
               )}
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-gray-500">Target</span>
+              <span className="text-[11px] font-medium uppercase tracking-wide text-gray-500">{t('Target')}</span>
               <input
                 type="number"
                 value={minLen}
                 onChange={e => setMinLen(Math.max(0, parseInt(e.target.value, 10) || 0))}
                 className="w-14 h-7 px-1 text-center text-xs bg-gray-800 border border-gray-700 rounded text-gray-200 outline-none focus:border-gray-500"
-                title="Min line length"
+                title={t('Min line length')}
               />
               <span className="text-gray-600 text-xs">-</span>
               <input
@@ -1468,14 +1499,14 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                 value={maxLen}
                 onChange={e => setMaxLen(Math.max(0, parseInt(e.target.value, 10) || 0))}
                 className="w-14 h-7 px-1 text-center text-xs bg-gray-800 border border-gray-700 rounded text-gray-200 outline-none focus:border-gray-500"
-                title="Max line length"
+                title={t('Max line length')}
               />
             </div>
 
             <button
               className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors shrink-0"
               onClick={() => { saveDraft(); setLineReviewFullscreen(false); }}
-              title="Close (Esc)"
+              title={t('Close (Esc)')}
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -1487,30 +1518,30 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
               <div className="mb-2 flex h-7 items-center justify-between gap-2">
                 <span className="text-[11px] font-medium uppercase tracking-wide text-gray-500 tabular-nums">
                   {reviewOccurrences.length === 0
-                    ? '0 issues'
-                    : `${activeReviewIndex >= 0 ? activeReviewIndex + 1 : '-'} / ${reviewOccurrences.length}`}
+                    ? t('0 issues')
+                    : t('{current} / {total}', { current: activeReviewIndex >= 0 ? activeReviewIndex + 1 : '-', total: reviewOccurrences.length })}
                 </span>
                 <div className="flex items-center gap-1">
                   {splitStrategy === 'slm' && (
                     <button
                       className="h-7 max-w-48 rounded px-2 flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                       onClick={() => setShowSlmModelPicker(true)}
-                      title="Choose SLM model"
-                      aria-label="Choose SLM model"
+                      title={t('Choose SLM model')}
+                      aria-label={t('Choose SLM model')}
                     >
                       <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                           d="M12 3l1.6 4.6L18 9l-4.4 1.4L12 15l-1.6-4.6L6 9l4.4-1.4L12 3zM5 14l.8 2.2L8 17l-2.2.8L5 20l-.8-2.2L2 17l2.2-.8L5 14zM19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14z" />
                       </svg>
-                      <span className="truncate">{activeSlmModel || 'Choose model'}</span>
+                      <span className="truncate">{activeSlmModel || t('Choose model')}</span>
                     </button>
                   )}
                   <button
                     className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
                     onClick={prevReview}
                     disabled={reviewOccurrences.length === 0}
-                    title="Previous long line"
-                    aria-label="Previous long line"
+                    title={t('Previous long line')}
+                    aria-label={t('Previous long line')}
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -1520,8 +1551,8 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                     className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
                     onClick={breakLine}
                     disabled={!canAcceptSplit}
-                    title="Accept current long-line split"
-                    aria-label="Accept current long-line split"
+                    title={t('Accept current long-line split')}
+                    aria-label={t('Accept current long-line split')}
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -1531,8 +1562,8 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                     className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
                     onClick={nextReview}
                     disabled={reviewOccurrences.length === 0}
-                    title="Next long line"
-                    aria-label="Next long line"
+                    title={t('Next long line')}
+                    aria-label={t('Next long line')}
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -1541,8 +1572,8 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                   <button
                     className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                     onClick={cycleSplitStrategy}
-                    title={`Try another split strategy (${splitStrategy === 'punctuation' ? 'punctuation' : splitStrategy === 'conjunction' ? 'and/e' : activeSlmModel || 'SLM'})`}
-                    aria-label="Try another split strategy"
+                    title={t('Try another split strategy ({strategy})', { strategy: splitStrategy === 'punctuation' ? t('punctuation') : splitStrategy === 'conjunction' ? t('and/e') : activeSlmModel || t('SLM') })}
+                    aria-label={t('Try another split strategy')}
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -1554,7 +1585,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
               <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                 <div className="min-w-0">
                   <div className="mb-1 flex h-7 items-center">
-                    <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">Current</p>
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">{t('Current')}</p>
                   </div>
                   <p className="min-h-9 rounded border border-red-900/50 bg-red-950/20 px-3 py-2 font-mono text-xs leading-relaxed text-red-100 break-words">
                     {showSplitComparison ? activeSplitPreview?.original ?? activeSplitLine : null}
@@ -1562,18 +1593,18 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                 </div>
                 <div className="min-w-0">
                   <div className="mb-1 flex h-7 items-center">
-                    <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">After Accept</p>
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">{t('After Accept')}</p>
                   </div>
                   <div className="min-h-9 space-y-4 rounded border border-emerald-900/50 bg-emerald-950/20 px-3 py-2 font-mono text-xs leading-relaxed text-emerald-100 break-words">
                     {!showSplitComparison ? null : showSlmLoading ? (
-                      <p className="text-emerald-100/60">Thinking…</p>
+                      <p className="text-emerald-100/60">{t('Thinking…')}</p>
                     ) : activeSplitPreview ? (
                       <>
                         <p>{activeSplitPreview.left}</p>
                         <p>{activeSplitPreview.right}</p>
                       </>
                     ) : (
-                      <p className="text-emerald-100/60">{slmError ?? 'No split available for this strategy.'}</p>
+                      <p className="text-emerald-100/60">{slmError ?? t('No split available for this strategy.')}</p>
                     )}
                   </div>
                 </div>
@@ -1584,7 +1615,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
             <div className="h-full min-h-0 rounded-lg bg-gray-800/50 p-3">
               <div className="flex h-full min-h-0 flex-col">
                 <p className="text-[11px] text-gray-500 mb-2 shrink-0">
-                  One sentence per line · blank line separates paragraphs
+                  {t('One sentence per line · blank line separates paragraphs')}
                 </p>
                 <HighlightEditor
                   draft={draft}
@@ -1605,12 +1636,12 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 px-4">
           <div className="w-full max-w-md rounded-lg border border-gray-800 bg-gray-950 shadow-xl">
             <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
-              <h3 className="font-semibold text-gray-100">Select split model</h3>
+              <h3 className="font-semibold text-gray-100">{t('Select split model')}</h3>
               <button
                 className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                 onClick={closeSlmModelPicker}
-                title="Close"
-                aria-label="Close"
+                title={t('Close')}
+                aria-label={t('Close')}
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -1619,11 +1650,11 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
             </div>
             <div className="space-y-2 p-4">
               {slmModelsLoading ? (
-                <p className="text-sm text-gray-400">Loading models…</p>
+                <p className="text-sm text-gray-400">{t('Loading models…')}</p>
               ) : slmModelsError ? (
                 <p className="text-sm text-red-300">{slmModelsError}</p>
               ) : slmModels.length === 0 ? (
-                <p className="text-sm text-gray-400">No SLM models available.</p>
+                <p className="text-sm text-gray-400">{t('No SLM models available.')}</p>
               ) : (
                 slmModels.map(model => (
                   <button
@@ -1655,11 +1686,11 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                     setSlmModelsError(null);
                     api.get<{ id: string; label: string }[]>('/api/books/line-split/models')
                       .then(res => setSlmModels(res.data))
-                      .catch(err => setSlmModelsError(err?.response?.data?.error || err?.message || 'Failed to list SLM models'))
+                      .catch(err => setSlmModelsError(err?.response?.data?.error || err?.message || t('Failed to list SLM models')))
                       .finally(() => setSlmModelsLoading(false));
                   }}
                 >
-                  Retry
+                  {t('Retry')}
                 </button>
               )}
             </div>
@@ -1672,12 +1703,12 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 px-4">
           <div className="w-full max-w-md rounded-lg border border-gray-800 bg-gray-950 shadow-xl">
             <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
-              <h3 className="font-semibold text-gray-100">Select review model</h3>
+              <h3 className="font-semibold text-gray-100">{t('Select review model')}</h3>
               <button
                 className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                 onClick={() => { pendingReviewScan.current = false; setShowReviewModelPicker(false); }}
-                title="Close"
-                aria-label="Close"
+                title={t('Close')}
+                aria-label={t('Close')}
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -1686,11 +1717,11 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
             </div>
             <div className="space-y-2 p-4">
               {slmModelsLoading ? (
-                <p className="text-sm text-gray-400">Loading models…</p>
+                <p className="text-sm text-gray-400">{t('Loading models…')}</p>
               ) : slmModelsError ? (
                 <p className="text-sm text-red-300">{slmModelsError}</p>
               ) : slmModels.length === 0 ? (
-                <p className="text-sm text-gray-400">No models available.</p>
+                <p className="text-sm text-gray-400">{t('No models available.')}</p>
               ) : (
                 slmModels.map(model => (
                   <button
@@ -1722,11 +1753,11 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                     setSlmModelsError(null);
                     api.get<{ id: string; label: string }[]>('/api/books/line-split/models')
                       .then(res => setSlmModels(res.data))
-                      .catch(err => setSlmModelsError(err?.response?.data?.error || err?.message || 'Failed to list SLM models'))
+                      .catch(err => setSlmModelsError(err?.response?.data?.error || err?.message || t('Failed to list SLM models')))
                       .finally(() => setSlmModelsLoading(false));
                   }}
                 >
-                  Retry
+                  {t('Retry')}
                 </button>
               )}
             </div>

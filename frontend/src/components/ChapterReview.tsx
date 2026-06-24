@@ -5,6 +5,7 @@ import { updateChapters } from '../store/booksSlice';
 import { api } from '../api/booksApi';
 import { Book } from '../types';
 import PagePreview from './PagePreview';
+import { t } from '../i18n';
 
 interface ChapterSuggestion {
   title: string;
@@ -132,7 +133,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
       setSuggestions(res.data.chapters);
     } catch (err) {
       const msg = (err as { response?: { data?: { error?: string } } }).response?.data?.error;
-      setError(msg ?? 'Failed to read the summary page');
+      setError(msg ?? t('Failed to read the summary page'));
     } finally {
       setDetecting(false);
     }
@@ -245,7 +246,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
     try {
       await onConfirm(toPayload(rows));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to confirm chapters');
+      setError(err instanceof Error ? err.message : t('Failed to confirm chapters'));
     }
   };
 
@@ -255,9 +256,9 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h3 className="font-semibold text-gray-100">Review chapters</h3>
+          <h3 className="font-semibold text-gray-100">{t('Review chapters')}</h3>
           <p className="text-sm text-gray-500 mt-0.5">
-            Set each chapter's name, the page it starts on, and the text that begins it (pages {book.firstPage}–{book.lastPage}).
+            {t('Set each chapter\'s name, the page it starts on, and the text that begins it (pages {from}–{to}).', { from: book.firstPage, to: book.lastPage })}
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -265,8 +266,8 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
             className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors disabled:opacity-40"
             onClick={readSummary}
             disabled={detecting}
-            title="Re-read summary page with AI"
-            aria-label="Re-read summary page with AI"
+            title={t('Re-read summary page with AI')}
+            aria-label={t('Re-read summary page with AI')}
           >
             {detecting ? (
               <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -283,8 +284,8 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
           <button
             className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
             onClick={() => setShowSummary(true)}
-            title="View summary page"
-            aria-label="View summary page"
+            title={t('View summary page')}
+            aria-label={t('View summary page')}
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -294,8 +295,8 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
           <button
             className="w-8 h-8 rounded-lg flex items-center justify-center border-2 border-amber-600/60 text-amber-400 hover:bg-amber-600/15 hover:border-amber-500 transition-colors"
             onClick={addChapter}
-            title="Add chapter"
-            aria-label="Add chapter"
+            title={t('Add chapter')}
+            aria-label={t('Add chapter')}
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
@@ -332,11 +333,11 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                     value={c.title}
                     onChange={e => update(idx, { title: e.target.value })}
                     onBlur={blurSave}
-                    placeholder="Chapter name…"
+                    placeholder={t('Chapter name…')}
                   />
 
                   <div className="flex items-center gap-2 text-sm">
-                    <label className="text-gray-400">Starts on page</label>
+                    <label className="text-gray-400">{t('Starts on page')}</label>
                     <input
                       type="number"
                       className="input w-24"
@@ -347,7 +348,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                       onBlur={() => { update(idx, { startPage: clampPage(c.startPage) }); blurSave(); }}
                     />
                     <span className="text-xs text-gray-500">
-                      {outOfRange ? `out of range (${book.firstPage}–${book.lastPage})` : `pages ${hasPage ? c.startPage : '?'}–${endPage}`}
+                      {outOfRange ? t('out of range ({from}–{to})', { from: book.firstPage, to: book.lastPage }) : t('pages {from}–{to}', { from: hasPage ? c.startPage : '?', to: endPage })}
                     </span>
                   </div>
 
@@ -357,7 +358,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                       value={c.label}
                       onChange={e => update(idx, { label: e.target.value })}
                       onBlur={blurSave}
-                      placeholder="Text that starts this chapter on the page (optional)…"
+                      placeholder={t('Text that starts this chapter on the page (optional)…')}
                     />
                     {hasLabel && (
                       <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-xs ${found ? 'text-green-400' : 'text-red-400'}`}>
@@ -367,14 +368,14 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                   </div>
 
                   {hasLabel && !found && (
-                    <p className="text-xs text-red-400">Not found on page {hasPage ? c.startPage : '?'} — edit the label or page.</p>
+                    <p className="text-xs text-red-400">{t('Not found on page {page} — edit the label or page.', { page: hasPage ? c.startPage : '?' })}</p>
                   )}
                 </div>
 
                 <button
                   className="text-gray-600 hover:text-red-400 transition-colors mt-1 shrink-0"
                   onClick={() => removeChapter(idx)}
-                  aria-label="Remove chapter"
+                  aria-label={t('Remove chapter')}
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -385,14 +386,14 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
               <div className="rounded-md bg-gray-900/60 border border-gray-800 p-2.5">
                 <div className="flex items-center gap-2 mb-1">
                   <p className="text-[11px] uppercase tracking-wide text-gray-600 flex-1 min-w-0 truncate">
-                    Page {hasPage ? c.startPage : '?'}{hasLabel && found ? ` · from "${c.label.trim()}"` : ''}
+                    {t('Page {page}', { page: hasPage ? c.startPage : '?' })}{hasLabel && found ? t(' · from "{label}"', { label: c.label.trim() }) : ''}
                   </p>
                   {onOpenPage && hasPage && !outOfRange && (
                     <button
                       className="shrink-0 text-gray-500 hover:text-amber-300 transition-colors"
                       onClick={() => onOpenPage(c.startPage)}
-                      title={`Open page ${c.startPage} fullscreen`}
-                      aria-label={`Open page ${c.startPage} fullscreen`}
+                      title={t('Open page {page} fullscreen', { page: c.startPage })}
+                      aria-label={t('Open page {page} fullscreen', { page: c.startPage })}
                     >
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -402,18 +403,18 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                   )}
                 </div>
                 {outOfRange ? (
-                  <p className="text-xs text-red-400">Page out of range ({book.firstPage}–{book.lastPage}).</p>
+                  <p className="text-xs text-red-400">{t('Page out of range ({from}–{to}).', { from: book.firstPage, to: book.lastPage })}</p>
                 ) : excerpt ? (
                   <p className="text-xs text-gray-400 line-clamp-3 whitespace-pre-wrap">{highlight(excerpt, hasLabel && found ? c.label.trim() : '')}</p>
                 ) : (
-                  <p className="text-xs text-gray-600 italic">No text on this page.</p>
+                  <p className="text-xs text-gray-600 italic">{t('No text on this page.')}</p>
                 )}
               </div>
             </div>
           );
         })}
         {rows.length === 0 && (
-          <p className="text-sm text-gray-500">No chapters yet. Click the <strong>+</strong> button to create one.</p>
+          <p className="text-sm text-gray-500">{t('No chapters yet. Click the')} <strong>+</strong> {t('button to create one.')}</p>
         )}
       </div>
 
@@ -427,20 +428,20 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
             onClick={e => e.stopPropagation()}
           >
             <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-800 shrink-0">
-              <h2 className="font-semibold text-gray-100">Chapters</h2>
+              <h2 className="font-semibold text-gray-100">{t('Chapters')}</h2>
               <button
                 className="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-800 text-gray-300 hover:bg-amber-600/20 hover:text-amber-300 transition-colors"
                 onClick={() => setPreviewPage(Math.min(previewTotal, Math.max(1, book.summaryPage)))}
-                title="Go to the summary page in the preview"
+                title={t('Go to the summary page in the preview')}
               >
-                Summary · p.{book.summaryPage}
+                {t('Summary · p.{page}', { page: book.summaryPage })}
               </button>
               <div className="flex-1" />
               <button
                 className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
                 onClick={() => setSuggestions(null)}
-                title="Close"
-                aria-label="Close"
+                title={t('Close')}
+                aria-label={t('Close')}
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -453,14 +454,14 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
               <div className="flex flex-col min-h-0 w-[30rem] max-w-full shrink-0 md:border-r border-gray-800">
                 <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-gray-800 shrink-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-500">All pages</span>
+                    <span className="text-xs text-gray-500">{t('All pages')}</span>
                     <div className="flex items-center rounded-lg border border-gray-700 overflow-hidden">
                       <button
                         className="px-2 py-1 text-gray-300 hover:bg-gray-800 disabled:opacity-40 transition-colors"
                         onClick={() => shiftAllPages(-1)}
                         disabled={suggestions.length === 0}
-                        title="Shift every page back by one"
-                        aria-label="Shift every page back by one"
+                        title={t('Shift every page back by one')}
+                        aria-label={t('Shift every page back by one')}
                       >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
@@ -470,8 +471,8 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                         className="px-3 py-1 font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-40 border-x border-gray-700 transition-colors"
                         onClick={halveAllPages}
                         disabled={suggestions.length === 0}
-                        title="Halve every page (two book pages per scanned page)"
-                        aria-label="Halve every page"
+                        title={t('Halve every page (two book pages per scanned page)')}
+                        aria-label={t('Halve every page')}
                       >
                         ½
                       </button>
@@ -479,8 +480,8 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                         className="px-2 py-1 text-gray-300 hover:bg-gray-800 disabled:opacity-40 transition-colors"
                         onClick={() => shiftAllPages(1)}
                         disabled={suggestions.length === 0}
-                        title="Shift every page forward by one"
-                        aria-label="Shift every page forward by one"
+                        title={t('Shift every page forward by one')}
+                        aria-label={t('Shift every page forward by one')}
                       >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
@@ -488,12 +489,12 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                       </button>
                     </div>
                   </div>
-                  <span className="text-xs text-gray-500">Click a title to edit</span>
+                  <span className="text-xs text-gray-500">{t('Click a title to edit')}</span>
                 </div>
 
                 {suggestions.length === 0 ? (
                   <p className="px-5 py-8 text-sm text-gray-500 text-center">
-                    No chapters could be read from the summary page.
+                    {t('No chapters could be read from the summary page.')}
                   </p>
                 ) : (
                   <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-gray-800/70">
@@ -512,15 +513,15 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                                 onChange={e => setTitle(i, e.target.value)}
                                 onBlur={() => setEditingIdx(null)}
                                 onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') setEditingIdx(null); }}
-                                placeholder="Chapter title…"
+                                placeholder={t('Chapter title…')}
                               />
                             ) : (
                               <button
                                 className={`w-full text-left text-sm line-clamp-2 leading-tight px-1 py-0.5 rounded hover:bg-gray-800/60 transition-colors ${s.found ? 'text-green-300' : 'text-gray-200'}`}
                                 onClick={() => setEditingIdx(i)}
-                                title={s.title.trim() || 'Untitled — click to edit'}
+                                title={s.title.trim() || t('Untitled — click to edit')}
                               >
-                                {s.title.trim() || <span className="text-gray-500 italic">Untitled</span>}
+                                {s.title.trim() || <span className="text-gray-500 italic">{t('Untitled')}</span>}
                               </button>
                             )}
                           </div>
@@ -540,8 +541,8 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                               onPointerCancel={stopPageRepeat}
                               onBlur={stopPageRepeat}
                               onClick={e => { if (e.detail === 0) stepSuggestionPage(i, -1); }}
-                              title="Page −1 and preview"
-                              aria-label="Page back by one"
+                              title={t('Page −1 and preview')}
+                              aria-label={t('Page back by one')}
                             >
                               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
@@ -550,7 +551,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                             <button
                               className="w-12 h-7 text-sm text-center tabular-nums text-gray-200 hover:text-amber-300 hover:bg-gray-800 transition-colors"
                               onClick={() => setPreviewPage(Math.min(previewTotal, Math.max(1, pageOf(s))))}
-                              title="Go to this page in the preview"
+                              title={t('Go to this page in the preview')}
                             >
                               {Number.isFinite(s.page) ? s.page : '?'}
                             </button>
@@ -569,8 +570,8 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                               onPointerCancel={stopPageRepeat}
                               onBlur={stopPageRepeat}
                               onClick={e => { if (e.detail === 0) stepSuggestionPage(i, 1); }}
-                              title="Page +1 and preview"
-                              aria-label="Page forward by one"
+                              title={t('Page +1 and preview')}
+                              aria-label={t('Page forward by one')}
                             >
                               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
@@ -580,7 +581,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                           <button
                             className="text-gray-600 hover:text-red-400 transition-colors shrink-0"
                             onClick={() => removeSuggestion(i)}
-                            aria-label="Remove chapter"
+                            aria-label={t('Remove chapter')}
                           >
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -605,13 +606,13 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
             </div>
 
             <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-800 shrink-0">
-              <button className="btn-secondary text-sm" onClick={() => setSuggestions(null)}>Cancel</button>
+              <button className="btn-secondary text-sm" onClick={() => setSuggestions(null)}>{t('Cancel')}</button>
               <button
                 className="btn-primary text-sm"
                 onClick={applySuggestions}
                 disabled={suggestions.filter(s => s.title.trim() && inReadingRange(pageOf(s))).length === 0}
               >
-                Replace chapters
+                {t('Replace chapters')}
               </button>
             </div>
           </div>
@@ -624,12 +625,12 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
           onClick={() => setShowSummary(false)}
         >
           <div className="flex items-center gap-4 px-6 py-4 border-b border-gray-800 shrink-0">
-            <h2 className="font-semibold text-gray-100 flex-1">Summary page · p.{book.summaryPage}</h2>
+            <h2 className="font-semibold text-gray-100 flex-1">{t('Summary page · p.{page}', { page: book.summaryPage })}</h2>
             <button
               className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
               onClick={() => setShowSummary(false)}
-              title="Close (Esc)"
-              aria-label="Close"
+              title={t('Close (Esc)')}
+              aria-label={t('Close')}
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -639,7 +640,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
           <div className="flex-1 min-h-0 overflow-auto flex justify-center p-6" onClick={e => e.stopPropagation()}>
             <img
               src={`/api/books/${book._id}/pages/${book.summaryPage}`}
-              alt={`Summary page ${book.summaryPage}`}
+              alt={t('Summary page {page}', { page: book.summaryPage })}
               className="max-w-full h-auto object-contain rounded-lg"
             />
           </div>

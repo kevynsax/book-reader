@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { t } from '../i18n';
 
 interface PagePreviewProps {
   bookId: string;
@@ -100,7 +101,7 @@ export default function PagePreview({ bookId, totalPages, page, onPageChange, mi
           <img
             key={page}
             src={`/api/books/${bookId}/pages/${page}`}
-            alt={`Page ${page}`}
+            alt={t('Page {page}', { page })}
             draggable={false}
             className="max-w-full max-h-full object-contain rounded"
             style={{
@@ -115,8 +116,8 @@ export default function PagePreview({ bookId, totalPages, page, onPageChange, mi
           <button
             className="w-7 h-7 rounded bg-black/55 hover:bg-black/75 text-white flex items-center justify-center backdrop-blur-sm"
             onClick={() => zoomBy(1.3)}
-            title="Zoom in"
-            aria-label="Zoom in"
+            title={t('Zoom in')}
+            aria-label={t('Zoom in')}
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v14M5 12h14" />
@@ -125,8 +126,8 @@ export default function PagePreview({ bookId, totalPages, page, onPageChange, mi
           <button
             className="w-7 h-7 rounded bg-black/55 hover:bg-black/75 text-white flex items-center justify-center backdrop-blur-sm"
             onClick={() => zoomBy(1 / 1.3)}
-            title="Zoom out"
-            aria-label="Zoom out"
+            title={t('Zoom out')}
+            aria-label={t('Zoom out')}
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14" />
@@ -136,8 +137,8 @@ export default function PagePreview({ bookId, totalPages, page, onPageChange, mi
             className="w-7 h-7 rounded bg-black/55 hover:bg-black/75 text-white flex items-center justify-center backdrop-blur-sm disabled:opacity-40"
             onClick={reset}
             disabled={scale === 1 && tx === 0 && ty === 0}
-            title="Reset zoom"
-            aria-label="Reset zoom"
+            title={t('Reset zoom')}
+            aria-label={t('Reset zoom')}
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -162,7 +163,7 @@ export default function PagePreview({ bookId, totalPages, page, onPageChange, mi
                 if (v >= minPage && v <= totalPages) onPageChange(v);
               }}
             />
-            <span className="text-white/50">/ {totalPages}</span>
+            <span className="text-white/50">{t('/ {totalPages}', { totalPages })}</span>
           </div>
         )}
       </div>

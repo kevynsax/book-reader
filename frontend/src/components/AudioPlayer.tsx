@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Chapter, TimelineEntry } from '../types';
 import { fmtRemaining, trackFor } from '../lib/format';
+import { t } from '../i18n';
 
 // Index of the last sentence whose start time has passed (the active line).
 function activeLineAt(timeline: TimelineEntry[], t: number): number {
@@ -280,7 +281,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
 
   if (readyChapters.length === 0) return (
     <div className="card text-center text-gray-500 py-8">
-      {morePending ? 'Generating audio — the first chapter will start playing as soon as it’s ready…' : 'No audio ready yet.'}
+      {morePending ? t('Generating audio — the first chapter will start playing as soon as it’s ready…') : t('No audio ready yet.')}
     </div>
   );
 
@@ -292,7 +293,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
 
       <div className="flex items-baseline justify-between">
         <p className="text-sm font-medium text-gray-200 truncate flex-1 mr-4">
-          <span className="text-gray-500">Chapter {currentIdx + 1} of {readyChapters.length} · </span>
+          <span className="text-gray-500">{t('Chapter {current} of {total} · ', { current: currentIdx + 1, total: readyChapters.length })}</span>
           {chapter?.title ?? '…'}
         </p>
         <span className="text-xs text-gray-500 font-mono shrink-0">
@@ -310,7 +311,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
             <p
               className="text-base sm:text-lg text-gray-100 leading-snug cursor-pointer"
               onClick={() => seekTo((activeLine >= 0 ? timeline[activeLine] : timeline[0]).start)}
-              title="Replay this line"
+              title={t('Replay this line')}
             >
               {(activeLine >= 0 ? timeline[activeLine] : timeline[0]).text}
             </p>
@@ -318,7 +319,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
               <p
                 className="text-xs text-gray-600 leading-snug line-clamp-1 cursor-pointer hover:text-gray-400"
                 onClick={() => seekTo(timeline[activeLine + 1].start)}
-                title="Skip ahead"
+                title={t('Skip ahead')}
               >
                 {timeline[activeLine + 1].text}
               </p>
@@ -331,7 +332,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
         <button className="p-1.5 text-gray-300 hover:text-amber-400 transition-colors disabled:opacity-30 disabled:hover:text-gray-300"
           onClick={prevSentence}
           disabled={!hasPrev}
-          title="Previous sentence">
+          title={t('Previous sentence')}>
           <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
             <rect x="4.3" y="4.5" width="2.2" height="15" rx="1" />
             <path d="M18 5.14v13.72a1 1 0 01-1.54.84L7.12 12.84a1 1 0 010-1.68l9.34-6.86A1 1 0 0118 5.14z" />
@@ -340,7 +341,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
 
         <button className="p-1.5 text-gray-300 hover:text-amber-400 transition-colors disabled:opacity-30 disabled:hover:text-gray-300"
           onClick={() => skip(-30)}
-          title="Back 30 seconds">
+          title={t('Back 30 seconds')}>
           <svg className="w-8 h-8" viewBox="0 0 24 24">
             <path d="M11 4.5a7.5 7.5 0 1 1 -7.5 7.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
             <path d="M11 1.8 L7.8 4.5 L11 7.2 Z" fill="currentColor" />
@@ -359,7 +360,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
 
         <button className="p-1.5 text-gray-300 hover:text-amber-400 transition-colors disabled:opacity-30 disabled:hover:text-gray-300"
           onClick={() => skip(30)}
-          title="Forward 30 seconds">
+          title={t('Forward 30 seconds')}>
           <svg className="w-8 h-8" viewBox="0 0 24 24">
             <path d="M13 4.5a7.5 7.5 0 1 0 7.5 7.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
             <path d="M13 1.8 L16.2 4.5 L13 7.2 Z" fill="currentColor" />
@@ -370,7 +371,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
         <button className="p-1.5 text-gray-300 hover:text-amber-400 transition-colors disabled:opacity-30 disabled:hover:text-gray-300"
           onClick={nextSentence}
           disabled={!hasNext}
-          title="Next sentence">
+          title={t('Next sentence')}>
           <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
             <path d="M6 5.14v13.72a1 1 0 001.54.84l9.34-6.86a1 1 0 000-1.68L7.54 4.3A1 1 0 006 5.14z" />
             <rect x="17.5" y="4.5" width="2.2" height="15" rx="1" />
@@ -383,36 +384,36 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
         <button
           className="flex flex-col items-center gap-1 text-gray-200 hover:text-amber-400 transition-colors"
           onClick={() => setSpeedOpen(true)}
-          title="Playback speed"
+          title={t('Playback speed')}
         >
           <span className="h-6 flex items-center text-sm font-semibold font-mono">{speed}x</span>
-          <span className="text-[11px] text-gray-500">Speed</span>
+          <span className="text-[11px] text-gray-500">{t('Speed')}</span>
         </button>
 
         <button
           className="flex flex-col items-center gap-1 text-gray-200 hover:text-amber-400 transition-colors"
           onClick={() => setPickerOpen(true)}
-          title="Chapters"
+          title={t('Chapters')}
         >
           <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
               d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm0 5.25h.007v.008H3.75V12zm0 5.25h.007v.008H3.75v-.008z" />
           </svg>
-          <span className="text-[11px] text-gray-500">Chapters</span>
+          <span className="text-[11px] text-gray-500">{t('Chapters')}</span>
         </button>
       </div>
 
       {morePending && (
         <p className="flex items-center justify-center gap-2 text-xs text-amber-400/80">
           <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-          More chapters are still generating…
+          {t('More chapters are still generating…')}
         </p>
       )}
 
       {totalDuration > 0 && (
         <div className="flex items-center justify-between text-xs text-gray-500 pt-1 border-t border-gray-800">
-          <span>{pctListened}% listened</span>
-          {remaining > 60 && <span>{fmtRemaining(remaining)} left</span>}
+          <span>{t('{pct}% listened', { pct: pctListened })}</span>
+          {remaining > 60 && <span>{t('{remaining} left', { remaining: fmtRemaining(remaining) })}</span>}
         </div>
       )}
 
@@ -423,7 +424,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
         >
           <div className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-sm shadow-2xl flex flex-col max-h-[80vh]">
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800 shrink-0">
-              <h2 className="font-semibold text-gray-100">Chapters</h2>
+              <h2 className="font-semibold text-gray-100">{t('Chapters')}</h2>
               <button className="text-gray-500 hover:text-gray-300 text-xl leading-none" onClick={() => setPickerOpen(false)}>×</button>
             </div>
             <div className="p-2 overflow-y-auto">
@@ -450,7 +451,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
         >
           <div className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-xs shadow-2xl flex flex-col">
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800 shrink-0">
-              <h2 className="font-semibold text-gray-100">Playback speed</h2>
+              <h2 className="font-semibold text-gray-100">{t('Playback speed')}</h2>
               <button className="text-gray-500 hover:text-gray-300 text-xl leading-none" onClick={() => setSpeedOpen(false)}>×</button>
             </div>
             <div className="p-2">
@@ -462,7 +463,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
                   }`}
                   onClick={() => applySpeed(s)}
                 >
-                  {s}x{s === 1 && <span className="ml-2 text-gray-500 font-sans">Normal</span>}
+                  {s}x{s === 1 && <span className="ml-2 text-gray-500 font-sans">{t('Normal')}</span>}
                 </button>
               ))}
             </div>

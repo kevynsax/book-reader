@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { UploadFormData } from '../../types';
+import { t } from '../../i18n';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -116,8 +117,8 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
                 }
               `}
             >
-              {label}
-              {set && <span className="ml-2 text-xs opacity-70 font-normal">p.{val}</span>}
+              {t(label)}
+              {set && <span className="ml-2 text-xs opacity-70 font-normal">{t('p.{val}', { val })}</span>}
             </button>
           );
         })}
@@ -153,7 +154,7 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
 
         {rendering && (
           <div className="absolute inset-0 bg-gray-800/60 flex items-center justify-center z-10">
-            <span className="text-sm text-gray-400">Rendering…</span>
+            <span className="text-sm text-gray-400">{t('Rendering…')}</span>
           </div>
         )}
 
@@ -178,7 +179,7 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
                 if (v >= 1 && v <= numPages) setCurrentPage(v);
               }}
             />
-            <span className="text-white/50">/ {numPages}</span>
+            <span className="text-white/50">{t('/ {numPages}', { numPages })}</span>
           </div>
         )}
       </div>
@@ -201,7 +202,7 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
         disabled={!canCreate || submitting}
         onClick={onSubmit}
       >
-        {submitting ? 'Creating…' : 'Create'}
+        {submitting ? t('Creating…') : t('Create')}
       </button>
       </div>
     </div>

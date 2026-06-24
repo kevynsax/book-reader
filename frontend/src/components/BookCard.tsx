@@ -6,6 +6,7 @@ import { deleteBook } from '../store/booksSlice';
 import { Book, BookStatus } from '../types';
 import { bookVoices, trackFor, hasPlayableAudio } from '../lib/format';
 import ConfirmDialog from './ConfirmDialog';
+import { t } from '../i18n';
 
 function formatDuration(totalSecs: number): string {
   const h = Math.floor(totalSecs / 3600);
@@ -15,16 +16,16 @@ function formatDuration(totalSecs: number): string {
 }
 
 const STATUS_LABEL: Record<BookStatus, string> = {
-  uploading: 'Uploading',
-  splitting_pages: 'Splitting pages',
-  extracting_cover: 'Extracting cover',
-  reading_title: 'Reading title',
-  ocr_processing: 'Reading pages',
-  detecting_chapters: 'Detecting chapters',
-  awaiting_chapter_review: 'Needs review',
-  generating_audio: 'Generating audio',
-  complete: 'Complete',
-  error: 'Error',
+  uploading: t('Uploading'),
+  splitting_pages: t('Splitting pages'),
+  extracting_cover: t('Extracting cover'),
+  reading_title: t('Reading title'),
+  ocr_processing: t('Reading pages'),
+  detecting_chapters: t('Detecting chapters'),
+  awaiting_chapter_review: t('Needs review'),
+  generating_audio: t('Generating audio'),
+  complete: t('Complete'),
+  error: t('Error'),
 };
 
 const STATUS_CLASS: Record<BookStatus, string> = {
@@ -80,7 +81,7 @@ export default function BookCard({ book }: { book: Book }) {
         <button
           className="absolute top-2 right-2 z-10 w-7 h-7 rounded-full bg-gray-800/80 flex items-center justify-center text-gray-500 hover:bg-red-700 hover:text-white transition-all opacity-0 group-hover:opacity-100"
           onClick={handleDelete}
-          title="Delete book"
+          title={t('Delete book')}
         >
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -105,7 +106,7 @@ export default function BookCard({ book }: { book: Book }) {
       </div>
 
       <h3 className="font-semibold text-gray-100 truncate mb-2 group-hover:text-amber-400 transition-colors">
-        {book.name || 'Untitled'}
+        {book.name || t('Untitled')}
       </h3>
 
       {!isComplete && (
@@ -115,7 +116,7 @@ export default function BookCard({ book }: { book: Book }) {
       )}
 
       <p className="text-xs text-gray-500 mb-2">
-        {totalDurationSecs > 0 && remainingSecs > 0 ? `${formatDuration(remainingSecs)} left` : null}
+        {totalDurationSecs > 0 && remainingSecs > 0 ? t('{remaining} left', { remaining: formatDuration(remainingSecs) }) : null}
       </p>
 
       {book.status === 'error' && (
@@ -124,9 +125,9 @@ export default function BookCard({ book }: { book: Book }) {
 
       {showDeleteConfirm && (
         <ConfirmDialog
-          title="Delete book?"
-          message={`"${book.name || 'Untitled'}" and all its audio will be permanently deleted.`}
-          confirmLabel="Delete"
+          title={t('Delete book?')}
+          message={t('"{name}" and all its audio will be permanently deleted.', { name: book.name || t('Untitled') })}
+          confirmLabel={t('Delete')}
           danger
           onConfirm={() => { setShowDeleteConfirm(false); dispatch(deleteBook(book._id)); }}
           onClose={() => setShowDeleteConfirm(false)}

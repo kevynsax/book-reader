@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { requestBook } from '../../hooks/useWebSocket';
 import { uploadBook } from '../../api/booksApi';
 import { UploadFormData } from '../../types';
+import { t } from '../../i18n';
 import Step1BookInfo from './Step1BookInfo';
 import Step2PageSelection from './Step2PageSelection';
 
@@ -49,7 +50,7 @@ export default function UploadWizard({ onClose }: Props) {
       onClose();
       navigate(`/books/${bookId}/edit`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed');
+      setError(err instanceof Error ? err.message : t('Upload failed'));
     } finally {
       setSubmitting(false);
     }
@@ -71,8 +72,8 @@ export default function UploadWizard({ onClose }: Props) {
               </button>
             )}
             <div>
-              <h2 className="text-lg font-semibold text-gray-100">Add book</h2>
-              <p className="text-sm text-gray-500 mt-0.5">Step {step} of 2</p>
+              <h2 className="text-lg font-semibold text-gray-100">{t('Add book')}</h2>
+              <p className="text-sm text-gray-500 mt-0.5">{t('Step {step} of 2', { step })}</p>
             </div>
           </div>
           <button className="text-gray-500 hover:text-gray-300" onClick={onClose}>

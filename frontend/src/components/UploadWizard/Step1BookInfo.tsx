@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import { UploadFormData } from '../../types';
+import { t } from '../../i18n';
 
 interface Props {
   data: UploadFormData;
@@ -15,7 +16,7 @@ export default function Step1BookInfo({ data, onChange, onNext }: Props) {
   return (
     <div className="space-y-5">
       <div>
-        <label className="label">PDF file</label>
+        <label className="label">{t('PDF file')}</label>
         <div
           className="border-2 border-dashed border-gray-700 rounded-lg p-8 text-center cursor-pointer hover:border-amber-600 transition-colors"
           onClick={() => fileRef.current?.click()}
@@ -35,8 +36,8 @@ export default function Step1BookInfo({ data, onChange, onNext }: Props) {
               <svg className="w-8 h-8 text-gray-600 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
-              <p className="text-gray-400">Drop a PDF here or <span className="text-amber-500">browse</span></p>
-              <p className="text-gray-600 text-sm mt-1">PDF only</p>
+              <p className="text-gray-400">{t('Drop a PDF here or')} <span className="text-amber-500">{t('browse')}</span></p>
+              <p className="text-gray-600 text-sm mt-1">{t('PDF only')}</p>
             </div>
           )}
         </div>
@@ -45,7 +46,7 @@ export default function Step1BookInfo({ data, onChange, onNext }: Props) {
       </div>
 
       <button className="btn-primary w-full justify-center" disabled={!canProceed} onClick={onNext}>
-        Next: Select pages
+        {t('Next: Select pages')}
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
         </svg>

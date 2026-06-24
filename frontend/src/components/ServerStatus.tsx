@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { TtsServer } from '../types';
 import { friendlyVoice } from '../lib/format';
+import { t } from '../i18n';
 
 function modelLabel(s: TtsServer): string {
   if (!s.activeModel) return '';
@@ -28,7 +29,7 @@ export default function ServerStatus({ pollMs = 15000 }: { pollMs?: number }) {
 
   return (
     <div>
-      <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">Servers</p>
+      <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">{t('Servers')}</p>
       <div className="flex flex-wrap gap-2">
         {servers.map(s => {
           const loading = s.online && s.state === 'loading';
@@ -41,7 +42,7 @@ export default function ServerStatus({ pollMs = 15000 }: { pollMs?: number }) {
                   ? 'border-gray-700 bg-gray-800 text-gray-300'
                   : 'border-gray-800 bg-gray-900 text-gray-600'
               }`}
-              title={s.online ? `${s.url} — ${s.state ?? 'online'}${model ? ` (${friendlyVoice(model)})` : ''}` : `${s.url} — offline`}
+              title={s.online ? `${s.url} — ${s.state ?? t('online')}${model ? ` (${friendlyVoice(model)})` : ''}` : t('{url} — offline', { url: s.url })}
             >
               <span
                 className={`w-1.5 h-1.5 rounded-full shrink-0 ${

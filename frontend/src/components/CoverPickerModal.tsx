@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import { Book } from '../types';
 import { api } from '../api/booksApi';
+import { t } from '../i18n';
 
 interface Props {
   book: Book;
@@ -22,7 +23,7 @@ export default function CoverPickerModal({ book, onClose }: Props) {
   const hasPages = (book.totalPages ?? 0) > 0;
 
   const handleFile = (file: File) => {
-    if (!file.type.startsWith('image/')) { setError('Please choose an image file.'); return; }
+    if (!file.type.startsWith('image/')) { setError(t('Please choose an image file.')); return; }
     setError(null);
     setImageFile(file);
     setPreview(URL.createObjectURL(file));
@@ -44,7 +45,7 @@ export default function CoverPickerModal({ book, onClose }: Props) {
       }
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update cover');
+      setError(err instanceof Error ? err.message : t('Failed to update cover'));
     } finally {
       setSaving(false);
     }
@@ -59,7 +60,7 @@ export default function CoverPickerModal({ book, onClose }: Props) {
     >
       <div className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-sm shadow-2xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
-          <h2 className="font-semibold text-gray-100">Change cover</h2>
+          <h2 className="font-semibold text-gray-100">{t('Change cover')}</h2>
           <button className="text-gray-500 hover:text-gray-300 text-xl leading-none" onClick={onClose}>×</button>
         </div>
 
@@ -67,7 +68,7 @@ export default function CoverPickerModal({ book, onClose }: Props) {
           {error && <p className="text-sm text-red-400">{error}</p>}
 
           <div>
-            <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-2">Upload image</p>
+            <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-2">{t('Upload image')}</p>
             <div
               className={`border-2 border-dashed rounded-xl overflow-hidden cursor-pointer transition-colors flex items-center justify-center min-h-36
                 ${mode === 'file' && imageFile ? 'border-amber-600' : 'border-gray-700 hover:border-amber-600/60'}`}
@@ -76,13 +77,13 @@ export default function CoverPickerModal({ book, onClose }: Props) {
               onDragOver={e => e.preventDefault()}
             >
               {preview ? (
-                <img src={preview} alt="New cover" className="max-h-48 w-full object-contain" />
+                <img src={preview} alt={t('New cover')} className="max-h-48 w-full object-contain" />
               ) : (
                 <div className="text-center py-5 px-4">
                   <svg className="w-8 h-8 text-gray-600 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                   </svg>
-                  <p className="text-gray-400 text-sm">Drop or <span className="text-amber-500">browse</span></p>
+                  <p className="text-gray-400 text-sm">{t('Drop or')} <span className="text-amber-500">{t('browse')}</span></p>
                   <p className="text-gray-600 text-xs mt-1">JPG · PNG · WebP</p>
                 </div>
               )}
@@ -95,7 +96,7 @@ export default function CoverPickerModal({ book, onClose }: Props) {
             <>
               <div className="flex items-center gap-3">
                 <div className="flex-1 h-px bg-gray-800" />
-                <span className="text-xs text-gray-600">or select a page</span>
+                <span className="text-xs text-gray-600">{t('or select a page')}</span>
                 <div className="flex-1 h-px bg-gray-800" />
               </div>
 
@@ -108,7 +109,7 @@ export default function CoverPickerModal({ book, onClose }: Props) {
                     <img
                       key={pageNum}
                       src={`/api/books/${book._id}/pages/${pageNum}`}
-                      alt={`Page ${pageNum}`}
+                      alt={t('Page {n}', { n: pageNum })}
                       className="max-h-40 w-full object-contain"
                     />
 
@@ -141,9 +142,9 @@ export default function CoverPickerModal({ book, onClose }: Props) {
           )}
 
           <div className="flex gap-3 pt-1">
-            <button className="btn-secondary flex-1 justify-center" onClick={onClose}>Cancel</button>
+            <button className="btn-secondary flex-1 justify-center" onClick={onClose}>{t('Cancel')}</button>
             <button className="btn-primary flex-1 justify-center" disabled={!canSave || saving} onClick={save}>
-              {saving ? 'Saving…' : 'Set as cover'}
+              {saving ? t('Saving…') : t('Set as cover')}
             </button>
           </div>
         </div>

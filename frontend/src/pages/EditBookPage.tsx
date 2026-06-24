@@ -12,16 +12,17 @@ import CoverPickerModal from '../components/CoverPickerModal';
 import VoiceManager from '../components/VoiceManager';
 import GenerateVoiceModal from '../components/GenerateVoiceModal';
 import ConfirmDialog from '../components/ConfirmDialog';
+import { t } from '../i18n';
 
 const STATUS_STEPS: { status: BookStatus; label: string }[] = [
-  { status: 'uploading',               label: 'Uploading' },
-  { status: 'splitting_pages',         label: 'Splitting pages' },
-  { status: 'extracting_cover',        label: 'Extracting cover' },
-  { status: 'reading_title',           label: 'Reading title' },
-  { status: 'ocr_processing',          label: 'Reading pages' },
-  { status: 'detecting_chapters',      label: 'Detecting chapters' },
-  { status: 'awaiting_chapter_review', label: 'Ready for review' },
-  { status: 'complete',                label: 'Complete' },
+  { status: 'uploading',               label: t('Uploading') },
+  { status: 'splitting_pages',         label: t('Splitting pages') },
+  { status: 'extracting_cover',        label: t('Extracting cover') },
+  { status: 'reading_title',           label: t('Reading title') },
+  { status: 'ocr_processing',          label: t('Reading pages') },
+  { status: 'detecting_chapters',      label: t('Detecting chapters') },
+  { status: 'awaiting_chapter_review', label: t('Ready for review') },
+  { status: 'complete',                label: t('Complete') },
 ];
 
 const STATUS_LABEL: Record<BookStatus, string> = Object.fromEntries(
@@ -56,7 +57,7 @@ function StatusIndicator({ book }: { book: Book }) {
       const processed  = ocrDone - startRef.current.done;
       if (processed <= 0) return;
       const remaining  = ((ocrTotal - ocrDone) / processed) * elapsed;
-      setEta(remaining < 60 ? `~${Math.ceil(remaining)}s` : `~${Math.ceil(remaining / 60)}m`);
+      setEta(remaining < 60 ? t('~{n}s', { n: Math.ceil(remaining) }) : t('~{n}m', { n: Math.ceil(remaining / 60) }));
     }, 3000);
     return () => clearInterval(timer);
   }, [isOcr, ocrDone, ocrTotal]);
@@ -71,7 +72,7 @@ function StatusIndicator({ book }: { book: Book }) {
             )}
             {book.status === 'error' && <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" />}
             <span className="text-sm text-gray-300">
-              {book.status === 'error' ? 'Failed' : STATUS_LABEL[book.status] ?? book.status}
+              {book.status === 'error' ? t('Failed') : STATUS_LABEL[book.status] ?? book.status}
             </span>
           </div>
 
@@ -79,7 +80,7 @@ function StatusIndicator({ book }: { book: Book }) {
             <div className="flex items-center gap-3 text-xs text-gray-500">
               <span className="tabular-nums">{ocrDone}/{ocrTotal}</span>
               <span className="tabular-nums font-medium text-amber-400">{pct}%</span>
-              {eta && <span>{eta} left</span>}
+              {eta && <span>{t('{eta} left', { eta })}</span>}
             </div>
           )}
         </div>
@@ -139,7 +140,7 @@ function EditableCover({ bookId, coverVersion, onClick, size = 'md' }: {
       <img
         key={coverVersion}
         src={`/api/books/${bookId}/cover?v=${coverVersion}`}
-        alt="Cover"
+        alt={t('Cover')}
         className="w-full h-full object-cover"
         onLoad={e => { (e.currentTarget as HTMLImageElement).style.display = ''; }}
         onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
@@ -180,7 +181,7 @@ function EditableTitle({ book }: { book: Book }) {
           if (e.key === 'Enter') save();
           if (e.key === 'Escape') { setValue(book.name); setEditing(false); }
         }}
-        placeholder="Book title…"
+        placeholder={t('Book title…')}
       />
     );
   }
@@ -189,9 +190,9 @@ function EditableTitle({ book }: { book: Book }) {
     <button
       className="group/title flex items-center gap-1.5 text-left min-w-0 max-w-full"
       onClick={() => setEditing(true)}
-      title="Edit title"
+      title={t('Edit title')}
     >
-      <span className="text-gray-200 font-medium text-base truncate">{book.name || 'Untitled'}</span>
+      <span className="text-gray-200 font-medium text-base truncate">{book.name || t('Untitled')}</span>
       <svg className="w-3.5 h-3.5 text-gray-500 opacity-0 group-hover/title:opacity-100 transition-opacity shrink-0"
         fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -210,11 +211,11 @@ const DOT_CLASS: Record<string, string> = {
 };
 
 const TRACK_LABEL: Record<string, string> = {
-  complete:   'ready',
-  generating: 'rendering…',
-  stale:      'stale',
-  error:      'error',
-  pending:    'pending',
+  complete:   t('ready'),
+  generating: t('rendering…'),
+  stale:      t('stale'),
+  error:      t('error'),
+  pending:    t('pending'),
 };
 
 const TRACK_TEXT: Record<string, string> = {
@@ -252,7 +253,7 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
           }`} />
           <span className="text-gray-100 font-medium truncate">{friendlyVoice(voice)}</span>
           <span className={`text-xs shrink-0 ${generating ? 'text-amber-400' : allDone ? 'text-green-400' : errored ? 'text-red-400' : 'text-gray-500'}`}>
-            {generating ? 'generating…' : allDone ? 'done' : errored ? 'failed' : 'waiting'}
+            {generating ? t('generating…') : allDone ? t('done') : errored ? t('failed') : t('waiting')}
           </span>
         </span>
         <span className="flex items-center gap-2 shrink-0">
@@ -261,9 +262,9 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
             className="flex items-center gap-1 text-xs text-gray-400 hover:text-amber-400 disabled:opacity-40 disabled:hover:text-gray-400 transition-colors"
             disabled={generating}
             onClick={() => dispatch(regenerateVoice({ bookId: book._id, voice }))}
-            title="Regenerate this voice for every chapter"
+            title={t('Regenerate this voice for every chapter')}
           >
-            <RegenIcon /> Regenerate
+            <RegenIcon /> {t('Regenerate')}
           </button>
         </span>
       </div>
@@ -278,7 +279,7 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
                 <span className={`w-2 h-2 rounded-full shrink-0 ${DOT_CLASS[s] ?? 'bg-gray-700'}`} />
                 <span className="text-gray-500 text-xs tabular-nums shrink-0 w-5">{i + 1}.</span>
                 <span className={`text-sm truncate flex-1 ${s === 'generating' ? 'text-amber-300' : 'text-gray-300'}`}>
-                  {c.title || `Chapter ${i + 1}`}
+                  {c.title || t('Chapter {n}', { n: i + 1 })}
                 </span>
                 <span className={`text-[11px] shrink-0 ${TRACK_TEXT[s] ?? 'text-gray-500'}`}>
                   {TRACK_LABEL[s] ?? s}
@@ -287,7 +288,7 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
                   className="text-gray-600 hover:text-amber-400 disabled:opacity-30 disabled:hover:text-gray-600 transition-colors shrink-0"
                   disabled={s === 'generating'}
                   onClick={() => dispatch(regenerateChapterVoice({ bookId: book._id, chapterIdx: i, voice }))}
-                  title="Regenerate this chapter for this voice"
+                  title={t('Regenerate this chapter for this voice')}
                 >
                   <RegenIcon className="w-3 h-3" />
                 </button>
@@ -327,7 +328,7 @@ export default function EditBookPage() {
   }, [book?.status, id, navigate]);
 
   if (!book) {
-    return <div className="min-h-screen flex items-center justify-center"><p className="text-gray-500">Loading…</p></div>;
+    return <div className="min-h-screen flex items-center justify-center"><p className="text-gray-500">{t('Loading…')}</p></div>;
   }
 
   const backTo = book.status === 'complete' ? `/books/${book._id}` : '/';
@@ -400,12 +401,12 @@ export default function EditBookPage() {
             className="text-lg font-semibold text-gray-100 flex-1 truncate text-left hover:text-gray-300 transition-colors"
             onClick={() => navigate(backTo)}
           >
-            {book.name || 'Untitled'}
+            {book.name || t('Untitled')}
           </button>
           {canListenNow && (
             <button
               className="text-gray-500 hover:text-emerald-400 transition-colors"
-              aria-label="Start listening to ready chapters"
+              aria-label={t('Start listening to ready chapters')}
               onClick={() => navigate(`/books/${book._id}`)}
             >
               <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -415,7 +416,7 @@ export default function EditBookPage() {
           )}
           <button
             className="text-gray-500 hover:text-red-400 transition-colors"
-            aria-label="Delete book"
+            aria-label={t('Delete book')}
             onClick={() => setShowDeleteConfirm(true)}
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -432,7 +433,7 @@ export default function EditBookPage() {
           <EditableCover bookId={book._id} coverVersion={book.coverVersion ?? 0} onClick={() => setShowCoverPicker(true)} size="md" />
           <div className="space-y-2 text-sm text-gray-400 min-w-0 flex-1">
             <EditableTitle book={book} />
-            {book.totalPages > 0 && <p>{book.totalPages} pages</p>}
+            {book.totalPages > 0 && <p>{t('{n} pages', { n: book.totalPages })}</p>}
             {(book.status === 'complete' || book.status === 'generating_audio') && (
               <VoiceManager book={book} editable={book.status === 'complete'} allowModify />
             )}
@@ -443,7 +444,7 @@ export default function EditBookPage() {
 
         {book.status === 'error' && (
           <div className="card border-red-800 bg-red-950/20">
-            <p className="text-red-400 font-medium mb-1">Processing failed</p>
+            <p className="text-red-400 font-medium mb-1">{t('Processing failed')}</p>
             <p className="text-sm text-red-300">{book.errorMessage}</p>
           </div>
         )}
@@ -452,11 +453,13 @@ export default function EditBookPage() {
           <div className="card flex items-center justify-between gap-4">
             <p className="text-sm text-gray-400">
               {book.status === 'error'
-                ? 'Import failed. Restart it using the same pages you already set.'
-                : `${failedPages} page${failedPages === 1 ? '' : 's'} failed to read. Restart the import with the same settings.`}
+                ? t('Import failed. Restart it using the same pages you already set.')
+                : failedPages === 1
+                  ? t('{n} page failed to read. Restart the import with the same settings.', { n: failedPages })
+                  : t('{n} pages failed to read. Restart the import with the same settings.', { n: failedPages })}
             </p>
             <button className="btn-secondary shrink-0" onClick={handleReprocess} disabled={reprocessing}>
-              {reprocessing ? 'Restarting…' : 'Restart import'}
+              {reprocessing ? t('Restarting…') : t('Restart import')}
             </button>
           </div>
         )}
@@ -480,9 +483,9 @@ export default function EditBookPage() {
         {hasChapters && (isGenerating || hasAudioError) && (
           <div className="card space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-gray-100">{isGenerating ? 'Generating audio' : 'Generation results'}</h3>
+              <h3 className="font-semibold text-gray-100">{isGenerating ? t('Generating audio') : t('Generation results')}</h3>
               <span className="text-xs text-gray-500">
-                green = ready · pulsing = rendering · red = failed
+                {t('green = ready · pulsing = rendering · red = failed')}
               </span>
             </div>
             {book.progress.message && <p className="text-sm text-gray-400">{book.progress.message}</p>}
@@ -501,7 +504,7 @@ export default function EditBookPage() {
                     d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
                 </svg>
                 <p className="text-sm text-amber-300">
-                  Text or chapters have been modified — the current audio no longer reflects the latest content. Click <strong>Generate</strong> to rebuild.
+                  {t('Text or chapters have been modified — the current audio no longer reflects the latest content. Click')} <strong>{t('Generate')}</strong> {t('to rebuild.')}
                 </p>
               </div>
             )}
@@ -510,7 +513,7 @@ export default function EditBookPage() {
               disabled={generating}
               onClick={() => book.status === 'complete' || book.status === 'error' ? runGenerate() : setShowVoiceDialog(true)}
             >
-              {generating ? 'Generating…' : book.status === 'error' ? 'Retry' : 'Generate'}
+              {generating ? t('Generating…') : book.status === 'error' ? t('Retry') : t('Generate')}
             </button>
           </div>
         )}
@@ -532,9 +535,9 @@ export default function EditBookPage() {
 
       {showDeleteConfirm && (
         <ConfirmDialog
-          title="Delete book?"
-          message={`"${book.name || 'Untitled'}" and all its audio will be permanently deleted.`}
-          confirmLabel="Delete"
+          title={t('Delete book?')}
+          message={t('"{name}" and all its audio will be permanently deleted.', { name: book.name || t('Untitled') })}
+          confirmLabel={t('Delete')}
           danger
           onConfirm={handleDelete}
           onClose={() => setShowDeleteConfirm(false)}

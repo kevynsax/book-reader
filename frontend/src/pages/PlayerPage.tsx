@@ -7,6 +7,7 @@ import { bookVoices, fmtRemaining, hasPlayableAudio, trackFor } from '../lib/for
 import AudioPlayer from '../components/AudioPlayer';
 import VoiceManager from '../components/VoiceManager';
 import SentenceEditor from '../components/SentenceEditor';
+import { t } from '../i18n';
 
 const VOICE_KEY = (id: string) => `br_voice_${id}`;
 
@@ -44,7 +45,7 @@ export default function PlayerPage() {
   }, [book?.status, playable, id, navigate]);
 
   if (!book) {
-    return <div className="min-h-screen flex items-center justify-center"><p className="text-gray-500">Loading…</p></div>;
+    return <div className="min-h-screen flex items-center justify-center"><p className="text-gray-500">{t('Loading…')}</p></div>;
   }
 
   const generating = book.status === 'generating_audio';
@@ -58,9 +59,9 @@ export default function PlayerPage() {
             <svg className="w-5 h-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
-            <span className="text-lg font-semibold">Library</span>
+            <span className="text-lg font-semibold">{t('Library')}</span>
           </button>
-          <button className="btn-secondary text-sm" onClick={() => navigate(`/books/${book._id}/edit`)}>Edit</button>
+          <button className="btn-secondary text-sm" onClick={() => navigate(`/books/${book._id}/edit`)}>{t('Edit')}</button>
         </div>
       </header>
 
@@ -71,17 +72,17 @@ export default function PlayerPage() {
             <img
               key={book.coverVersion ?? 0}
               src={`/api/books/${book._id}/cover?v=${book.coverVersion ?? 0}`}
-              alt="Cover"
+              alt={t('Cover')}
               className="w-full h-full object-cover"
               onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
             />
           </div>
           <div className="space-y-2 text-sm text-gray-400 min-w-0 flex-1">
-            <p className="text-gray-200 font-medium text-base truncate">{book.name || 'Untitled'}</p>
-            {book.totalPages > 0 && <p>{book.totalPages} pages</p>}
+            <p className="text-gray-200 font-medium text-base truncate">{book.name || t('Untitled')}</p>
+            {book.totalPages > 0 && <p>{t('{count} pages', { count: book.totalPages })}</p>}
             <VoiceManager book={book} activeVoice={activeVoice} onSelectVoice={selectVoice} editable />
             {remaining > 60 && (
-              <p className="pt-1 text-gray-400">{fmtRemaining(remaining)} left</p>
+              <p className="pt-1 text-gray-400">{t('{time} left', { time: fmtRemaining(remaining) })}</p>
             )}
           </div>
         </div>
@@ -93,9 +94,9 @@ export default function PlayerPage() {
           >
             <span className="flex items-center gap-2 text-amber-300 min-w-0">
               <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
-              <span className="truncate">Generating audio · {readyCount}/{book.chapters.length} chapters ready</span>
+              <span className="truncate">{t('Generating audio · {ready}/{total} chapters ready', { ready: readyCount, total: book.chapters.length })}</span>
             </span>
-            <span className="text-amber-400/80 shrink-0">View progress →</span>
+            <span className="text-amber-400/80 shrink-0">{t('View progress →')}</span>
           </button>
         )}
 
@@ -113,7 +114,7 @@ export default function PlayerPage() {
               className="btn-secondary w-full justify-center text-sm"
               onClick={() => setShowEditor(v => !v)}
             >
-              {showEditor ? 'Hide sentence editor' : 'Edit sentences in this chapter'}
+              {showEditor ? t('Hide sentence editor') : t('Edit sentences in this chapter')}
             </button>
             {showEditor && (
               <SentenceEditor bookId={book._id} chapterIdx={chapterIdx} voice={activeVoice} />
