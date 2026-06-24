@@ -7,6 +7,7 @@ interface BooksState {
   books: Book[];
   loading: boolean;
   error: string | null;
+  canDelete: boolean;
 }
 
 const persistedBooks = loadPersistedBooks();
@@ -14,6 +15,7 @@ const initialState: BooksState = {
   books: persistedBooks,
   loading: persistedBooks.length === 0,
   error: null,
+  canDelete: false,
 };
 
 export const updateChapters = createAsyncThunk(
@@ -57,6 +59,11 @@ export const reprocessBook = createAsyncThunk(
 export const deleteBook = createAsyncThunk('books/delete', async (bookId: string) => {
   await api.delete(`/api/books/${bookId}`);
   return bookId;
+});
+
+export const fetchDeletePermission = createAsyncThunk('books/canDelete', async () => {
+  const { data } = await api.get<{ canDelete: boolean }>('/api/books/can-delete');
+  return data.canDelete;
 });
 
 export const renameBook = createAsyncThunk(
@@ -171,6 +178,9 @@ const booksSlice = createSlice({
     builder
       .addCase(deleteBook.fulfilled, (state, action) => {
         state.books = state.books.filter(b => b._id !== action.payload);
+      })
+      .addCase(fetchDeletePermission.fulfilled, (state, action) => {
+        state.canDelete = action.payload;
       });
   },
 });

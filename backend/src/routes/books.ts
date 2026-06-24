@@ -13,6 +13,16 @@ import { detectChapters, fetchSlmModels, splitLineIntoSentences, reviewLineGramm
 import { synthesizeSample, timelinePathFor } from '../services/ttsService.js';
 import { sanitizePageText } from '../lib/sanitize.js';
 
+const DELETE_ALLOWED_IPS = new Set(['189.39.218.8', '191.255.235.44']);
+
+function clientIp(req: express.Request): string {
+  return (req.ip ?? '').replace(/^::ffff:/, '');
+}
+
+function canDeleteBooks(req: express.Request): boolean {
+  return DELETE_ALLOWED_IPS.has(clientIp(req));
+}
+
 const upload = multer({
   dest: '/tmp/book-uploads/',
   limits: { fileSize: 1024 * 1024 * 1024 },
@@ -63,7 +73,8 @@ export function registerBookSync(io: SocketServer) {
   io.on('connection', socket => {
     socket.on('subscribe-to-books', async (payload: { lastUpdate?: string } = {}) => {
       const since = payload?.lastUpdate ? new Date(payload.lastUpdate) : null;
-      const filter = since && !isNaN(since.getTime()) ? { updatedAt: { $gt: since } } : {};
+      const filter: Record<string, unknown> = { deleted: { $ne: true } };
+      if (since && !isNaN(since.getTime())) filter.updatedAt = { $gt: since };
       const books = await Book.find(filter).sort({ createdAt: -1 }).lean();
       socket.emit('books:sync', books.map(sanitizeBook));
     });
@@ -71,7 +82,7 @@ export function registerBookSync(io: SocketServer) {
     socket.on('subscribe-to-book', async (payload: { bookId?: string } = {}) => {
       if (!payload?.bookId) return;
       const book = await Book.findById(payload.bookId).lean().catch(() => null);
-      if (book) socket.emit('books:sync', [sanitizeBook(book)]);
+      if (book && !book.deleted) socket.emit('books:sync', [sanitizeBook(book)]);
     });
   });
 }
@@ -804,12 +815,20 @@ export function booksRouter(io: SocketServer) {
     res.json({ message: 'Voice removed' });
   });
 
+  router.get('/can-delete', (req, res) => {
+    res.json({ canDelete: canDeleteBooks(req) });
+  });
+
   router.delete('/:id', async (req, res) => {
+    if (!canDeleteBooks(req)) {
+      return res.status(403).json({ error: 'Deleting books is not allowed from this network' });
+    }
+
     const book = await Book.findById(req.params.id);
     if (!book) return res.status(404).json({ error: 'Not found' });
 
-    await fs.rm(book.folderPath, { recursive: true, force: true }).catch(() => {});
-    await book.deleteOne();
+    book.deleted = true;
+    await book.save();
     res.json({ message: 'Deleted' });
   });
 

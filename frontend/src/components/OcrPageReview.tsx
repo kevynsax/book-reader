@@ -148,6 +148,15 @@ function discardTypoChange(original: string, corrected: string, segIdx: number):
     .join('');
 }
 
+// The 3 words immediately before and after a change segment, taken from the
+// original line, so the reviewer sees the change in context.
+function segContext(original: string, corrected: string, segIdx: number): { before: string; after: string } {
+  const segs = diffText(original, corrected);
+  const before = segs.slice(0, segIdx).map(s => s.text).join('').split(/\s+/).filter(Boolean).slice(-3).join(' ');
+  const after = segs.slice(segIdx + 1).map(s => s.text).join('').split(/\s+/).filter(Boolean).slice(0, 3).join(' ');
+  return { before, after };
+}
+
 async function runPool<T>(items: T[], size: number, worker: (item: T) => Promise<void>): Promise<void> {
   let cursor = 0;
   const runners = Array.from({ length: Math.min(size, items.length) }, async () => {
@@ -207,6 +216,8 @@ interface PageViewProps {
     activeLine: number | null;
     /** lineIdx → corrected text + active change for pending review findings. */
     findings?: Map<number, { corrected: string; activeSegIdx: number | null }>;
+    /** Apply a single inline review change (insertion/removal box click). */
+    onApplySegment?: (lineIdx: number, segIdx: number) => void;
     /** Speech-normalized text; spans that get rewritten for reading are marked,
      *  with a hover tooltip showing what is actually spoken (like the read card). */
     readText?: string;
@@ -352,11 +363,21 @@ function breakLongLine(
   return null;
 }
 
+// A line that doesn't end a sentence — but is followed by more text in the same
+// paragraph — was broken out of necessity (a long-line split), not at a natural
+// sentence end. Used to render a faint visual continuation marker.
+function isContinuedLine(line: string, nextLine: string | undefined): boolean {
+  const t = line.replace(/\s+$/, '');
+  if (!t) return false;
+  if (nextLine === undefined || nextLine.trim() === '') return false;
+  return !/[.!?…]["'”’)\]]*$/.test(t);
+}
+
 // An auto-saving editor whose lines longer than `warnOver` get a light warning
 // background. A plain <textarea> can't style individual lines, so a synced
 // highlight backdrop sits behind a transparent-background textarea.
 function HighlightEditor(
-  { draft, onChange, onBlur, onUndo, warnOver, activeLine, findings, readText }: NonNullable<PageViewProps['edit']>,
+  { draft, onChange, onBlur, onUndo, warnOver, activeLine, findings, onApplySegment, readText }: NonNullable<PageViewProps['edit']>,
 ) {
   const backdropRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -380,7 +401,7 @@ function HighlightEditor(
     const textarea = textareaRef.current;
     if (!textarea) return;
     const lineHeight = parseFloat(window.getComputedStyle(textarea).lineHeight) || 18;
-    textarea.scrollTop = Math.max(0, activeLine * lineHeight - textarea.clientHeight / 3);
+    textarea.scrollTop = Math.max(0, activeLine * lineHeight - textarea.clientHeight / 2);
     if (backdropRef.current) backdropRef.current.scrollTop = textarea.scrollTop;
   }, [activeLine, draft]);
 
@@ -401,13 +422,38 @@ function HighlightEditor(
                 {diff.map((seg, k) => {
                   if (seg.read === null) return <span key={k}>{seg.text}</span>;
                   const on = finding!.activeSegIdx === k;
-                  const redCls = `rounded-sm px-0.5 ${on ? 'bg-red-500/55 text-red-50' : 'bg-red-500/10 text-red-300/80'}`;
-                  const greenCls = `rounded-sm px-0.5 ${on ? 'bg-emerald-500/55 text-emerald-50' : 'bg-emerald-500/5 text-emerald-300/50'}`;
+                  const apply = () => onApplySegment?.(i, k);
+                  if (!seg.text && seg.read) {
+                    return (
+                      <button
+                        key={k}
+                        type="button"
+                        onClick={apply}
+                        title="Click to insert"
+                        className={`pointer-events-auto mx-0.5 rounded px-1 align-middle ${on ? 'bg-emerald-500/60 text-emerald-50' : 'bg-emerald-500/20 text-emerald-200'} hover:bg-emerald-500/70`}
+                      >
+                        {seg.read}
+                      </button>
+                    );
+                  }
+                  if (seg.text && !seg.read) {
+                    return (
+                      <button
+                        key={k}
+                        type="button"
+                        onClick={apply}
+                        title="Click to remove"
+                        className={`pointer-events-auto mx-0.5 inline-block h-3 w-5 rounded align-middle ${on ? 'bg-sky-500/70' : 'bg-sky-500/30'} hover:bg-sky-500/70`}
+                      />
+                    );
+                  }
+                  const blueCls = `rounded-sm px-0.5 ${on ? 'bg-sky-500/55 text-sky-50' : 'bg-sky-500/15 text-sky-300/80'}`;
+                  const greenCls = `rounded-sm px-0.5 ${on ? 'bg-emerald-500/55 text-emerald-50' : 'bg-emerald-500/10 text-emerald-300/60'}`;
                   return (
                     <span key={k}>
-                      {seg.text && <span className={redCls}>{seg.text}</span>}
-                      {seg.text && seg.read && <span className="text-gray-500"> → </span>}
-                      {seg.read && <span className={greenCls}>{seg.read}</span>}
+                      <span className={blueCls}>{seg.text}</span>
+                      <span className="text-gray-500"> → </span>
+                      <span className={greenCls}>{seg.read}</span>
                     </span>
                   );
                 })}
@@ -451,6 +497,9 @@ function HighlightEditor(
             }
           >
             {line.length ? line : ' '}
+            {isContinuedLine(line, lines[i + 1]) && (
+              <span className="text-sky-400/50 select-none" title="Line broken to fit (not a sentence end)"> _</span>
+            )}
             {line.length > warnOver && (
               <span
                 className={`relative -top-2 ml-1 text-[9px] leading-none ${
@@ -607,6 +656,17 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
 
   useEffect(() => () => clearTimeout(savedTimer.current), []);
 
+  // Wipe all AI review findings/state — run when the reading-pages modal closes.
+  const clearReviewState = useCallback(() => {
+    setTypos([]);
+    setActiveTypoSel(null);
+    setTypoScanError(null);
+    setTypoScanProgress(null);
+    setTypoScanLoading(false);
+    reviewedPages.current.clear();
+    prefetchInFlight.current.clear();
+  }, []);
+
   useEffect(() => {
     if (!userMoved && processed.length > 0) setIdx(processed.length - 1);
   }, [processed.length, userMoved]);
@@ -620,7 +680,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (lineReviewFullscreen) setLineReviewFullscreen(false);
-      else setFullscreen(false);
+      else { setFullscreen(false); clearReviewState(); }
     };
     window.addEventListener('keydown', handler);
     const prevOverflow = document.body.style.overflow;
@@ -629,7 +689,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
       window.removeEventListener('keydown', handler);
       document.body.style.overflow = prevOverflow;
     };
-  }, [fullscreen, lineReviewFullscreen]);
+  }, [fullscreen, lineReviewFullscreen, clearReviewState]);
 
   // Jump to the processed page whose number is closest to the requested one.
   const goToPage = useCallback((target: number) => {
@@ -676,22 +736,25 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     () => deriveTypoChanges(typos, processed, safeIdx, draft),
     [processed, safeIdx, draft, typos],
   );
+  // Only the current page's findings are reviewed at a time; the reviewer
+  // navigates pages to reach the rest.
+  const pageTypoList = useMemo(() => typoList.filter(t => t.pageIdx === safeIdx), [typoList, safeIdx]);
 
   const activeTypoIndex = activeTypoSel
-    ? typoList.findIndex(t => t.page === activeTypoSel.page && t.lineIdx === activeTypoSel.lineIdx && t.segIdx === activeTypoSel.segIdx)
+    ? pageTypoList.findIndex(t => t.page === activeTypoSel.page && t.lineIdx === activeTypoSel.lineIdx && t.segIdx === activeTypoSel.segIdx)
     : -1;
-  const activeTypo = activeTypoIndex >= 0 ? typoList[activeTypoIndex] : null;
+  const activeTypo = activeTypoIndex >= 0 ? pageTypoList[activeTypoIndex] : null;
   const currentPageFindings = useMemo(() => {
     const m = new Map<number, { corrected: string; activeSegIdx: number | null }>();
-    typoList.filter(t => t.pageIdx === safeIdx).forEach(t => {
+    pageTypoList.forEach(t => {
       if (!m.has(t.lineIdx)) m.set(t.lineIdx, { corrected: t.corrected, activeSegIdx: null });
     });
-    if (activeTypo && activeTypo.pageIdx === safeIdx) {
+    if (activeTypo) {
       const entry = m.get(activeTypo.lineIdx);
       if (entry) entry.activeSegIdx = activeTypo.segIdx;
     }
     return m;
-  }, [typoList, safeIdx, activeTypo]);
+  }, [pageTypoList, activeTypo]);
   const activeSplitLineIdx = useMemo(() => {
     const reviewLine = activeReview && page && activeReview.page === page.page ? activeReview.lineIdx : undefined;
     const lines = draft.split('\n');
@@ -767,9 +830,14 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     if (activeReviewIndex === -1) setActiveReview(null);
   }, [activeReview, activeReviewIndex]);
 
+  // Keep the active finding pointed at the current page: if the selection no
+  // longer matches a finding here (e.g. after a page change), fall back to the
+  // first finding on this page, or clear it when there are none.
   useEffect(() => {
-    if (activeTypoSel && activeTypoIndex === -1) setActiveTypoSel(null);
-  }, [activeTypoSel, activeTypoIndex]);
+    if (activeTypoIndex !== -1) return;
+    const first = pageTypoList[0];
+    setActiveTypoSel(first ? { page: first.page, lineIdx: first.lineIdx, segIdx: first.segIdx } : null);
+  }, [activeTypoIndex, pageTypoList]);
 
   // Keep the editor draft in sync with the page being shown.
   useEffect(() => {
@@ -814,12 +882,11 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
   // keystroke-driven re-render).
   const prefetchPlan = useMemo(() => {
     if (!fullscreen || !reviewModel) return '[]';
-    const out: { page: number; text: string }[] = [];
-    for (let offset = 1; offset <= 3; offset++) {
-      const t = processed[safeIdx + offset];
-      if (t && t.status === 'complete' && (t.text ?? '').trim()) out.push({ page: t.page, text: t.text ?? '' });
+    const t = processed[safeIdx + 1];
+    if (t && t.status === 'complete' && (t.text ?? '').trim()) {
+      return JSON.stringify([{ page: t.page, text: t.text ?? '' }]);
     }
-    return JSON.stringify(out);
+    return '[]';
   }, [fullscreen, reviewModel, processed, safeIdx]);
 
   // Review the next pages in the background so findings are ready on arrival.
@@ -910,65 +977,64 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     goToReview(previous[previous.length - 1] ?? reviewOccurrences[reviewOccurrences.length - 1]);
   };
 
-  const goToTypo = (t: TypoChange) => {
-    if (t.pageIdx !== safeIdx) {
-      saveDraft();
-      setDraft(processed[t.pageIdx]?.text ?? '');
-      undoStack.current = [];
-      setUserMoved(true);
-      setIdx(t.pageIdx);
-    }
+  const selectTypo = (t: TypoChange) =>
     setActiveTypoSel({ page: t.page, lineIdx: t.lineIdx, segIdx: t.segIdx });
+
+  // After a change is applied/discarded, keep the selection where it was, or
+  // advance to the change now at that position, staying on the current page.
+  const reselectAfter = (nextTypos: TypoFinding[], text: string) => {
+    const remaining = deriveTypoChanges(nextTypos, processed, safeIdx, text).filter(c => c.pageIdx === safeIdx);
+    const stillActive = activeTypoSel &&
+      remaining.find(c => c.page === activeTypoSel.page && c.lineIdx === activeTypoSel.lineIdx && c.segIdx === activeTypoSel.segIdx);
+    const upcoming = stillActive ?? remaining[activeTypoIndex] ?? remaining[remaining.length - 1] ?? null;
+    setActiveTypoSel(upcoming ? { page: upcoming.page, lineIdx: upcoming.lineIdx, segIdx: upcoming.segIdx } : null);
   };
 
   const nextTypo = () => {
-    if (typoList.length === 0) return;
-    goToTypo(typoList[activeTypoIndex + 1] ?? typoList[0]);
+    if (pageTypoList.length === 0) return;
+    selectTypo(pageTypoList[activeTypoIndex + 1] ?? pageTypoList[0]);
   };
 
   const prevTypo = () => {
-    if (typoList.length === 0) return;
-    goToTypo(activeTypoIndex > 0 ? typoList[activeTypoIndex - 1] : typoList[typoList.length - 1]);
+    if (pageTypoList.length === 0) return;
+    selectTypo(activeTypoIndex > 0 ? pageTypoList[activeTypoIndex - 1] : pageTypoList[pageTypoList.length - 1]);
   };
 
-  const acceptTypo = () => {
-    if (!activeTypo) return;
+  // Accept a single change (apply the SLM correction for that segment).
+  const acceptChange = (change: TypoChange) => {
+    if (change.pageIdx !== safeIdx) return;
     const lines = draft.split('\n');
-    if (lines[activeTypo.lineIdx] !== activeTypo.original) return;
-    const newLine = applyTypoChange(activeTypo.original, activeTypo.corrected, activeTypo.segIdx);
-    lines[activeTypo.lineIdx] = newLine;
+    if (lines[change.lineIdx] !== change.original) return;
+    const newLine = applyTypoChange(change.original, change.corrected, change.segIdx);
+    lines[change.lineIdx] = newLine;
     const result = lines.join('\n');
     changeDraft(result);
     saveText(result);
 
     const nextTypos = typos.flatMap(t => {
-      if (t.page !== activeTypo.page || t.lineIdx !== activeTypo.lineIdx) return [t];
+      if (t.page !== change.page || t.lineIdx !== change.lineIdx) return [t];
       return newLine === t.corrected ? [] : [{ ...t, original: newLine }];
     });
     setTypos(nextTypos);
-
-    // Same global index now points at the next change (the accepted one is gone).
-    const remaining = deriveTypoChanges(nextTypos, processed, safeIdx, result);
-    const upcoming = remaining[activeTypoIndex] ?? null;
-    if (!upcoming) setActiveTypoSel(null);
-    else if (upcoming.pageIdx === safeIdx) setActiveTypoSel({ page: upcoming.page, lineIdx: upcoming.lineIdx, segIdx: upcoming.segIdx });
-    else goToTypo(upcoming);
+    reselectAfter(nextTypos, result);
   };
 
-  const discardTypo = () => {
-    if (!activeTypo) return;
-    const newCorrected = discardTypoChange(activeTypo.original, activeTypo.corrected, activeTypo.segIdx);
+  // Discard a single change (keep the original OCR text for that segment).
+  const discardChange = (change: TypoChange) => {
+    const newCorrected = discardTypoChange(change.original, change.corrected, change.segIdx);
     const nextTypos = typos.flatMap(t => {
-      if (t.page !== activeTypo.page || t.lineIdx !== activeTypo.lineIdx) return [t];
+      if (t.page !== change.page || t.lineIdx !== change.lineIdx) return [t];
       return newCorrected === t.original ? [] : [{ ...t, corrected: newCorrected }];
     });
     setTypos(nextTypos);
+    reselectAfter(nextTypos, draft);
+  };
 
-    const remaining = deriveTypoChanges(nextTypos, processed, safeIdx, draft);
-    const upcoming = remaining[activeTypoIndex] ?? null;
-    if (!upcoming) setActiveTypoSel(null);
-    else if (upcoming.pageIdx === safeIdx) setActiveTypoSel({ page: upcoming.page, lineIdx: upcoming.lineIdx, segIdx: upcoming.segIdx });
-    else goToTypo(upcoming);
+  const acceptTypo = () => { if (activeTypo) acceptChange(activeTypo); };
+  const discardTypo = () => { if (activeTypo) discardChange(activeTypo); };
+  const applySegment = (lineIdx: number, segIdx: number) => {
+    const change = pageTypoList.find(t => t.lineIdx === lineIdx && t.segIdx === segIdx);
+    if (change) acceptChange(change);
   };
 
   const scanTypos = async (
@@ -1203,6 +1269,19 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                     : reviewModel ? `Review by ${prettyModel(reviewModel)}` : 'Review with AI'}
                 </span>
               </button>
+              <button
+                className="h-7 w-7 ml-1 rounded flex items-center justify-center text-gray-400 enabled:hover:text-red-300 enabled:hover:bg-gray-800 disabled:opacity-30 transition-colors"
+                onClick={clearReviewState}
+                disabled={typos.length === 0}
+                title="Clear all reviews"
+                aria-label="Clear all reviews"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                  strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}>
+                  <path d="M19 20H8.5l-4.21-4.3a1 1 0 0 1 0-1.41l10-10a1 1 0 0 1 1.41 0l5 5a1 1 0 0 1 0 1.41L11.5 20" />
+                  <path d="M18 13.3l-6.3-6.3" />
+                </svg>
+              </button>
             </div>
 
             <div className="flex items-center gap-1 shrink-0">
@@ -1233,7 +1312,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
 
             <button
               className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors shrink-0"
-              onClick={() => { saveDraft(); setFullscreen(false); }}
+              onClick={() => { saveDraft(); setFullscreen(false); clearReviewState(); }}
               title="Close (Esc)"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1248,26 +1327,31 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
               page={page}
               large
               preview={{ totalPages: maxPage, minPage, onPageChange: (p) => { saveDraft(); goToPage(p); } }}
-              editHeader={(typoList.length > 0 || typoScanError) ? (
+              editHeader={(pageTypoList.length > 0 || typoScanError) ? (
                 <div className="mb-2 shrink-0 rounded-lg border border-gray-800 bg-gray-900/70 p-2">
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] font-medium uppercase tracking-wide text-gray-500 tabular-nums shrink-0">
-                      {typoList.length === 0
+                      {pageTypoList.length === 0
                         ? 'No findings'
-                        : `${activeTypoIndex >= 0 ? activeTypoIndex + 1 : '-'} / ${typoList.length}`}
+                        : `${activeTypoIndex >= 0 ? activeTypoIndex + 1 : '-'} / ${pageTypoList.length}`}
                     </span>
                     <div className="min-w-0 flex-1 rounded border border-gray-700/60 bg-gray-900/40 px-2 py-1.5">
-                      {activeTypo ? (
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs">
-                          {activeTypo.oldSeg.trim() && (
-                            <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-red-100">{activeTypo.oldSeg.trim()}</span>
-                          )}
-                          <span className="text-gray-500">→</span>
-                          {activeTypo.newSeg.trim()
-                            ? <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-emerald-100">{activeTypo.newSeg.trim()}</span>
-                            : <span className="text-[11px] uppercase tracking-wide text-gray-500">removed</span>}
-                        </div>
-                      ) : typoScanError ? (
+                      {activeTypo ? (() => {
+                        const ctx = segContext(activeTypo.original, activeTypo.corrected, activeTypo.segIdx);
+                        return (
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs">
+                            {ctx.before && <span className="text-gray-500">…{ctx.before}</span>}
+                            {activeTypo.oldSeg.trim() && (
+                              <span className="rounded bg-sky-500/20 px-1.5 py-0.5 text-sky-100">{activeTypo.oldSeg.trim()}</span>
+                            )}
+                            <span className="text-gray-500">→</span>
+                            {activeTypo.newSeg.trim()
+                              ? <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-emerald-100">{activeTypo.newSeg.trim()}</span>
+                              : <span className="text-[11px] uppercase tracking-wide text-gray-500">removed</span>}
+                            {ctx.after && <span className="text-gray-500">{ctx.after}…</span>}
+                          </div>
+                        );
+                      })() : typoScanError ? (
                         <p className="text-xs text-red-300">{typoScanError}</p>
                       ) : (
                         <p className="text-xs text-gray-500">Select a finding to review.</p>
@@ -1277,7 +1361,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                       <button
                         className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
                         onClick={prevTypo}
-                        disabled={typoList.length === 0}
+                        disabled={pageTypoList.length === 0}
                         title="Previous finding"
                         aria-label="Previous finding"
                       >
@@ -1286,31 +1370,27 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                         </svg>
                       </button>
                       <button
-                        className="w-7 h-7 rounded flex items-center justify-center text-emerald-400 hover:text-emerald-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
-                        onClick={acceptTypo}
-                        disabled={!activeTypo}
-                        title="Accept grammar/typo fix"
-                        aria-label="Accept grammar/typo fix"
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                        </svg>
-                      </button>
-                      <button
-                        className="w-7 h-7 rounded flex items-center justify-center text-red-400 hover:text-red-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
+                        className="h-7 max-w-[12rem] truncate rounded px-2.5 font-mono text-xs bg-sky-500/15 text-sky-100 hover:bg-sky-500/30 disabled:opacity-30 transition-colors"
                         onClick={discardTypo}
                         disabled={!activeTypo}
-                        title="Discard this change"
-                        aria-label="Discard this change"
+                        title="Keep the original OCR text"
+                        aria-label="Keep the original OCR text"
                       >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
+                        {activeTypo?.oldSeg.trim() || '∅'}
+                      </button>
+                      <button
+                        className="h-7 max-w-[12rem] truncate rounded px-2.5 font-mono text-xs bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/30 disabled:opacity-30 transition-colors"
+                        onClick={acceptTypo}
+                        disabled={!activeTypo}
+                        title="Accept the SLM correction"
+                        aria-label="Accept the SLM correction"
+                      >
+                        {activeTypo?.newSeg.trim() || '∅'}
                       </button>
                       <button
                         className="w-7 h-7 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 transition-colors"
                         onClick={nextTypo}
-                        disabled={typoList.length === 0}
+                        disabled={pageTypoList.length === 0}
                         title="Next finding"
                         aria-label="Next finding"
                       >
@@ -1330,6 +1410,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                 warnOver: Number.POSITIVE_INFINITY,
                 activeLine: activeTypo?.page === page.page ? activeTypo.lineIdx : null,
                 findings: currentPageFindings,
+                onApplySegment: applySegment,
                 readText: page.readText,
               }}
             />

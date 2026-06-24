@@ -84,6 +84,7 @@ export interface IBook extends Document {
   ocrPages: IOcrPage[];
   progress: { current: number; total: number; message: string };
   errorMessage?: string;
+  deleted: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -215,6 +216,7 @@ const BookSchema = new Schema<IBook>(
     },
     errorMessage: { type: String },
     voices: { type: [String], default: ['chatterbox:pt-BR-FranciscaNeural'] },
+    deleted: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

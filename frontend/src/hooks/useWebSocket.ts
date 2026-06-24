@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { useDispatch } from 'react-redux';
 import { AppDispatch, store } from '../store';
-import { applyWsUpdate, syncBooks } from '../store/booksSlice';
+import { applyWsUpdate, syncBooks, fetchDeletePermission } from '../store/booksSlice';
 import { Book } from '../types';
 
 let socket: Socket | null = null;
@@ -40,6 +40,7 @@ export function useWebSocket() {
   const dispatch = useDispatch<AppDispatch>();
 
   useEffect(() => {
+    dispatch(fetchDeletePermission());
     const s = getSocket();
 
     const onConnect = () => {

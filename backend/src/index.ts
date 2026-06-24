@@ -23,6 +23,7 @@ async function main() {
   await fs.mkdir(path.join(DATA_DIR, 'books'), { recursive: true });
 
   const app = express();
+  app.set('trust proxy', true);
   const server = http.createServer(app);
   const io = new SocketServer(server, {
     cors: { origin: FRONTEND_ORIGIN, methods: ['GET', 'POST'] },
