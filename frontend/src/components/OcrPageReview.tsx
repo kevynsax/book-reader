@@ -375,6 +375,24 @@ function isContinuedLine(line: string, nextLine: string | undefined): boolean {
   return !/[.!?…]["'”’)\]]*$/.test(t);
 }
 
+// Left-border colors cycled per line so each wrapped line gets a distinct hue,
+// making it easy to tell which visual rows belong to the same logical line.
+// Full literal class strings keep Tailwind from purging them.
+const WRAP_COLORS = [
+  'border-amber-400/70',
+  'border-sky-400/70',
+  'border-emerald-400/70',
+  'border-rose-400/70',
+  'border-violet-400/70',
+  'border-orange-400/70',
+  'border-teal-400/70',
+  'border-fuchsia-400/70',
+  'border-lime-400/70',
+  'border-cyan-400/70',
+  'border-pink-400/70',
+  'border-indigo-400/70',
+];
+
 // An auto-saving editor whose lines longer than `warnOver` get a light warning
 // background. A plain <textarea> can't style individual lines, so a synced
 // highlight backdrop sits behind a transparent-background textarea.
@@ -438,7 +456,7 @@ function HighlightEditor(
           const finding = findings?.get(i);
           const isActive = i === activeLine;
           const wraps = charsPerRow !== null && line.length > charsPerRow;
-          const wrapCls = wraps ? 'border-l-2 border-amber-400/60 pl-1.5' : '';
+          const wrapCls = wraps ? `border-l-2 pl-1.5 ${WRAP_COLORS[i % WRAP_COLORS.length]}` : '';
           const wrapTitle = wraps ? t('Wrapped to fit the page width — not a deliberate break') : undefined;
           const diff = overlay && finding && line.length ? diffText(line, finding.corrected) : null;
           if (diff) {
