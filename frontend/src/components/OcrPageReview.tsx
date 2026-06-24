@@ -149,12 +149,13 @@ function discardTypoChange(original: string, corrected: string, segIdx: number):
     .join('');
 }
 
-// The 3 words immediately before and after a change segment, taken from the
-// original line, so the reviewer sees the change in context.
+// The words immediately before and after a change segment, taken from the
+// original line, so the reviewer sees the change in context. More words than
+// fit are pulled in; overflow is clipped by the surrounding layout.
 function segContext(original: string, corrected: string, segIdx: number): { before: string; after: string } {
   const segs = diffText(original, corrected);
-  const before = segs.slice(0, segIdx).map(s => s.text).join('').split(/\s+/).filter(Boolean).slice(-3).join(' ');
-  const after = segs.slice(segIdx + 1).map(s => s.text).join('').split(/\s+/).filter(Boolean).slice(0, 3).join(' ');
+  const before = segs.slice(0, segIdx).map(s => s.text).join('').split(/\s+/).filter(Boolean).slice(-10).join(' ');
+  const after = segs.slice(segIdx + 1).map(s => s.text).join('').split(/\s+/).filter(Boolean).slice(0, 10).join(' ');
   return { before, after };
 }
 
@@ -1385,16 +1386,16 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
                       {activeTypo ? (() => {
                         const ctx = segContext(activeTypo.original, activeTypo.corrected, activeTypo.segIdx);
                         return (
-                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs">
-                            {ctx.before && <span className="text-gray-500">…{ctx.before}</span>}
+                          <div className="flex flex-nowrap items-center gap-x-2 overflow-hidden font-mono text-xs">
+                            <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-right text-gray-500">…{ctx.before}</span>
                             {activeTypo.oldSeg.trim() && (
-                              <span className="rounded bg-sky-500/20 px-1.5 py-0.5 text-sky-100">{activeTypo.oldSeg.trim()}</span>
+                              <span className="shrink-0 rounded bg-sky-500/20 px-1.5 py-0.5 text-sky-100">{activeTypo.oldSeg.trim()}</span>
                             )}
-                            <span className="text-gray-500">→</span>
+                            <span className="shrink-0 text-gray-500">→</span>
                             {activeTypo.newSeg.trim()
-                              ? <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-emerald-100">{activeTypo.newSeg.trim()}</span>
-                              : <span className="text-[11px] uppercase tracking-wide text-gray-500">{t('removed')}</span>}
-                            {ctx.after && <span className="text-gray-500">{ctx.after}…</span>}
+                              ? <span className="shrink-0 rounded bg-emerald-500/20 px-1.5 py-0.5 text-emerald-100">{activeTypo.newSeg.trim()}</span>
+                              : <span className="shrink-0 text-[11px] uppercase tracking-wide text-gray-500">{t('removed')}</span>}
+                            <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-gray-500">{ctx.after}…</span>
                           </div>
                         );
                       })() : typoScanError ? (
