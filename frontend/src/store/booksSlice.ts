@@ -40,6 +40,13 @@ export const updatePageText = createAsyncThunk(
   }
 );
 
+export const reocrPage = createAsyncThunk(
+  'books/reocrPage',
+  async ({ bookId, page }: { bookId: string; page: number }) => {
+    await api.post(`/api/books/${bookId}/pages/${page}/reocr`);
+  }
+);
+
 export const generateBook = createAsyncThunk(
   'books/generate',
   async (bookId: string) => {

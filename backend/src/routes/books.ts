@@ -6,7 +6,7 @@ import { createReadStream, existsSync } from 'fs';
 import { Server as SocketServer } from 'socket.io';
 import { Book, IVoiceTrack, ISegment, ISentence, freshTracks, trackForVoice, serializeChaptersForClient } from '../models/Book.js';
 import { DATA_DIR } from '../config.js';
-import { processBook, generateBookAudio, generateVoiceAudio, regenerateChapterAudio, regenerateVoiceAudio, regenerateChapterVoiceAudio, reassembleBookAudio, editSentence, deleteSentence, regenerateSegment, bookSpeechLanguage } from '../workers/bookProcessor.js';
+import { processBook, reprocessPageOcr, generateBookAudio, generateVoiceAudio, regenerateChapterAudio, regenerateVoiceAudio, regenerateChapterVoiceAudio, reassembleBookAudio, editSentence, deleteSentence, regenerateSegment, bookSpeechLanguage } from '../workers/bookProcessor.js';
 import { normalizeForSpeech } from '../services/textNormalizer.js';
 import { findPageImagePath, copyPageAsCover } from '../services/pdfService.js';
 import { detectChapters, fetchSlmModels, splitLineIntoSentences, reviewLineGrammar } from '../services/ocrService.js';
@@ -524,6 +524,22 @@ export function booksRouter(io: SocketServer) {
       });
     }
     res.json({ message: 'Saved' });
+  });
+
+  // Re-run OCR for a single page (e.g. one garbled page in an otherwise good book).
+  router.post('/:id/pages/:page/reocr', async (req, res) => {
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).json({ error: 'Not found' });
+
+    const pageNum = parseInt(req.params.page);
+    const pageDoc = book.ocrPages.find(p => p.page === pageNum);
+    if (!pageDoc) return res.status(404).json({ error: 'Page not found' });
+
+    res.json({ message: 'Re-OCR started.' });
+
+    reprocessPageOcr(book._id.toString(), pageNum, io).catch(err =>
+      console.error(`reprocessPageOcr ${book._id} page ${pageNum} failed:`, err)
+    );
   });
 
   router.post('/:id/line-split', async (req, res) => {

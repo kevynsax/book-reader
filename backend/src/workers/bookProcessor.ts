@@ -312,6 +312,71 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
   }
 }
 
+// Re-runs OCR for a single page, e.g. when one page came out garbled but the
+// rest of the book is fine. Mirrors the per-page work inside processBook's OCR
+// pool, then marks the page's chapter audio stale so it gets regenerated.
+export async function reprocessPageOcr(bookId: string, pageNum: number, io: SocketServer): Promise<void> {
+  const book = await Book.findById(bookId);
+  if (!book) return;
+
+  const pageDoc = book.ocrPages.find(p => p.page === pageNum);
+  if (!pageDoc) return;
+
+  const servers = QWENVL_SERVERS;
+  if (servers.length === 0) throw new Error('No QwenVL servers configured (set QWENVL_SERVERS)');
+
+  pageDoc.status = 'processing';
+  pageDoc.error = undefined;
+  await book.save();
+  emit(io, book, { ocrPage: { page: pageNum, status: 'processing' } });
+
+  const allPagePaths = await getAllPagePaths(book.folderPath);
+  const imagePath = allPagePaths[pageNum - 1];
+
+  try {
+    if (!imagePath) throw new Error('Page image not found');
+    let result: Awaited<ReturnType<typeof ocrPage>> | undefined;
+    let lastErr: unknown;
+    for (const s of servers) {
+      try { result = await ocrPage(imagePath, s.url, s.model); break; }
+      catch (err) { lastErr = err; }
+    }
+    if (!result) throw lastErr;
+
+    const reflowed = reflowSentences(result.content);
+    pageDoc.text = reflowed;
+    pageDoc.language = result.language;
+    pageDoc.readText = await normalizeForSpeech(reflowed, bookSpeechLanguage(book, result.language));
+    pageDoc.status = 'complete';
+    pageDoc.error = undefined;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Re-OCR failed for page ${pageNum} of book ${bookId}: ${message}`);
+    pageDoc.status = 'error';
+    pageDoc.error = message;
+  }
+
+  let anyStale = false;
+  if (pageDoc.status === 'complete') {
+    for (let i = 0; i < book.chapters.length; i++) {
+      const chStart = book.chapters[i].startPage;
+      const chEnd   = i + 1 < book.chapters.length ? book.chapters[i + 1].startPage : book.lastPage;
+      if (pageNum >= chStart && pageNum <= chEnd) {
+        book.chapters[i].set('sentences', []);
+        for (const track of book.chapters[i].tracks) {
+          if (track.audioStatus === 'complete') { track.audioStatus = 'stale'; anyStale = true; }
+        }
+      }
+    }
+  }
+
+  await book.save();
+  emit(io, book, {
+    ocrPage: { page: pageNum, text: pageDoc.text, readText: pageDoc.readText, status: pageDoc.status, error: pageDoc.error },
+  });
+  if (anyStale) emit(io, book, { chapters: book.chapters });
+}
+
 export function chapterAudioPath(audioDir: string, chapterIdx: number, voice: string): string {
   // Composite voice ids contain ':'; make them filesystem-safe.
   const safeVoice = voice.replace(/[^a-zA-Z0-9._-]/g, '_');
