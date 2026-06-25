@@ -375,22 +375,23 @@ function isContinuedLine(line: string, nextLine: string | undefined): boolean {
   return !/[.!?…]["'”’)\]]*$/.test(t);
 }
 
-// Left-border colors cycled per line so each wrapped line gets a distinct hue,
+// Left-marker colors cycled per line so each wrapped line gets a distinct hue,
 // making it easy to tell which visual rows belong to the same logical line.
-// Full literal class strings keep Tailwind from purging them.
+// Drawn as an inset box-shadow (not a border) so the marker adds no horizontal
+// layout, keeping the backdrop text geometry identical to the textarea's caret.
 const WRAP_COLORS = [
-  'border-amber-400/70',
-  'border-sky-400/70',
-  'border-emerald-400/70',
-  'border-rose-400/70',
-  'border-violet-400/70',
-  'border-orange-400/70',
-  'border-teal-400/70',
-  'border-fuchsia-400/70',
-  'border-lime-400/70',
-  'border-cyan-400/70',
-  'border-pink-400/70',
-  'border-indigo-400/70',
+  'rgba(251,191,36,0.7)',
+  'rgba(56,189,248,0.7)',
+  'rgba(52,211,153,0.7)',
+  'rgba(251,113,133,0.7)',
+  'rgba(167,139,250,0.7)',
+  'rgba(251,146,60,0.7)',
+  'rgba(45,212,191,0.7)',
+  'rgba(232,121,249,0.7)',
+  'rgba(163,230,53,0.7)',
+  'rgba(34,211,238,0.7)',
+  'rgba(244,114,182,0.7)',
+  'rgba(129,140,248,0.7)',
 ];
 
 // An auto-saving editor whose lines longer than `warnOver` get a light warning
@@ -404,7 +405,7 @@ function HighlightEditor(
   const lines = draft.split('\n');
   const readLines = readText !== undefined ? readText.split('\n') : null;
   const readAligned = !!readLines && readLines.length === lines.length;
-  const shared = 'p-0 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words';
+  const shared = 'font-mono text-xs leading-relaxed whitespace-pre-wrap break-words';
   // With findings or speech marks the backdrop becomes the visible, hoverable layer
   // (above a transparent textarea) so changes render inline and the read-diff marks
   // can show their hover tooltip.
@@ -423,7 +424,7 @@ function HighlightEditor(
     const recompute = () => {
       const charW = measure.getBoundingClientRect().width / 10;
       if (!charW) return;
-      setCharsPerRow(Math.max(1, Math.floor(backdrop.clientWidth / charW)));
+      setCharsPerRow(Math.max(1, Math.floor((backdrop.clientWidth - 8) / charW)));
     };
     recompute();
     const ro = new ResizeObserver(recompute);
@@ -450,18 +451,20 @@ function HighlightEditor(
       <div
         ref={backdropRef}
         aria-hidden
-        className={`absolute inset-0 overflow-hidden pointer-events-none ${overlay ? 'z-10 text-gray-200' : 'text-transparent'} ${shared}`}
+        className={`absolute inset-0 p-0 overflow-hidden pointer-events-none ${overlay ? 'z-10 text-gray-200' : 'text-transparent'} ${shared}`}
       >
         {lines.map((line, i) => {
           const finding = findings?.get(i);
           const isActive = i === activeLine;
           const wraps = charsPerRow !== null && line.length > charsPerRow;
-          const wrapCls = wraps ? `border-l-2 pl-1.5 ${WRAP_COLORS[i % WRAP_COLORS.length]}` : '';
+          const wrapStyle = wraps
+            ? { boxShadow: `inset 2px 0 0 0 ${WRAP_COLORS[i % WRAP_COLORS.length]}` }
+            : undefined;
           const wrapTitle = wraps ? t('Wrapped to fit the page width — not a deliberate break') : undefined;
           const diff = overlay && finding && line.length ? diffText(line, finding.corrected) : null;
           if (diff) {
             return (
-              <div key={i} className={wrapCls || undefined} title={wrapTitle}>
+              <div key={i} className="pl-2" style={wrapStyle} title={wrapTitle}>
                 {diff.map((seg, k) => {
                   if (seg.read === null) return <span key={k}>{seg.text}</span>;
                   const on = finding!.activeSegIdx === k;
@@ -505,7 +508,7 @@ function HighlightEditor(
           const readSegs = readLine !== undefined && readLine !== line ? diffText(line, readLine) : null;
           if (readSegs) {
             return (
-              <div key={i} className={wrapCls || undefined} title={wrapTitle}>
+              <div key={i} className="pl-2" style={wrapStyle} title={wrapTitle}>
                 {readSegs.map((s, k) => {
                   if (s.read === null) return <span key={k}>{s.text}</span>;
                   const spoken = s.read.trim() || t('omitted when read');
@@ -530,13 +533,14 @@ function HighlightEditor(
           <div
             key={i}
             title={wrapTitle}
-            className={`${
+            style={wrapStyle}
+            className={`pl-2 ${
               isActive
                 ? 'bg-amber-500/35 outline outline-1 outline-amber-400/50 rounded-sm'
                 : finding !== undefined
                   ? 'bg-sky-500/10 rounded-sm'
                   : line.length > warnOver ? 'bg-amber-500/15 rounded-sm' : ''
-            } ${wrapCls}`}
+            }`}
           >
             {line.length ? line : ' '}
             {isContinuedLine(line, lines[i + 1]) && (
@@ -567,7 +571,7 @@ function HighlightEditor(
         ref={textareaRef}
         autoFocus
         spellCheck={false}
-        className={`absolute inset-0 w-full h-full overflow-auto bg-transparent resize-none outline-none ${overlay ? 'text-transparent caret-gray-200' : 'text-gray-200'} ${shared}`}
+        className={`absolute inset-0 w-full h-full py-0 pr-0 pl-2 overflow-auto bg-transparent resize-none outline-none ${overlay ? 'text-transparent caret-gray-200' : 'text-gray-200'} ${shared}`}
         value={draft}
         onChange={e => onChange(e.target.value)}
         onKeyDown={e => {
