@@ -152,6 +152,7 @@ const booksSlice = createSlice({
           if (up.readText !== undefined) book.ocrPages[pageIdx].readText = up.readText;
           if (up.status !== undefined) book.ocrPages[pageIdx].status = up.status;
           if ('error' in up) book.ocrPages[pageIdx].error = up.error;
+          else if (up.status === 'processing' || up.status === 'complete') book.ocrPages[pageIdx].error = undefined;
         }
       }
 
