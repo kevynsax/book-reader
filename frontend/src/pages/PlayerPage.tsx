@@ -80,7 +80,7 @@ export default function PlayerPage() {
           <div className="space-y-2 text-sm text-gray-400 min-w-0 flex-1">
             <p className="text-gray-200 font-medium text-base truncate">{book.name || t('Untitled')}</p>
             {book.totalPages > 0 && <p>{t('{count} pages', { count: book.totalPages })}</p>}
-            <VoiceManager book={book} activeVoice={activeVoice} onSelectVoice={selectVoice} editable />
+            <VoiceManager book={book} activeVoice={activeVoice} onSelectVoice={selectVoice} editable allowModify />
             {remaining > 60 && (
               <p className="pt-1 text-gray-400">{t('{time} left', { time: fmtRemaining(remaining) })}</p>
             )}
