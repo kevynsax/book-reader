@@ -550,11 +550,21 @@ function stopRequested(book: IBook): boolean {
   return stopRequests.has(book._id.toString());
 }
 
-// Ask a running audio job to stop. Returns false if nothing is generating for
-// this book, so the caller can report that rather than silently no-op.
-export function stopBookAudio(bookId: string): boolean {
-  if (!activeAudioBooks.has(bookId)) return false;
-  stopRequests.add(bookId);
+// Stop audio generation for a book. A live job in this process unwinds
+// cooperatively at the next chapter/segment boundary, keeping rendered chapters
+// intact. If nothing is running here — e.g. the server restarted and lost the
+// in-memory job while the DB still shows tracks mid-render, leaving the book
+// stuck reading "generating" forever — clean the stuck state directly so it
+// becomes resumable. Errored tracks are cleared too so a stop also wipes errors.
+// Returns false only when the book no longer exists.
+export async function stopBookAudio(bookId: string, io: SocketServer): Promise<boolean> {
+  if (activeAudioBooks.has(bookId)) {
+    stopRequests.add(bookId);
+    return true;
+  }
+  const book = await Book.findById(bookId);
+  if (!book) return false;
+  await finalizeStop(book, io, book.status === 'generating_audio' || book.status === 'error', new SaveLock(), true);
   return true;
 }
 
@@ -716,17 +726,21 @@ async function finalizeStop(
   io: SocketServer,
   manageBookStatus: boolean,
   lock: SaveLock,
+  clearErrors = false,
 ): Promise<void> {
   for (const chapter of book.chapters) {
     for (const track of chapter.tracks) {
-      if (track.audioStatus === 'pending' || track.audioStatus === 'generating') {
+      if (track.audioStatus === 'pending' || track.audioStatus === 'generating'
+          || (clearErrors && track.audioStatus === 'error')) {
         track.audioStatus = 'stale';
+        if (clearErrors) track.audioError = undefined;
       }
       for (const seg of track.segments) {
         if (seg.audioStatus === 'generating') seg.audioStatus = 'pending';
       }
     }
   }
+  if (clearErrors) book.errorMessage = undefined;
   if (manageBookStatus) {
     book.status = 'complete';
     book.progress = { current: book.progress?.current ?? 0, total: book.progress?.total ?? 0, message: 'Stopped.' };
@@ -734,6 +748,7 @@ async function finalizeStop(
   await lock.run(() => book.save());
   emit(io, book, {
     ...(manageBookStatus ? { status: 'complete', progress: book.progress } : {}),
+    ...(clearErrors ? { errorMessage: '' } : {}),
     chapters: serializeChaptersForClient(book.chapters),
   });
 }

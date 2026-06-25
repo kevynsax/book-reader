@@ -515,8 +515,8 @@ export function booksRouter(io: SocketServer) {
   router.post('/:id/stop', async (req, res) => {
     const book = await Book.findById(req.params.id);
     if (!book) return res.status(404).json({ error: 'Not found' });
-    if (!stopBookAudio(book._id.toString())) {
-      return res.status(409).json({ error: 'No audio generation is running' });
+    if (!(await stopBookAudio(book._id.toString(), io))) {
+      return res.status(404).json({ error: 'Not found' });
     }
     res.json({ message: 'Stopping audio generation…' });
   });
