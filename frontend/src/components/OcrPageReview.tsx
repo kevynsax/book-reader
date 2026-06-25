@@ -9,6 +9,54 @@ import { api } from '../api/booksApi';
 import { t } from '../i18n';
 import PagePreview from './PagePreview';
 
+// Footnote/reference numbers glued straight onto a word (no space between the
+// digits and a letter) are OCR noise that has to be deleted by hand. We flag the
+// digit run in yellow so the reviewer can spot and remove each one.
+const GLUED_NUMBER_PATTERN = '(?<=\\p{L})\\d+|\\d+(?=\\p{L})';
+
+function hasGluedNumber(line: string): boolean {
+  return new RegExp(GLUED_NUMBER_PATTERN, 'u').test(line);
+}
+
+function markGluedNumbers(line: string): { text: string; glued: boolean }[] | null {
+  const re = new RegExp(GLUED_NUMBER_PATTERN, 'gu');
+  const segs: { text: string; glued: boolean }[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    if (m.index > last) segs.push({ text: line.slice(last, m.index), glued: false });
+    segs.push({ text: m[0], glued: true });
+    last = m.index + m[0].length;
+  }
+  if (segs.length === 0) return null;
+  if (last < line.length) segs.push({ text: line.slice(last), glued: false });
+  return segs;
+}
+
+// Renders text with glued footnote numbers wrapped in a yellow mark; plain text
+// when there are none.
+function GluedText({ text }: { text: string }) {
+  const segs = markGluedNumbers(text);
+  if (!segs) return <>{text}</>;
+  return (
+    <>
+      {segs.map((s, i) =>
+        s.glued ? (
+          <mark
+            key={i}
+            className="bg-yellow-300/40 text-yellow-100 rounded-sm ring-1 ring-yellow-400/40"
+            title={t('Number stuck to a word — likely a footnote marker to remove')}
+          >
+            {s.text}
+          </mark>
+        ) : (
+          <span key={i}>{s.text}</span>
+        ),
+      )}
+    </>
+  );
+}
+
 // Render the reviewed text, highlighting spans that get rewritten for speech.
 // Hovering a highlight instantly reveals what will actually be read (a custom
 // portal tooltip — the native `title` delay is too slow, and a portal avoids the
@@ -21,7 +69,7 @@ function ReadDiff({ text, read }: { text: string; read?: string }) {
   const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
 
   const base = 'font-mono text-xs leading-relaxed text-gray-200 whitespace-pre-wrap';
-  if (!segs) return <p className={base}>{text}</p>;
+  if (!segs) return <p className={base}><GluedText text={text} /></p>;
 
   const show = (e: React.MouseEvent, spoken: string) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -32,7 +80,7 @@ function ReadDiff({ text, read }: { text: string; read?: string }) {
     <>
       <p className={base}>
         {segs.map((s, i) => {
-          if (s.read === null) return <span key={i}>{s.text}</span>;
+          if (s.read === null) return <span key={i}><GluedText text={s.text} /></span>;
           const spoken = s.read.trim() || t('omitted when read');
           const cls = s.text === ''
             ? 'bg-emerald-600/30 text-emerald-200 rounded-sm px-0.5 cursor-help'
@@ -409,7 +457,8 @@ function HighlightEditor(
   // With findings or speech marks the backdrop becomes the visible, hoverable layer
   // (above a transparent textarea) so changes render inline and the read-diff marks
   // can show their hover tooltip.
-  const overlay = (!!findings && findings.size > 0) || readAligned;
+  const hasGlued = lines.some(hasGluedNumber);
+  const overlay = (!!findings && findings.size > 0) || readAligned || hasGlued;
   const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
   // How many monospace characters fit on one visual row of the backdrop. Lines
   // longer than this wrap purely because the pane is too narrow — not because of
@@ -542,7 +591,7 @@ function HighlightEditor(
                   : line.length > warnOver ? 'bg-amber-500/15 rounded-sm' : ''
             }`}
           >
-            {line.length ? line : ' '}
+            {line.length ? <GluedText text={line} /> : ' '}
             {isContinuedLine(line, lines[i + 1]) && (
               <span className="text-sky-400/50 select-none" title={t('Line broken to fit (not a sentence end)')}> _</span>
             )}
