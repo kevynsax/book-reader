@@ -7,6 +7,28 @@ export const SLM_API = process.env.SLM_API || 'https://slm.kevyn.com.br';
 // Tried in order: SLM_API first, then SLM_API_FALLBACK when the primary errors.
 export const SLM_API_FALLBACK = process.env.SLM_API_FALLBACK || 'https://ollama-macbook.kevyn.com.br';
 export const SLM_MODEL = process.env.SLM_MODEL || 'qwen2.5:3b';
+// Relative share of bulk-review work each SLM server takes. The balancer routes
+// by least in-flight / weight, so a slow box (e.g. the Mac fallback) with a low
+// weight only picks up a job when the fast server is already saturated.
+export const SLM_PRIMARY_WEIGHT = Math.max(1, parseInt(process.env.SLM_PRIMARY_WEIGHT || '4'));
+export const SLM_FALLBACK_WEIGHT = Math.max(1, parseInt(process.env.SLM_FALLBACK_WEIGHT || '1'));
+
+export interface SlmServerConfig { url: string; weight: number; }
+export const SLM_SERVERS: SlmServerConfig[] = (() => {
+  const raw = [
+    { url: SLM_API, weight: SLM_PRIMARY_WEIGHT },
+    { url: SLM_API_FALLBACK, weight: SLM_FALLBACK_WEIGHT },
+  ];
+  const seen = new Set<string>();
+  const out: SlmServerConfig[] = [];
+  for (const s of raw) {
+    const url = (s.url || '').replace(/\/+$/, '');
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    out.push({ url, weight: s.weight });
+  }
+  return out;
+})();
 
 // TTS servers run the same OpenAI-compatible API (see ../tts-2). Each loads one
 // model at a time but can hot-swap. Synthesis is load-balanced across them.

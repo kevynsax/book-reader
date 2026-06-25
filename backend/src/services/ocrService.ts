@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import {
   QWENVL_SERVERS, QWENVL_MAX_TOKENS,
-  SLM_API, SLM_API_FALLBACK, SLM_MODEL,
+  SLM_API, SLM_API_FALLBACK, SLM_MODEL, SLM_SERVERS,
   OCR_SYSTEM_PROMPT, OCR_PAGE_PROMPT,
   TITLE_SYSTEM_PROMPT, TITLE_PAGE_PROMPT,
   TOC_SYSTEM_PROMPT, TOC_PAGE_PROMPT,
@@ -146,9 +146,11 @@ async function callQwen(systemPrompt: string, userContent: unknown[], baseUrl: s
 
 // SLM endpoints support two dispatch modes against the configured servers:
 //
-//  - 'balance': round-robin one server per call, falling back to the others when
-//    the chosen one throws. Used by the bulk typo scan, where many lines fire in
-//    parallel and the goal is to spread load across servers.
+//  - 'balance': route each call to the server with the least in-flight work
+//    relative to its weight, falling back to the others when the chosen one
+//    throws. Used by the bulk typo scan, where many lines fire in parallel. A
+//    low-weight server (e.g. the slow Mac fallback) only gets a job once the
+//    higher-weight server is saturated, so it never bottlenecks the batch.
 //  - 'race': hit every server at once and take the first 2xx, aborting the rest.
 //    Used by the one-at-a-time line review/split, where the goal is low latency
 //    for a single request. Capped by a timeout so a stuck server can't stall it.
@@ -160,12 +162,15 @@ function slmBases(): string[] {
   return [...new Set([SLM_API, SLM_API_FALLBACK].filter(Boolean).map(b => b.replace(/\/+$/, '')))];
 }
 
-let slmCursor = 0;
-function balancedBases(): string[] {
-  const bases = slmBases();
-  if (bases.length <= 1) return bases;
-  const start = slmCursor++ % bases.length;
-  return [...bases.slice(start), ...bases.slice(0, start)];
+// Live count of requests currently in flight per server, used to spread bulk
+// work by least relative load (inFlight / weight).
+const slmInFlight = new Map<string, number>();
+const slmLoad = (url: string) => slmInFlight.get(url) ?? 0;
+
+// Servers ordered cheapest-first by current relative load, so the highest-weight
+// (fastest) server is preferred until it fills up.
+function balancedServers(): { url: string; weight: number }[] {
+  return [...SLM_SERVERS].sort((a, b) => slmLoad(a.url) / a.weight - slmLoad(b.url) / b.weight);
 }
 
 async function slmFetchOne(base: string, path: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
@@ -178,15 +183,18 @@ async function slmFetchOne(base: string, path: string, init: RequestInit, signal
 }
 
 async function balanceFetch(path: string, init: RequestInit, timeoutMs?: number): Promise<Response> {
-  const bases = balancedBases();
-  if (bases.length === 0) throw new Error('No SLM servers configured (set SLM_API)');
+  const servers = balancedServers();
+  if (servers.length === 0) throw new Error('No SLM servers configured (set SLM_API)');
   let lastErr: unknown;
-  for (const base of bases) {
+  for (const { url } of servers) {
+    slmInFlight.set(url, slmLoad(url) + 1);
     try {
       const signal = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
-      return await slmFetchOne(base, path, init, signal);
+      return await slmFetchOne(url, path, init, signal);
     } catch (err) {
       lastErr = err;
+    } finally {
+      slmInFlight.set(url, Math.max(0, slmLoad(url) - 1));
     }
   }
   throw lastErr;
