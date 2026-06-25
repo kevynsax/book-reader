@@ -22,6 +22,12 @@ export default function PagePreview({ bookId, totalPages, page, onPageChange, mi
   const [tx, setTx] = useState(0);
   const [ty, setTy] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [pageInput, setPageInput] = useState(String(page));
+
+  useEffect(() => { setPageInput(String(page)); }, [page]);
+
+  const parsed = parseInt(pageInput, 10);
+  const pageInvalid = pageInput.trim() === '' || Number.isNaN(parsed) || parsed < minPage || parsed > totalPages;
 
   const reset = () => { setScale(1); setTx(0); setTy(0); };
   const zoomBy = (factor: number) =>
@@ -152,16 +158,18 @@ export default function PagePreview({ bookId, totalPages, page, onPageChange, mi
                           flex items-center gap-1 text-xs text-white pointer-events-auto">
             <input
               type="number"
-              className="w-9 bg-transparent text-center text-white font-mono
+              className={`w-9 bg-transparent text-center font-mono
                          [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none
-                         focus:outline-none"
-              value={page}
+                         focus:outline-none ${pageInvalid ? 'text-red-400' : 'text-white'}`}
+              value={pageInput}
               min={minPage}
               max={totalPages}
               onChange={e => {
-                const v = parseInt(e.target.value);
+                setPageInput(e.target.value);
+                const v = parseInt(e.target.value, 10);
                 if (v >= minPage && v <= totalPages) onPageChange(v);
               }}
+              onBlur={() => { if (pageInvalid) setPageInput(String(page)); }}
             />
             <span className="text-white/50">{t('/ {totalPages}', { totalPages })}</span>
           </div>
@@ -175,7 +183,16 @@ export default function PagePreview({ bookId, totalPages, page, onPageChange, mi
           max={totalPages}
           value={page}
           onChange={e => onPageChange(parseInt(e.target.value))}
-          className="w-full h-0.5 accent-amber-500 cursor-pointer shrink-0"
+          className="w-full cursor-pointer shrink-0 appearance-none bg-transparent
+                     [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-gray-600
+                     [&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-gray-600
+                     [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:-mt-[7px]
+                     [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4
+                     [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-amber-500
+                     [&::-webkit-slider-thumb]:shadow [&::-webkit-slider-thumb]:cursor-pointer
+                     [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4
+                     [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-amber-500
+                     [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:cursor-pointer"
         />
       )}
     </div>
