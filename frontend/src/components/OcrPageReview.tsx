@@ -696,11 +696,6 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
   const savedTimer = useRef<ReturnType<typeof setTimeout>>();
   const undoStack = useRef<string[]>([]);
   const pendingReviewScan = useRef(false);
-  // Pages whose AI review has already run (foreground or prefetch), keyed
-  // `${page}:${model}`, plus the ones currently being prefetched — so the
-  // background prefetch never repeats or races a page.
-  const reviewedPages = useRef<Set<string>>(new Set());
-  const prefetchInFlight = useRef<Set<string>>(new Set());
 
   const flashSaved = useCallback(() => {
     setShowSaved(true);
@@ -717,8 +712,6 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     setTypoScanError(null);
     setTypoScanProgress(null);
     setTypoScanLoading(false);
-    reviewedPages.current.clear();
-    prefetchInFlight.current.clear();
   }, []);
 
   useEffect(() => {
@@ -899,8 +892,7 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     undoStack.current = [];
   }, [page?.page, fullscreen]);
 
-  // Run the per-line AI grammar/typo check for one page's text. Shared by the
-  // foreground "Review" button and the background prefetch.
+  // Run the per-line AI grammar/typo check for one page's text.
   const reviewLines = async (
     text: string,
     targetPage: number,
@@ -930,44 +922,6 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     });
     return { found, failures, lastError, total: targets.length };
   };
-
-  // The up-to-3 complete pages ahead of the current one, serialized so the
-  // prefetch effect only re-fires when that set actually changes (not on every
-  // keystroke-driven re-render).
-  const prefetchPlan = useMemo(() => {
-    if (!fullscreen || !reviewModel) return '[]';
-    const t = processed[safeIdx + 1];
-    if (t && t.status === 'complete' && (t.text ?? '').trim()) {
-      return JSON.stringify([{ page: t.page, text: t.text ?? '' }]);
-    }
-    return '[]';
-  }, [fullscreen, reviewModel, processed, safeIdx]);
-
-  // Review the next pages in the background so findings are ready on arrival.
-  useEffect(() => {
-    if (!reviewModel) return;
-    const plan: { page: number; text: string }[] = JSON.parse(prefetchPlan);
-    if (plan.length === 0) return;
-    let cancelled = false;
-    (async () => {
-      for (const target of plan) {
-        if (cancelled) return;
-        const key = `${target.page}:${reviewModel}`;
-        if (reviewedPages.current.has(key) || prefetchInFlight.current.has(key)) continue;
-        prefetchInFlight.current.add(key);
-        try {
-          const { found } = await reviewLines(target.text, target.page, reviewModel, 3);
-          reviewedPages.current.add(key);
-          setTypos(prev => [...prev.filter(t => t.page !== target.page), ...found]);
-        } catch {
-          // Prefetch is best-effort; a failed page just gets reviewed on arrival.
-        } finally {
-          prefetchInFlight.current.delete(key);
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [prefetchPlan, reviewModel]);
 
   if (processed.length === 0) return null;
 
@@ -1121,7 +1075,6 @@ const TextReview = forwardRef<TextReviewHandle, Props>(function TextReview({ boo
     }
 
     setTypoScanError(failures > 0 ? t('{failures} line(s) could not be reviewed', { failures }) : null);
-    reviewedPages.current.add(`${targetPage}:${model}`);
     const nextTypos = [...typos.filter(t => t.page !== targetPage), ...found];
     setTypos(nextTypos);
     const changes = deriveTypoChanges(nextTypos, processed, tgt.pageIdx, tgt.text);
