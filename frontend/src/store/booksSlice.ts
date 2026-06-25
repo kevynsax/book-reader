@@ -63,6 +63,22 @@ export const reprocessBook = createAsyncThunk(
   }
 );
 
+export const resumeBook = createAsyncThunk(
+  'books/resume',
+  async (bookId: string) => {
+    await api.post(`/api/books/${bookId}/resume`);
+    return bookId;
+  }
+);
+
+export const dismissBookError = createAsyncThunk(
+  'books/dismissError',
+  async (bookId: string) => {
+    await api.post(`/api/books/${bookId}/dismiss-error`);
+    return bookId;
+  }
+);
+
 export const deleteBook = createAsyncThunk('books/delete', async (bookId: string) => {
   await api.delete(`/api/books/${bookId}`);
   return bookId;
@@ -138,7 +154,7 @@ const booksSlice = createSlice({
         book.coverImagePath = patch.coverImagePath as string;
         book.coverVersion = (book.coverVersion ?? 0) + 1;
       }
-      if (patch.errorMessage) book.errorMessage = patch.errorMessage as string;
+      if ('errorMessage' in patch) book.errorMessage = (patch.errorMessage as string) || undefined;
 
       if (patch.voices) book.voices = patch.voices as string[];
 

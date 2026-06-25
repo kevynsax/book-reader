@@ -3,6 +3,7 @@ import { useSelector } from 'react-redux';
 import { RootState } from '../store';
 import BookCard from '../components/BookCard';
 import UploadWizard from '../components/UploadWizard';
+import SettingsButton from '../components/SettingsButton';
 import { t } from '../i18n';
 
 export default function LibraryPage() {
@@ -64,6 +65,8 @@ export default function LibraryPage() {
       </main>
 
       {showUpload && <UploadWizard onClose={() => setShowUpload(false)} />}
+
+      <SettingsButton />
     </div>
   );
 }

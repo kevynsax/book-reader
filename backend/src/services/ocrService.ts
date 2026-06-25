@@ -107,14 +107,6 @@ function parseSplitLineSuggestion(raw: string): SplitLineSuggestion | null {
   return { left: cleanLeft, right: cleanRight };
 }
 
-// One-off calls (title, language, table of contents) aren't load-balanced per
-// page, so they run on the first configured server.
-function primaryServer(): { url: string; model: string } {
-  const server = QWENVL_SERVERS[0];
-  if (!server) throw new Error('No QwenVL servers configured (set QWENVL_SERVERS)');
-  return server;
-}
-
 async function callQwen(systemPrompt: string, userContent: unknown[], baseUrl: string, model: string): Promise<string> {
   const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/v1/chat/completions`, {
     method: 'POST',
@@ -142,6 +134,23 @@ async function callQwen(systemPrompt: string, userContent: unknown[], baseUrl: s
   const content = data?.choices?.[0]?.message?.content ?? '';
   if (typeof content !== 'string') throw new Error('Empty response from Qwen');
   return content.trim();
+}
+
+// One-off calls (title, language, table of contents) aren't load-balanced per
+// page, but still try every configured server in order so a dead primary (e.g.
+// a 502) falls back to a healthy one before surfacing an error to the user.
+async function callQwenWithFallback(systemPrompt: string, userContent: unknown[]): Promise<string> {
+  const servers = QWENVL_SERVERS;
+  if (servers.length === 0) throw new Error('No QwenVL servers configured (set QWENVL_SERVERS)');
+  let lastErr: unknown;
+  for (const s of servers) {
+    try {
+      return await callQwen(systemPrompt, userContent, s.url, s.model);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr;
 }
 
 // SLM endpoints support two dispatch modes against the configured servers:
@@ -263,11 +272,10 @@ export async function extractBookTitle(coverImagePath: string): Promise<string> 
   const buffer = await fs.readFile(coverImagePath);
   const dataUrl = `data:image/jpeg;base64,${buffer.toString('base64')}`;
 
-  const { url, model } = primaryServer();
-  const raw = await callQwen(TITLE_SYSTEM_PROMPT, [
+  const raw = await callQwenWithFallback(TITLE_SYSTEM_PROMPT, [
     { type: 'text', text: TITLE_PAGE_PROMPT },
     { type: 'image_url', image_url: { url: dataUrl } },
-  ], url, model);
+  ]);
 
   const text = stripMarkdownFence(raw.trim());
   const parsed =
@@ -320,11 +328,10 @@ export async function detectLanguage(imagePath: string): Promise<string> {
   const buffer = await fs.readFile(imagePath);
   const dataUrl = `data:image/jpeg;base64,${buffer.toString('base64')}`;
 
-  const { url, model } = primaryServer();
-  const raw = await callQwen(LANG_SYSTEM_PROMPT, [
+  const raw = await callQwenWithFallback(LANG_SYSTEM_PROMPT, [
     { type: 'text', text: LANG_PAGE_PROMPT },
     { type: 'image_url', image_url: { url: dataUrl } },
-  ], url, model);
+  ]);
 
   const text = stripMarkdownFence(raw.trim());
   const parsed =
@@ -349,11 +356,10 @@ async function extractTableOfContents(imagePath: string): Promise<TocEntry[]> {
   const buffer = await fs.readFile(imagePath);
   const dataUrl = `data:image/jpeg;base64,${buffer.toString('base64')}`;
 
-  const { url, model } = primaryServer();
-  const raw = await callQwen(TOC_SYSTEM_PROMPT, [
+  const raw = await callQwenWithFallback(TOC_SYSTEM_PROMPT, [
     { type: 'text', text: TOC_PAGE_PROMPT },
     { type: 'image_url', image_url: { url: dataUrl } },
-  ], url, model);
+  ]);
 
   return parseTocEntries(raw);
 }

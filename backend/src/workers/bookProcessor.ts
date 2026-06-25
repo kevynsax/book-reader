@@ -157,7 +157,7 @@ async function setProgress(
   emit(io, book, { status: book.status, progress: book.progress });
 }
 
-export async function processBook(bookId: string, io: SocketServer): Promise<void> {
+export async function processBook(bookId: string, io: SocketServer, opts?: { resume?: boolean }): Promise<void> {
   const book = await Book.findById(bookId);
   if (!book) return;
 
@@ -207,7 +207,12 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
     const readPages: number[] = [];
     for (let p = book.firstPage; p <= book.lastPage; p++) readPages.push(p);
 
-    book.ocrPages = readPages.map(p => ({ page: p, text: '', language: 'unknown', status: 'pending' }));
+    // On a resume we keep pages already read and only redo pending/failed ones;
+    // a fresh run starts every page from scratch.
+    const resuming = !!opts?.resume && book.ocrPages.length > 0;
+    if (!resuming) {
+      book.ocrPages = readPages.map(p => ({ page: p, text: '', language: 'unknown', status: 'pending' }));
+    }
     book.status = 'ocr_processing';
     await book.save();
     emit(io, book, { status: 'ocr_processing', totalPages, ocrPages: book.ocrPages });
@@ -221,8 +226,15 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
     const servers = QWENVL_SERVERS;
     if (servers.length === 0) throw new Error('No QwenVL servers configured (set QWENVL_SERVERS)');
     const ocrLock = new SaveLock();
-    let nextPage = 0;
-    let doneCount = 0;
+
+    // Indices into book.ocrPages still needing OCR. Fresh run: every page.
+    // Resume: only the ones not already complete, so finished pages are kept.
+    const worklist = book.ocrPages
+      .map((p, i) => (p.status === 'complete' ? -1 : i))
+      .filter(i => i >= 0);
+    const totalPagesToRead = book.ocrPages.length;
+    let cursor = 0;
+    let doneCount = totalPagesToRead - worklist.length;
 
     // Try the worker's own server first, then fall back to the others so a page
     // isn't lost when a single server errors. Each server carries its own model
@@ -242,9 +254,10 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
 
     const ocrWorker = async (server: typeof servers[number]): Promise<void> => {
       while (true) {
-        const i = nextPage++;
-        if (i >= readPages.length) return;
-        const pageNum = readPages[i];
+        const w = cursor++;
+        if (w >= worklist.length) return;
+        const i = worklist[w];
+        const pageNum = book.ocrPages[i].page;
         const imagePath = allPagePaths[pageNum - 1];
         if (!imagePath) continue;
 
@@ -270,7 +283,7 @@ export async function processBook(bookId: string, io: SocketServer): Promise<voi
         doneCount++;
         await ocrLock.run(() => book.save());
         emit(io, book, {
-          progress: { current: doneCount, total: readPages.length, message: `OCR page ${pageNum}/${book.lastPage}…` },
+          progress: { current: doneCount, total: totalPagesToRead, message: `OCR page ${pageNum}/${book.lastPage}…` },
           ocrPage: { page: pageNum, text: book.ocrPages[i].text, readText: book.ocrPages[i].readText, status: book.ocrPages[i].status, error: book.ocrPages[i].error },
         });
       }

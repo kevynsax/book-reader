@@ -72,6 +72,13 @@ function parseQwenVlServers(): QwenVlServerConfig[] {
 
 export const QWENVL_SERVERS: QwenVlServerConfig[] = parseQwenVlServers();
 export const DATA_DIR = process.env.DATA_DIR || './data';
+// IPs allowed to delete books, comma-separated. Empty/unset disables the IP
+// restriction so deletion is allowed from anywhere (e.g. behind a proxy that
+// masks the client IP).
+export const DELETE_ALLOWED_IPS = (process.env.DELETE_ALLOWED_IPS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 export const DEFAULT_VOICE = process.env.TTS_VOICE || 'chatterbox:pt-BR-FranciscaNeural';
 export const TTS_SPEED = parseFloat(process.env.TTS_SPEED || '1.0');
 // Max sentence syntheses in flight at once, balanced across the ready servers.

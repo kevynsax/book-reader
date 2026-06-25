@@ -5,7 +5,7 @@ import fs from 'fs/promises';
 import { createReadStream, existsSync } from 'fs';
 import { Server as SocketServer } from 'socket.io';
 import { Book, IVoiceTrack, ISegment, ISentence, freshTracks, trackForVoice, serializeChaptersForClient } from '../models/Book.js';
-import { DATA_DIR } from '../config.js';
+import { DATA_DIR, DELETE_ALLOWED_IPS } from '../config.js';
 import { processBook, reprocessPageOcr, generateBookAudio, generateVoiceAudio, regenerateChapterAudio, regenerateVoiceAudio, regenerateChapterVoiceAudio, reassembleBookAudio, editSentence, deleteSentence, regenerateSegment, bookSpeechLanguage } from '../workers/bookProcessor.js';
 import { normalizeForSpeech } from '../services/textNormalizer.js';
 import { findPageImagePath, copyPageAsCover } from '../services/pdfService.js';
@@ -13,14 +13,16 @@ import { detectChapters, fetchSlmModels, splitLineIntoSentences, reviewLineGramm
 import { synthesizeSample, timelinePathFor } from '../services/ttsService.js';
 import { sanitizePageText } from '../lib/sanitize.js';
 
-const DELETE_ALLOWED_IPS = new Set(['189.39.218.8', '191.255.235.44']);
+const deleteAllowedIps = new Set(DELETE_ALLOWED_IPS);
 
 function clientIp(req: express.Request): string {
   return (req.ip ?? '').replace(/^::ffff:/, '');
 }
 
+// No configured IPs means the restriction is disabled — deletion is allowed
+// from anywhere (useful in production where a proxy masks the real client IP).
 function canDeleteBooks(req: express.Request): boolean {
-  return DELETE_ALLOWED_IPS.has(clientIp(req));
+  return deleteAllowedIps.size === 0 || deleteAllowedIps.has(clientIp(req));
 }
 
 const upload = multer({
@@ -186,6 +188,63 @@ export function booksRouter(io: SocketServer) {
     processBook(bookId, io).catch(err =>
       console.error(`processBook ${bookId} failed:`, err)
     );
+  });
+
+  // Continue a failed/partial import where it stopped: keep the pages already
+  // read and only re-run OCR for the pending/failed ones, then carry on with
+  // chapter detection. Unlike reprocess, completed work is preserved.
+  router.post('/:id/resume', async (req, res) => {
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).json({ error: 'Not found' });
+    if (!book.filePath || book.filePath === 'pending' || !existsSync(book.filePath)) {
+      return res.status(409).json({ error: 'Original PDF is no longer available' });
+    }
+
+    book.status = book.ocrPages.length > 0 ? 'ocr_processing' : 'splitting_pages';
+    book.errorMessage = undefined;
+    book.progress = { current: 0, total: 1, message: 'Resuming import…' };
+    await book.save();
+
+    const bookId = book._id.toString();
+    io.emit('book:update', {
+      bookId,
+      updatedAt: book.updatedAt,
+      status: book.status,
+      progress: book.progress,
+      errorMessage: '',
+    });
+
+    res.json({ message: 'Resuming import.' });
+
+    processBook(bookId, io, { resume: true }).catch(err =>
+      console.error(`processBook (resume) ${bookId} failed:`, err)
+    );
+  });
+
+  // Discard the import error without retrying: clear the error message, accept
+  // any failed pages as-is, and move the book on to chapter review so it stays
+  // usable (or can be deleted).
+  router.post('/:id/dismiss-error', async (req, res) => {
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).json({ error: 'Not found' });
+
+    book.errorMessage = undefined;
+    for (const p of book.ocrPages) {
+      if (p.status === 'error') { p.status = 'complete'; p.error = undefined; }
+    }
+    if (book.status === 'error') book.status = 'awaiting_chapter_review';
+    await book.save();
+
+    const bookId = book._id.toString();
+    io.emit('book:update', {
+      bookId,
+      updatedAt: book.updatedAt,
+      status: book.status,
+      errorMessage: '',
+      ocrPages: book.ocrPages,
+    });
+
+    res.json({ message: 'Error dismissed.' });
   });
 
   router.get('/:id/sample', async (req, res) => {

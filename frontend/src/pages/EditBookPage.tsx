@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { AppDispatch, RootState } from '../store';
-import { confirmChapters, deleteBook, renameBook, generateBook, regenerateVoice, regenerateChapterVoice, reprocessBook } from '../store/booksSlice';
+import { confirmChapters, deleteBook, renameBook, generateBook, regenerateVoice, regenerateChapterVoice, reprocessBook, resumeBook, dismissBookError } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus } from '../types';
 import { chapterStatus, bookVoices, trackFor, friendlyVoice, hasPlayableAudio } from '../lib/format';
@@ -307,12 +307,15 @@ export default function EditBookPage() {
   const dispatch = useDispatch<AppDispatch>();
   const navigate = useNavigate();
   const book     = useSelector((s: RootState) => s.books.books.find(b => b._id === id));
+  const canDelete = useSelector((s: RootState) => s.books.canDelete);
 
   const [showCoverPicker,  setShowCoverPicker]  = useState(false);
   const [showVoiceDialog,  setShowVoiceDialog]  = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [generating,       setGenerating]       = useState(false);
   const [reprocessing,     setReprocessing]     = useState(false);
+  const [resuming,         setResuming]         = useState(false);
+  const [dismissing,       setDismissing]       = useState(false);
   const chapterReviewRef = useRef<ChapterReviewHandle>(null);
   const textReviewRef = useRef<TextReviewHandle>(null);
   const generatedRef = useRef(false);
@@ -358,13 +361,35 @@ export default function EditBookPage() {
     } finally { setGenerating(false); }
   };
 
+  const importBusy = reprocessing || resuming || dismissing;
+
   const handleReprocess = async () => {
-    if (reprocessing) return;
+    if (importBusy) return;
     setReprocessing(true);
     try {
       await dispatch(reprocessBook(book._id)).unwrap();
     } finally {
       setReprocessing(false);
+    }
+  };
+
+  const handleResume = async () => {
+    if (importBusy) return;
+    setResuming(true);
+    try {
+      await dispatch(resumeBook(book._id)).unwrap();
+    } finally {
+      setResuming(false);
+    }
+  };
+
+  const handleDismissError = async () => {
+    if (importBusy) return;
+    setDismissing(true);
+    try {
+      await dispatch(dismissBookError(book._id)).unwrap();
+    } finally {
+      setDismissing(false);
     }
   };
 
@@ -414,6 +439,7 @@ export default function EditBookPage() {
               </svg>
             </button>
           )}
+          {canDelete && (
           <button
             className="text-gray-500 hover:text-red-400 transition-colors"
             aria-label={t('Delete book')}
@@ -424,6 +450,7 @@ export default function EditBookPage() {
                 d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
             </svg>
           </button>
+          )}
         </div>
       </header>
 
@@ -450,7 +477,7 @@ export default function EditBookPage() {
         )}
 
         {canReprocess && (
-          <div className="card flex items-center justify-between gap-4">
+          <div className="card flex items-center justify-between gap-4 flex-wrap">
             <p className="text-sm text-gray-400">
               {book.status === 'error'
                 ? t('Import failed. Restart it using the same pages you already set.')
@@ -458,9 +485,17 @@ export default function EditBookPage() {
                   ? t('{n} page failed to read. Restart the import with the same settings.', { n: failedPages })
                   : t('{n} pages failed to read. Restart the import with the same settings.', { n: failedPages })}
             </p>
-            <button className="btn-secondary shrink-0" onClick={handleReprocess} disabled={reprocessing}>
-              {reprocessing ? t('Restarting…') : t('Restart import')}
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button className="btn-secondary" onClick={handleResume} disabled={importBusy}>
+                {resuming ? t('Resuming…') : t('Continue importing')}
+              </button>
+              <button className="btn-secondary" onClick={handleReprocess} disabled={importBusy}>
+                {reprocessing ? t('Restarting…') : t('Restart import')}
+              </button>
+              <button className="btn-secondary" onClick={handleDismissError} disabled={importBusy}>
+                {dismissing ? t('Discarding…') : t('Discard error')}
+              </button>
+            </div>
           </div>
         )}
 
