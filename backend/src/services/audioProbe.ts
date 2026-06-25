@@ -4,7 +4,9 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 
-const exec = promisify(execFile);
+const execFileAsync = promisify(execFile);
+const exec = (file: string, args: string[]) =>
+  execFileAsync(file, args, { maxBuffer: 256 * 1024 * 1024 });
 
 // Concatenate the audio files listed in a concat-demuxer manifest into one mp3,
 // optionally scaling volume. Always decodes and re-encodes: raw mp3 byte-concat
