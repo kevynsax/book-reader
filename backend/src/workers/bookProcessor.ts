@@ -653,10 +653,11 @@ async function renderChapter(
   await finalizeTrack(book, io, idx, voice, audioDir, lock);
 }
 
-// Render every pending chapter for one voice. The chapters' sentences are pooled
-// into one queue and synthesized with at most TTS_CONCURRENCY requests in flight,
-// balanced across all ready servers — and a server that errors mid-run is parked
-// while the rest keep going. If no server is reachable, the chapters are errored.
+// Render every pending chapter for one voice, one chapter at a time: all ready
+// servers focus their TTS_CONCURRENCY on a single chapter until it finalizes and
+// becomes playable, then move to the next. This lets the user start listening to
+// early chapters before the whole book is done, rather than having every chapter
+// in flight at once.
 async function renderVoice(
   book: IBook,
   io: SocketServer,
@@ -673,46 +674,9 @@ async function renderVoice(
     });
   if (pending.length === 0) return;
 
-  const { model } = parseVoice(voice);
-  const servers = await readyServersFor(model.id);
-
-  if (servers.length === 0) {
-    const audioError = `No TTS server is online for model "${model.id}" — start the server and try again.`;
-    console.error(`renderVoice ${book._id} (${voice}): ${audioError}`);
-    for (const i of pending) {
-      const t = trackForVoice(book.chapters[i], voice);
-      if (t) { t.audioStatus = 'error'; t.audioError = audioError; }
-    }
-    progress.done += pending.length;
-    await lock.run(() => book.save());
-    emit(io, book, { chapters: serializeChaptersForClient(book.chapters) });
-    return;
-  }
-
-  const pool = new TtsServerPool(servers, model.id);
-  const remaining = new Map<number, number>();
-  const tasks: SegmentTask[] = [];
   for (const idx of pending) {
-    const chapterTasks = await prepareChapterTasks(book, io, voice, idx, audioDir, lock, progress);
-    const track = trackForVoice(book.chapters[idx], voice);
-    if (!track || track.audioStatus !== 'generating') continue;
-    // No pending segments (already-rendered chapter that just needs assembling):
-    // finalize now. Otherwise finalize once its last segment lands, so finished
-    // chapters become playable while the rest of the queue is still synthesizing.
-    if (chapterTasks.length === 0) {
-      await finalizeTrack(book, io, idx, voice, audioDir, lock);
-    } else {
-      remaining.set(idx, chapterTasks.length);
-      tasks.push(...chapterTasks);
-    }
+    await renderChapter(book, io, voice, idx, audioDir, lock, progress);
   }
-
-  await runPool(tasks, TTS_CONCURRENCY, async task => {
-    await renderSegment(book, io, pool, task, lock);
-    const left = (remaining.get(task.idx) ?? 1) - 1;
-    remaining.set(task.idx, left);
-    if (left === 0) await finalizeTrack(book, io, task.idx, voice, audioDir, lock);
-  });
 }
 
 async function generateForVoices(
