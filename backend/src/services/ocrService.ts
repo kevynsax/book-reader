@@ -430,10 +430,20 @@ function resolveLocation(
 }
 
 export async function detectChapters(
-  summaryImagePath: string,
+  summaryImagePaths: string[],
   ocrPages: { page: number; text: string }[],
 ): Promise<ChapterSuggestion[]> {
-  const toc = await extractTableOfContents(summaryImagePath);
+  // Read the contents from every summary page and merge, dropping duplicate
+  // entries (same title + page) that can appear when pages overlap.
+  const tocLists = await Promise.all(summaryImagePaths.map(p => extractTableOfContents(p)));
+  const seen = new Set<string>();
+  const toc: TocEntry[] = [];
+  for (const entry of tocLists.flat()) {
+    const key = `${entry.title.toLowerCase()}|${entry.page}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    toc.push(entry);
+  }
   if (toc.length === 0) return [];
 
   const byPage = new Map(ocrPages.map(p => [p.page, p.text]));

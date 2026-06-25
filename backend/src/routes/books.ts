@@ -43,6 +43,28 @@ const coverUpload = multer({
   },
 });
 
+// Accepts the summary pages as a JSON array, a comma-separated string, or a
+// single value, returning the unique positive page numbers in order.
+function parseSummaryPages(raw: unknown): number[] {
+  let values: unknown[] = [];
+  if (Array.isArray(raw)) values = raw;
+  else if (typeof raw === 'number') values = [raw];
+  else if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      values = Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      values = raw.split(',');
+    }
+  }
+  const out: number[] = [];
+  for (const v of values) {
+    const n = typeof v === 'number' ? v : parseInt(String(v).trim());
+    if (Number.isInteger(n) && n > 0 && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
 function sampleText(ocrPages: { page: number; text: string; status: string }[], firstPage: number): string {
   const pages = ocrPages
     .filter(p => p.status === 'complete' && p.page >= firstPage)
@@ -100,9 +122,11 @@ export function booksRouter(io: SocketServer) {
   }, async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    const { name, summaryPage, coverPage, firstPage, lastPage, voice } = req.body as Record<string, string>;
+    const { name, summaryPage, summaryPages, coverPage, firstPage, lastPage, voice } = req.body as Record<string, string>;
 
-    if (!summaryPage || !coverPage || !firstPage || !lastPage) {
+    const summary = parseSummaryPages(summaryPages ?? summaryPage);
+
+    if (summary.length === 0 || !coverPage || !firstPage || !lastPage) {
       await fs.unlink(req.file.path).catch(() => {});
       return res.status(400).json({ error: 'Missing required fields' });
     }
@@ -112,7 +136,7 @@ export function booksRouter(io: SocketServer) {
 
     const book = await Book.create({
       name: name?.trim() ?? '',
-      summaryPage: parseInt(summaryPage),
+      summaryPages: summary,
       coverPage: parseInt(coverPage),
       firstPage: parseInt(firstPage),
       lastPage: parseInt(lastPage),
@@ -165,6 +189,21 @@ export function booksRouter(io: SocketServer) {
     if (!book.filePath || book.filePath === 'pending' || !existsSync(book.filePath)) {
       return res.status(409).json({ error: 'Original PDF is no longer available' });
     }
+
+    // Optional reconfiguration: the user may review and change the cover,
+    // summary, first, and last pages before restarting the import.
+    const cfg = req.body ?? {};
+    const applyPage = (v: unknown): number | null =>
+      Number.isInteger(v) && (v as number) > 0 ? (v as number) : null;
+    const cover   = applyPage(cfg.coverPage);
+    let first     = applyPage(cfg.firstPage);
+    let last      = applyPage(cfg.lastPage);
+    const summary = cfg.summaryPages !== undefined ? parseSummaryPages(cfg.summaryPages) : null;
+    if (first !== null && last !== null && first > last) [first, last] = [last, first];
+    if (cover   !== null)               book.coverPage    = cover;
+    if (summary !== null && summary.length) book.summaryPages = summary;
+    if (first   !== null)               book.firstPage    = first;
+    if (last    !== null)               book.lastPage     = last;
 
     book.status = 'splitting_pages';
     book.errorMessage = undefined;
@@ -349,15 +388,17 @@ export function booksRouter(io: SocketServer) {
       const book = await Book.findById(req.params.id).lean();
       if (!book) return res.status(404).json({ error: 'Not found' });
 
-      const summaryImagePath = await findPageImagePath(book.folderPath, book.summaryPage);
-      if (!summaryImagePath) return res.status(404).json({ error: 'Summary page image not found' });
+      const summaryImagePaths = (await Promise.all(
+        book.summaryPages.map(p => findPageImagePath(book.folderPath, p))
+      )).filter((p): p is string => !!p);
+      if (summaryImagePaths.length === 0) return res.status(404).json({ error: 'Summary page image not found' });
 
       const completedPages = book.ocrPages
         .filter(p => p.status === 'complete')
         .map(p => ({ page: p.page, text: sanitizePageText(p.text) }));
 
-      const chapters = await detectChapters(summaryImagePath, completedPages);
-      res.json({ summaryPage: book.summaryPage, chapters });
+      const chapters = await detectChapters(summaryImagePaths, completedPages);
+      res.json({ summaryPages: book.summaryPages, chapters });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to read summary';
       res.status(502).json({ error: message });
@@ -904,6 +945,7 @@ export function booksRouter(io: SocketServer) {
 
     book.deleted = true;
     await book.save();
+    io.emit('book:deleted', { bookId: req.params.id });
     res.json({ message: 'Deleted' });
   });
 

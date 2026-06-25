@@ -83,7 +83,7 @@ export interface Book {
   folderPath: string;
   filePath: string;
   coverImagePath?: string;
-  summaryPage: number;
+  summaryPages: number[];
   coverPage: number;
   firstPage: number;
   lastPage: number;
@@ -101,7 +101,7 @@ export interface Book {
 export interface UploadFormData {
   name: string;
   file: File | null;
-  summaryPage: number;
+  summaryPages: number[];
   coverPage: number;
   firstPage: number;
   lastPage: number;

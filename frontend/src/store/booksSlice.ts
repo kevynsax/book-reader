@@ -55,10 +55,17 @@ export const generateBook = createAsyncThunk(
   }
 );
 
+interface ReimportConfig {
+  coverPage: number;
+  summaryPages: number[];
+  firstPage: number;
+  lastPage: number;
+}
+
 export const reprocessBook = createAsyncThunk(
   'books/reprocess',
-  async (bookId: string) => {
-    await api.post(`/api/books/${bookId}/reprocess`);
+  async ({ bookId, config }: { bookId: string; config?: ReimportConfig }) => {
+    await api.post(`/api/books/${bookId}/reprocess`, config ?? {});
     return bookId;
   }
 );
@@ -129,6 +136,9 @@ const booksSlice = createSlice({
   name: 'books',
   initialState,
   reducers: {
+    removeBook(state, action: PayloadAction<string>) {
+      state.books = state.books.filter(b => b._id !== action.payload);
+    },
     syncBooks(state, action: PayloadAction<Book[]>) {
       state.loading = false;
       for (const incoming of action.payload) {
@@ -209,5 +219,5 @@ const booksSlice = createSlice({
   },
 });
 
-export const { syncBooks, applyWsUpdate } = booksSlice.actions;
+export const { syncBooks, applyWsUpdate, removeBook } = booksSlice.actions;
 export default booksSlice.reducer;

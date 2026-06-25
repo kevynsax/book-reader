@@ -74,7 +74,9 @@ export interface IBook extends Document {
   folderPath: string;
   filePath: string;
   coverImagePath?: string;
-  summaryPage: number;
+  // Pages holding the table of contents / index. The TOC is read from each and
+  // the entries merged, so a contents list spanning several pages is supported.
+  summaryPages: number[];
   coverPage: number;
   firstPage: number;
   lastPage: number;
@@ -202,7 +204,7 @@ const BookSchema = new Schema<IBook>(
     folderPath: { type: String, required: true },
     filePath: { type: String, required: true },
     coverImagePath: { type: String },
-    summaryPage: { type: Number, required: true },
+    summaryPages: { type: [Number], required: true },
     coverPage: { type: Number, required: true },
     firstPage: { type: Number, required: true },
     lastPage: { type: Number, required: true },
@@ -245,6 +247,21 @@ export async function migrateLegacyVoices(): Promise<void> {
     await col.updateOne(
       { _id: b._id },
       { $set: { voices: [voice], chapters }, $unset: { voice: '' } }
+    );
+  }
+}
+
+// Older books stored a single `summaryPage`; fold it into the new `summaryPages`
+// array so multi-page contents lists are supported uniformly.
+export async function migrateSummaryPages(): Promise<void> {
+  const col = mongoose.connection.collection('books');
+  const cursor = col.find({ summaryPages: { $exists: false } });
+
+  for await (const b of cursor) {
+    const page = typeof b.summaryPage === 'number' ? b.summaryPage : 0;
+    await col.updateOne(
+      { _id: b._id },
+      { $set: { summaryPages: page > 0 ? [page] : [] }, $unset: { summaryPage: '' } }
     );
   }
 }

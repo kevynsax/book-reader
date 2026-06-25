@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { useDispatch } from 'react-redux';
 import { AppDispatch, store } from '../store';
-import { applyWsUpdate, syncBooks, fetchDeletePermission } from '../store/booksSlice';
+import { applyWsUpdate, syncBooks, fetchDeletePermission, removeBook } from '../store/booksSlice';
 import { Book } from '../types';
 
 let socket: Socket | null = null;
@@ -55,9 +55,14 @@ export function useWebSocket() {
       dispatch(applyWsUpdate(data));
     };
 
+    const onDeleted = (data: { bookId: string }) => {
+      dispatch(removeBook(data.bookId));
+    };
+
     s.on('connect', onConnect);
     s.on('books:sync', onSync);
     s.on('book:update', onUpdate);
+    s.on('book:deleted', onDeleted);
 
     if (s.connected) onConnect();
 
@@ -65,6 +70,7 @@ export function useWebSocket() {
       s.off('connect', onConnect);
       s.off('books:sync', onSync);
       s.off('book:update', onUpdate);
+      s.off('book:deleted', onDeleted);
     };
   }, [dispatch]);
 }

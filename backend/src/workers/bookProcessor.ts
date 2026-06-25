@@ -131,7 +131,7 @@ function chapterSpeechLanguage(book: IBook, idx: number): string {
 async function ensureBookLanguage(book: IBook, io: SocketServer): Promise<void> {
   if (book.language && book.language !== 'unknown') return;
   try {
-    const imagePath = await findPageImagePath(book.folderPath, book.summaryPage);
+    const imagePath = await findPageImagePath(book.folderPath, book.summaryPages[0]);
     if (!imagePath) return;
     const language = await detectLanguage(imagePath);
     if (language && language !== 'unknown') {
@@ -192,7 +192,7 @@ export async function processBook(bookId: string, io: SocketServer, opts?: { res
 
     await setProgress(io, book, 0, 1, 'Detecting language…', 'reading_title');
     try {
-      const langImagePath = await findPageImagePath(book.folderPath, book.summaryPage);
+      const langImagePath = await findPageImagePath(book.folderPath, book.summaryPages[0]);
       if (langImagePath) {
         const language = await detectLanguage(langImagePath);
         if (language && language !== 'unknown') {
@@ -296,9 +296,11 @@ export async function processBook(bookId: string, io: SocketServer, opts?: { res
       .filter(p => p.status === 'complete')
       .map(p => ({ page: p.page, text: sanitizePageText(p.text) }));
 
-    const summaryImagePath = await findPageImagePath(book.folderPath, book.summaryPage);
-    const suggestions = summaryImagePath
-      ? await detectChapters(summaryImagePath, completedPages)
+    const summaryImagePaths = (await Promise.all(
+      book.summaryPages.map(p => findPageImagePath(book.folderPath, p))
+    )).filter((p): p is string => !!p);
+    const suggestions = summaryImagePaths.length
+      ? await detectChapters(summaryImagePaths, completedPages)
       : [];
 
     book.chapters = suggestions.map(s => ({

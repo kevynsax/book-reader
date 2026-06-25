@@ -10,7 +10,7 @@ import Step2PageSelection from './Step2PageSelection';
 const INIT: UploadFormData = {
   name: '',
   file: null,
-  summaryPage: 0,
+  summaryPages: [],
   coverPage: 0,
   firstPage: 0,
   lastPage: 0,
@@ -39,7 +39,7 @@ export default function UploadWizard({ onClose }: Props) {
       const fd = new FormData();
       fd.append('name', formData.name);
       fd.append('file', formData.file);
-      fd.append('summaryPage', String(formData.summaryPage));
+      fd.append('summaryPages', JSON.stringify(formData.summaryPages));
       fd.append('coverPage', String(formData.coverPage));
       fd.append('firstPage', String(formData.firstPage));
       fd.append('lastPage', String(formData.lastPage));

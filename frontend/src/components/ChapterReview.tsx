@@ -79,6 +79,9 @@ function highlight(excerpt: string, needle: string) {
 const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterReview({ book, onConfirm, onOpenPage }, ref) {
   const dispatch = useDispatch<AppDispatch>();
 
+  // The contents can span several pages; the preview opens on the first one.
+  const summaryPage = book.summaryPages?.[0] ?? 1;
+
   const pageText = (page: number) => book.ocrPages.find(p => p.page === page)?.text?.trim() ?? '';
 
   const [rows, setRows] = useState<Row[]>(() =>
@@ -93,7 +96,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
 
   const [detecting,   setDetecting]   = useState(false);
   const [suggestions, setSuggestions] = useState<ChapterSuggestion[] | null>(null);
-  const [previewPage, setPreviewPage] = useState(book.summaryPage);
+  const [previewPage, setPreviewPage] = useState(summaryPage);
   const [editingIdx,  setEditingIdx]  = useState<number | null>(null);
   const suggestionsRef = useRef<ChapterSuggestion[] | null>(null);
   const pageRepeatDelayRef = useRef<number | null>(null);
@@ -128,7 +131,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
     setError(null);
     try {
       const res = await api.post<{ chapters: ChapterSuggestion[] }>(`/api/books/${book._id}/summary/detect`);
-      setPreviewPage(book.summaryPage);
+      setPreviewPage(summaryPage);
       setEditingIdx(null);
       setSuggestions(res.data.chapters);
     } catch (err) {
@@ -431,10 +434,10 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
               <h2 className="font-semibold text-gray-100">{t('Chapters')}</h2>
               <button
                 className="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-800 text-gray-300 hover:bg-amber-600/20 hover:text-amber-300 transition-colors"
-                onClick={() => setPreviewPage(Math.min(previewTotal, Math.max(1, book.summaryPage)))}
+                onClick={() => setPreviewPage(Math.min(previewTotal, Math.max(1, summaryPage)))}
                 title={t('Go to the summary page in the preview')}
               >
-                {t('Summary · p.{page}', { page: book.summaryPage })}
+                {t('Summary · p.{page}', { page: summaryPage })}
               </button>
               <div className="flex-1" />
               <button
@@ -625,7 +628,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
           onClick={() => setShowSummary(false)}
         >
           <div className="flex items-center gap-4 px-6 py-4 border-b border-gray-800 shrink-0">
-            <h2 className="font-semibold text-gray-100 flex-1">{t('Summary page · p.{page}', { page: book.summaryPage })}</h2>
+            <h2 className="font-semibold text-gray-100 flex-1">{t('Summary page · p.{page}', { page: summaryPage })}</h2>
             <button
               className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
               onClick={() => setShowSummary(false)}
@@ -639,8 +642,8 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
           </div>
           <div className="flex-1 min-h-0 overflow-auto flex justify-center p-6" onClick={e => e.stopPropagation()}>
             <img
-              src={`/api/books/${book._id}/pages/${book.summaryPage}`}
-              alt={t('Summary page {page}', { page: book.summaryPage })}
+              src={`/api/books/${book._id}/pages/${summaryPage}`}
+              alt={t('Summary page {page}', { page: summaryPage })}
               className="max-w-full h-auto object-contain rounded-lg"
             />
           </div>

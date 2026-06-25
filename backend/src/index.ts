@@ -4,7 +4,7 @@ import cors from 'cors';
 import path from 'path';
 import { Server as SocketServer } from 'socket.io';
 import { connectDb } from './db.js';
-import { migrateLegacyVoices, migrateSanitizeOcrText } from './models/Book.js';
+import { migrateLegacyVoices, migrateSanitizeOcrText, migrateSummaryPages } from './models/Book.js';
 import { seedLexicons } from './models/Lexicon.js';
 import { booksRouter, registerBookSync } from './routes/books.js';
 import { lexiconRouter } from './routes/lexicon.js';
@@ -18,6 +18,7 @@ process.on('unhandledRejection', err => console.error('Unhandled promise rejecti
 async function main() {
   await connectDb();
   await migrateLegacyVoices();
+  await migrateSummaryPages();
   await migrateSanitizeOcrText();
   await seedLexicons();
   await fs.mkdir(path.join(DATA_DIR, 'books'), { recursive: true });

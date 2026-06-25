@@ -68,15 +68,25 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
 
   useEffect(() => { renderPage(currentPage); }, [renderPage, currentPage]);
 
-  const getVal = (role: PageRole): number =>
-    ({ cover: data.coverPage, summary: data.summaryPage, first: data.firstPage, last: data.lastPage }[role] ?? 0);
+  const singleVal = (role: 'cover' | 'first' | 'last'): number =>
+    ({ cover: data.coverPage, first: data.firstPage, last: data.lastPage }[role] ?? 0);
 
-  const isSet    = (role: PageRole) => getVal(role) > 0;
-  const isActive = (role: PageRole) => getVal(role) === currentPage;
+  const isSet    = (role: PageRole) =>
+    role === 'summary' ? data.summaryPages.length > 0 : singleVal(role) > 0;
+  const isActive = (role: PageRole) =>
+    role === 'summary' ? data.summaryPages.includes(currentPage) : singleVal(role) === currentPage;
+  const roleLabel = (role: PageRole): string =>
+    role === 'summary' ? data.summaryPages.join(', ') : String(singleVal(role));
 
   const setAs = (role: PageRole) => {
     if (role === 'cover')   { onChange({ coverPage: currentPage });   return; }
-    if (role === 'summary') { onChange({ summaryPage: currentPage }); return; }
+    if (role === 'summary') {
+      const next = data.summaryPages.includes(currentPage)
+        ? data.summaryPages.filter(p => p !== currentPage)
+        : [...data.summaryPages, currentPage].sort((a, b) => a - b);
+      onChange({ summaryPages: next });
+      return;
+    }
     if (role === 'first') {
       const last = data.lastPage;
       if (last > 0 && currentPage > last) onChange({ firstPage: last, lastPage: currentPage });
@@ -102,7 +112,7 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
         {ROLES.map(({ role, label }) => {
           const set    = isSet(role);
           const active = isActive(role);
-          const val    = getVal(role);
+          const val    = roleLabel(role);
           return (
             <button
               key={role}
@@ -119,6 +129,7 @@ export default function Step2PageSelection({ data, onChange, onBack, onSubmit, s
             >
               {t(label)}
               {set && <span className="ml-2 text-xs opacity-70 font-normal">{t('p.{val}', { val })}</span>}
+              {role === 'summary' && <span className="block text-[11px] opacity-60 font-normal mt-0.5">{t('tap to add/remove')}</span>}
             </button>
           );
         })}

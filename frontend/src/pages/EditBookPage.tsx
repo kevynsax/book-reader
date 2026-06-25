@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { AppDispatch, RootState } from '../store';
-import { confirmChapters, deleteBook, renameBook, generateBook, regenerateVoice, regenerateChapterVoice, reprocessBook, resumeBook, dismissBookError } from '../store/booksSlice';
+import { confirmChapters, deleteBook, renameBook, generateBook, regenerateVoice, regenerateChapterVoice, resumeBook, dismissBookError } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus } from '../types';
 import { chapterStatus, bookVoices, trackFor, friendlyVoice, hasPlayableAudio } from '../lib/format';
@@ -12,6 +12,7 @@ import CoverPickerModal from '../components/CoverPickerModal';
 import VoiceManager from '../components/VoiceManager';
 import GenerateVoiceModal from '../components/GenerateVoiceModal';
 import ConfirmDialog from '../components/ConfirmDialog';
+import ReimportModal from '../components/ReimportModal';
 import { t } from '../i18n';
 
 const STATUS_STEPS: { status: BookStatus; label: string }[] = [
@@ -313,7 +314,7 @@ export default function EditBookPage() {
   const [showVoiceDialog,  setShowVoiceDialog]  = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [generating,       setGenerating]       = useState(false);
-  const [reprocessing,     setReprocessing]     = useState(false);
+  const [showReimport,     setShowReimport]      = useState(false);
   const [resuming,         setResuming]         = useState(false);
   const [dismissing,       setDismissing]       = useState(false);
   const chapterReviewRef = useRef<ChapterReviewHandle>(null);
@@ -361,17 +362,7 @@ export default function EditBookPage() {
     } finally { setGenerating(false); }
   };
 
-  const importBusy = reprocessing || resuming || dismissing;
-
-  const handleReprocess = async () => {
-    if (importBusy) return;
-    setReprocessing(true);
-    try {
-      await dispatch(reprocessBook(book._id)).unwrap();
-    } finally {
-      setReprocessing(false);
-    }
-  };
+  const importBusy = resuming || dismissing;
 
   const handleResume = async () => {
     if (importBusy) return;
@@ -489,8 +480,8 @@ export default function EditBookPage() {
               <button className="btn-secondary" onClick={handleResume} disabled={importBusy}>
                 {resuming ? t('Resuming…') : t('Continue importing')}
               </button>
-              <button className="btn-secondary" onClick={handleReprocess} disabled={importBusy}>
-                {reprocessing ? t('Restarting…') : t('Restart import')}
+              <button className="btn-secondary" onClick={() => setShowReimport(true)} disabled={importBusy}>
+                {t('Restart import')}
               </button>
               <button className="btn-secondary" onClick={handleDismissError} disabled={importBusy}>
                 {dismissing ? t('Discarding…') : t('Discard error')}
@@ -577,6 +568,10 @@ export default function EditBookPage() {
           onConfirm={handleDelete}
           onClose={() => setShowDeleteConfirm(false)}
         />
+      )}
+
+      {showReimport && (
+        <ReimportModal book={book} onClose={() => setShowReimport(false)} />
       )}
     </div>
   );
