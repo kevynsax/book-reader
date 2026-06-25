@@ -6,7 +6,7 @@ import { createReadStream, existsSync } from 'fs';
 import { Server as SocketServer } from 'socket.io';
 import { Book, IVoiceTrack, ISegment, ISentence, freshTracks, trackForVoice, serializeChaptersForClient } from '../models/Book.js';
 import { DATA_DIR, DELETE_ALLOWED_IPS } from '../config.js';
-import { processBook, reprocessPageOcr, generateBookAudio, generateVoiceAudio, regenerateChapterAudio, regenerateVoiceAudio, regenerateChapterVoiceAudio, reassembleBookAudio, editSentence, deleteSentence, regenerateSegment, bookSpeechLanguage } from '../workers/bookProcessor.js';
+import { processBook, reprocessPageOcr, generateBookAudio, generateVoiceAudio, regenerateChapterAudio, regenerateVoiceAudio, regenerateChapterVoiceAudio, reassembleBookAudio, editSentence, deleteSentence, regenerateSegment, bookSpeechLanguage, stopBookAudio } from '../workers/bookProcessor.js';
 import { normalizeForSpeech } from '../services/textNormalizer.js';
 import { findPageImagePath, copyPageAsCover } from '../services/pdfService.js';
 import { detectChapters, fetchSlmModels, splitLineIntoSentences, reviewLineGrammar } from '../services/ocrService.js';
@@ -510,6 +510,15 @@ export function booksRouter(io: SocketServer) {
     generateBookAudio(book._id.toString(), io).catch(err =>
       console.error(`generateBookAudio ${book._id} failed:`, err)
     );
+  });
+
+  router.post('/:id/stop', async (req, res) => {
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).json({ error: 'Not found' });
+    if (!stopBookAudio(book._id.toString())) {
+      return res.status(409).json({ error: 'No audio generation is running' });
+    }
+    res.json({ message: 'Stopping audio generation…' });
   });
 
   router.get('/:id/chapters/:chapterIdx/audio', async (req, res) => {

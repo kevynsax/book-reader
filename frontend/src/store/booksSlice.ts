@@ -55,6 +55,14 @@ export const generateBook = createAsyncThunk(
   }
 );
 
+export const stopBook = createAsyncThunk(
+  'books/stop',
+  async (bookId: string) => {
+    await api.post(`/api/books/${bookId}/stop`);
+    return bookId;
+  }
+);
+
 interface ReimportConfig {
   coverPage: number;
   summaryPages: number[];

@@ -532,6 +532,32 @@ interface SegmentTask {
   language: string;
 }
 
+// Books with audio generation currently in flight, and those a user has asked to
+// stop. Generation is cooperative: the render loop checks the stop flag at chapter
+// and segment boundaries and unwinds via AudioStopped, leaving already-rendered
+// chapters intact (and resumable) while no new work is dispatched.
+const activeAudioBooks = new Set<string>();
+const stopRequests = new Set<string>();
+
+class AudioStopped extends Error {
+  constructor() {
+    super('Audio generation stopped');
+    this.name = 'AudioStopped';
+  }
+}
+
+function stopRequested(book: IBook): boolean {
+  return stopRequests.has(book._id.toString());
+}
+
+// Ask a running audio job to stop. Returns false if nothing is generating for
+// this book, so the caller can report that rather than silently no-op.
+export function stopBookAudio(bookId: string): boolean {
+  if (!activeAudioBooks.has(bookId)) return false;
+  stopRequests.add(bookId);
+  return true;
+}
+
 // Synthesize one sentence on a balanced, healthy server (falling back across the
 // others on error), then persist + emit the segment's outcome.
 async function renderSegment(
@@ -541,6 +567,7 @@ async function renderSegment(
   task: SegmentTask,
   lock: SaveLock,
 ): Promise<void> {
+  if (stopRequested(book)) throw new AudioStopped();
   const { idx, voice, seg, text, segPath, language } = task;
   seg.audioStatus = 'generating';
   seg.audioError = undefined;
@@ -675,8 +702,40 @@ async function renderVoice(
   if (pending.length === 0) return;
 
   for (const idx of pending) {
+    if (stopRequested(book)) throw new AudioStopped();
     await renderChapter(book, io, voice, idx, audioDir, lock, progress);
   }
+}
+
+// A user stopped generation: keep finished chapters playable and flag the rest
+// 'stale' so they read as "needs generating" instead of forever mid-render, then
+// return the book to a resumable, listenable state. Clicking Generate again skips
+// the complete chapters and renders only what's left.
+async function finalizeStop(
+  book: IBook,
+  io: SocketServer,
+  manageBookStatus: boolean,
+  lock: SaveLock,
+): Promise<void> {
+  for (const chapter of book.chapters) {
+    for (const track of chapter.tracks) {
+      if (track.audioStatus === 'pending' || track.audioStatus === 'generating') {
+        track.audioStatus = 'stale';
+      }
+      for (const seg of track.segments) {
+        if (seg.audioStatus === 'generating') seg.audioStatus = 'pending';
+      }
+    }
+  }
+  if (manageBookStatus) {
+    book.status = 'complete';
+    book.progress = { current: book.progress?.current ?? 0, total: book.progress?.total ?? 0, message: 'Stopped.' };
+  }
+  await lock.run(() => book.save());
+  emit(io, book, {
+    ...(manageBookStatus ? { status: 'complete', progress: book.progress } : {}),
+    chapters: serializeChaptersForClient(book.chapters),
+  });
 }
 
 async function generateForVoices(
@@ -699,10 +758,23 @@ async function generateForVoices(
   const lock = new SaveLock();
   const progress = { done: 0, total: voices.length * book.chapters.length };
 
-  // Voices render one at a time so each server loads a model once per voice
-  // (no hot-swap thrashing); a voice's chapters fan out across the servers.
-  for (const voice of voices) {
-    await renderVoice(book, io, voice, audioDir, lock, progress);
+  const bookId = book._id.toString();
+  activeAudioBooks.add(bookId);
+  try {
+    // Voices render one at a time so each server loads a model once per voice
+    // (no hot-swap thrashing); a voice's chapters fan out across the servers.
+    for (const voice of voices) {
+      await renderVoice(book, io, voice, audioDir, lock, progress);
+    }
+  } catch (err) {
+    if (err instanceof AudioStopped) {
+      await finalizeStop(book, io, manageBookStatus, lock);
+      return;
+    }
+    throw err;
+  } finally {
+    activeAudioBooks.delete(bookId);
+    stopRequests.delete(bookId);
   }
 
   const failed = book.chapters.flatMap(c => c.tracks).filter(t => t.audioStatus === 'error');

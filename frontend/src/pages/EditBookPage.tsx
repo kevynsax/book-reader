@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { AppDispatch, RootState } from '../store';
-import { confirmChapters, deleteBook, renameBook, generateBook, regenerateVoice, regenerateChapterVoice, resumeBook, dismissBookError } from '../store/booksSlice';
+import { confirmChapters, deleteBook, renameBook, generateBook, stopBook, regenerateVoice, regenerateChapterVoice, resumeBook, dismissBookError } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus } from '../types';
 import { chapterStatus, bookVoices, trackFor, friendlyVoice, hasPlayableAudio } from '../lib/format';
@@ -317,6 +317,7 @@ export default function EditBookPage() {
   const [showReimport,     setShowReimport]      = useState(false);
   const [resuming,         setResuming]         = useState(false);
   const [dismissing,       setDismissing]       = useState(false);
+  const [stopping,         setStopping]         = useState(false);
   const chapterReviewRef = useRef<ChapterReviewHandle>(null);
   const textReviewRef = useRef<TextReviewHandle>(null);
   const generatedRef = useRef(false);
@@ -360,6 +361,16 @@ export default function EditBookPage() {
         await dispatch(generateBook(id!)).unwrap();
       }
     } finally { setGenerating(false); }
+  };
+
+  const handleStop = async () => {
+    if (stopping) return;
+    setStopping(true);
+    try {
+      await dispatch(stopBook(book._id)).unwrap();
+    } catch { /* nothing running */ } finally {
+      setStopping(false);
+    }
   };
 
   const importBusy = resuming || dismissing;
@@ -508,11 +519,24 @@ export default function EditBookPage() {
 
         {hasChapters && (isGenerating || hasAudioError) && (
           <div className="card space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3">
               <h3 className="font-semibold text-gray-100">{isGenerating ? t('Generating audio') : t('Generation results')}</h3>
-              <span className="text-xs text-gray-500">
-                {t('green = ready · pulsing = rendering · red = failed')}
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-gray-500 hidden sm:inline">
+                  {t('green = ready · pulsing = rendering · red = failed')}
+                </span>
+                {isGenerating && (
+                  <button
+                    className="flex items-center gap-1.5 text-xs font-medium text-red-400 hover:text-red-300 disabled:opacity-40 disabled:hover:text-red-400 transition-colors shrink-0"
+                    disabled={stopping}
+                    onClick={handleStop}
+                    title={t('Stop generating — keep chapters already rendered')}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-sm bg-current" />
+                    {stopping ? t('Stopping…') : t('Stop')}
+                  </button>
+                )}
+              </div>
             </div>
             {book.progress.message && <p className="text-sm text-gray-400">{book.progress.message}</p>}
             {bookVoices(book).map(voice => (
