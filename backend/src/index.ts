@@ -9,7 +9,7 @@ import { seedLexicons } from './models/Lexicon.js';
 import { booksRouter, registerBookSync } from './routes/books.js';
 import { lexiconRouter } from './routes/lexicon.js';
 import { PORT, FRONTEND_ORIGIN, DATA_DIR } from './config.js';
-import { MODELS, getModel } from './services/ttsEngines.js';
+import { MODELS, getModel, clonedVoiceModel } from './services/ttsEngines.js';
 import { getServers, serverStatus, fetchCatalog } from './services/ttsServers.js';
 import fs from 'fs/promises';
 
@@ -60,11 +60,16 @@ async function main() {
   // (it can be loaded there). For cloned-voice models we read the live voice
   // list off any reachable server; named-voice models (Kokoro) use the catalog.
   app.get('/api/models/:id/voices', async (req, res) => {
-    const model = getModel(req.params.id);
-    if (!model) return res.status(404).json({ error: 'unknown model' });
-
     const statuses = await Promise.all(getServers().map(serverStatus));
     const online = statuses.filter(s => s.online);
+
+    // Known models come from the static catalog; ids only advertised by a
+    // server (e.g. Orpheus) are treated as cloned-voice backends so their
+    // voices list off the server instead of 404ing.
+    const advertised = online.some(s => s.models.some(m => m.id === req.params.id));
+    const model = getModel(req.params.id) ?? (advertised ? clonedVoiceModel(req.params.id) : undefined);
+    if (!model) return res.status(404).json({ error: 'unknown model' });
+
     if (online.length === 0) return res.json({ available: false, voices: [] });
 
     if (model.named) {

@@ -38,6 +38,21 @@ export function getModel(id: string): TtsModel | undefined {
   return MODELS.find(m => m.id === id);
 }
 
+// A model id that a server advertises but the static catalog doesn't know
+// about. Treated as a cloned-voice backend (like Chatterbox/OpenAudio): voices
+// come from the server's /v1/audio/voices and the per-chapter language is
+// forwarded. Lets new server-side backends (e.g. Orpheus) work without a
+// code change here.
+export function clonedVoiceModel(id: string): TtsModel {
+  return { id, label: id, usesLanguage: true, named: false, fallbackVoices: [] };
+}
+
+// Resolve a model id to its metadata, falling back to a cloned-voice model for
+// ids the static catalog doesn't list.
+export function resolveModel(id: string): TtsModel {
+  return getModel(id) ?? clonedVoiceModel(id);
+}
+
 const DEFAULT_MODEL = MODELS[0];
 
 // Infer the model for a legacy, unprefixed voice id.
@@ -52,8 +67,7 @@ function inferModel(voice: string): TtsModel {
 export function parseVoice(composite: string): { model: TtsModel; voice: string } {
   const sep = composite.indexOf(':');
   if (sep > 0) {
-    const model = getModel(composite.slice(0, sep));
-    if (model) return { model, voice: composite.slice(sep + 1) };
+    return { model: resolveModel(composite.slice(0, sep)), voice: composite.slice(sep + 1) };
   }
   return { model: inferModel(composite), voice: composite };
 }
