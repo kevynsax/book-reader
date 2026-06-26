@@ -5,7 +5,8 @@ import { AppDispatch, RootState } from '../store';
 import { confirmChapters, deleteBook, renameBook, generateBook, stopBook, regenerateVoice, regenerateChapterVoice, resumeBook, dismissBookError } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus } from '../types';
-import { chapterStatus, bookVoices, trackFor, friendlyVoice, hasPlayableAudio } from '../lib/format';
+import { chapterStatus, bookVoices, trackFor, hasPlayableAudio } from '../lib/format';
+import { useVoiceLabel } from '../hooks/useVoiceLabel';
 import ChapterReview, { ChapterReviewHandle } from '../components/ChapterReview';
 import TextReview, { TextReviewHandle } from '../components/OcrPageReview';
 import CoverPickerModal from '../components/CoverPickerModal';
@@ -238,6 +239,7 @@ function RegenIcon({ className = 'w-3.5 h-3.5' }: { className?: string }) {
 
 function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
   const dispatch   = useDispatch<AppDispatch>();
+  const label      = useVoiceLabel([voice]);
   const statuses   = book.chapters.map(c => trackFor(c, voice)?.audioStatus ?? 'pending');
   const total      = statuses.length;
   const done       = statuses.filter(s => s === 'complete').length;
@@ -252,7 +254,7 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
           <span className={`w-2 h-2 rounded-full shrink-0 ${
             generating ? 'bg-amber-400 animate-pulse' : allDone ? 'bg-green-500' : errored ? 'bg-red-500' : 'bg-gray-700'
           }`} />
-          <span className="text-gray-100 font-medium truncate">{friendlyVoice(voice)}</span>
+          <span className="text-gray-100 font-medium truncate">{label(voice)}</span>
           <span className={`text-xs shrink-0 ${generating ? 'text-amber-400' : allDone ? 'text-green-400' : errored ? 'text-red-400' : 'text-gray-500'}`}>
             {generating ? t('generating…') : allDone ? t('done') : errored ? t('failed') : t('waiting')}
           </span>

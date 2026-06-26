@@ -3,7 +3,8 @@ import { useDispatch } from 'react-redux';
 import { AppDispatch } from '../store';
 import { addVoice, removeVoice, regenerateVoice } from '../store/booksSlice';
 import { Book } from '../types';
-import { bookVoices, friendlyVoice, chapterStatus } from '../lib/format';
+import { bookVoices, chapterStatus } from '../lib/format';
+import { useVoiceLabel } from '../hooks/useVoiceLabel';
 import GenerateVoiceModal from './GenerateVoiceModal';
 import ConfirmDialog from './ConfirmDialog';
 import { t } from '../i18n';
@@ -29,6 +30,7 @@ export default function VoiceManager({ book, activeVoice, onSelectVoice, editabl
   const [removing, setRemoving] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState<string | null>(null);
   const voices = bookVoices(book);
+  const label = useVoiceLabel(voices);
   const selectable = !!onSelectVoice;
 
   const handleRemove = (e: React.MouseEvent, voice: string) => {
@@ -62,7 +64,7 @@ export default function VoiceManager({ book, activeVoice, onSelectVoice, editabl
               {generating && (
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" title={t('Generating…')} />
               )}
-              {friendlyVoice(voice)}
+              {label(voice)}
               {editable && allowModify && !generating && (
                 <button
                   className="text-gray-500 hover:text-amber-400 leading-none"
@@ -110,7 +112,7 @@ export default function VoiceManager({ book, activeVoice, onSelectVoice, editabl
       {removing && (
         <ConfirmDialog
           title={t('Remove voice?')}
-          message={t('The {voice} narration and its audio will be deleted.', { voice: friendlyVoice(removing) })}
+          message={t('The {voice} narration and its audio will be deleted.', { voice: label(removing) })}
           confirmLabel={t('Remove')}
           danger
           onConfirm={() => { dispatch(removeVoice({ bookId: book._id, voice: removing })); setRemoving(null); }}
@@ -121,7 +123,7 @@ export default function VoiceManager({ book, activeVoice, onSelectVoice, editabl
       {regenerating && (
         <ConfirmDialog
           title={t('Regenerate voice?')}
-          message={t('The {voice} narration will be re-rendered from scratch for every chapter.', { voice: friendlyVoice(regenerating) })}
+          message={t('The {voice} narration will be re-rendered from scratch for every chapter.', { voice: label(regenerating) })}
           confirmLabel={t('Regenerate')}
           onConfirm={() => { dispatch(regenerateVoice({ bookId: book._id, voice: regenerating })); setRegenerating(null); }}
           onClose={() => setRegenerating(null)}

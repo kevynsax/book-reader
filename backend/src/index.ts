@@ -75,9 +75,20 @@ async function main() {
     if (model.named) {
       return res.json({ available: true, voices: model.fallbackVoices });
     }
-    for (const s of online) {
+    // Prefer servers that actually advertise this model, and always ask for THIS
+    // model's voices (?model=) rather than whatever happens to be loaded — otherwise
+    // a server with a different active model returns the wrong list (or none).
+    const ordered = [...online].sort(
+      (a, b) =>
+        Number(b.models.some(m => m.id === req.params.id)) -
+        Number(a.models.some(m => m.id === req.params.id)),
+    );
+    for (const s of ordered) {
       try {
-        const r = await fetch(`${s.url}/v1/audio/voices`, { signal: AbortSignal.timeout(4000) });
+        const r = await fetch(
+          `${s.url}/v1/audio/voices?model=${encodeURIComponent(req.params.id)}`,
+          { signal: AbortSignal.timeout(4000) },
+        );
         if (!r.ok) continue;
         const data = await r.json() as unknown;
         const obj = (data && typeof data === 'object') ? data as Record<string, unknown> : null;

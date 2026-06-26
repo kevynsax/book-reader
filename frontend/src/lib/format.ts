@@ -1,12 +1,19 @@
 import { AudioStatus, Book, Chapter, VoiceTrack } from '../types';
 
-const ENGINE_IDS = ['chatterbox', 'kokoro'];
-
-// Strip a composite "engine:voice" prefix to the bare voice id.
+// Strip a composite "engine:voice" prefix to the bare voice id. Any engine
+// prefix is stripped — bare ids never contain ':' (edge ids use '-', Kokoro '_').
 export function bareVoice(voice: string): string {
   const sep = voice.indexOf(':');
-  if (sep > 0 && ENGINE_IDS.includes(voice.slice(0, sep))) return voice.slice(sep + 1);
-  return voice;
+  return sep > 0 ? voice.slice(sep + 1) : voice;
+}
+
+// Engine id for a (possibly legacy/unprefixed) composite voice.
+export function engineOf(composite: string): string {
+  const sep = composite.indexOf(':');
+  if (sep > 0) return composite.slice(0, sep);
+  if (composite === 'default' || /^[a-z]{2}-[A-Z]{2}-/.test(composite)) return 'chatterbox';
+  if (/^[a-z]{2}_/.test(composite)) return 'kokoro';
+  return 'chatterbox';
 }
 
 export function friendlyVoice(composite: string): string {

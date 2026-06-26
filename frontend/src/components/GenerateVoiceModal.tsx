@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { friendlyVoice } from '../lib/format';
+import { friendlyVoice, engineOf } from '../lib/format';
 import { TtsModel } from '../types';
 import ServerStatus from './ServerStatus';
 import { t } from '../i18n';
@@ -22,15 +22,6 @@ const FALLBACK_MODELS: TtsModel[] = [
   { id: 'openaudio', label: 'OpenAudio (Fish)' },
   { id: 'kokoro', label: 'Kokoro' },
 ];
-
-// Engine id for a (possibly legacy/unprefixed) composite voice.
-function engineOf(composite: string): string {
-  const sep = composite.indexOf(':');
-  if (sep > 0 && FALLBACK_MODELS.some(m => m.id === composite.slice(0, sep))) return composite.slice(0, sep);
-  if (composite === 'default' || /^[a-z]{2}-[A-Z]{2}-/.test(composite)) return 'chatterbox';
-  if (/^[a-z]{2}_/.test(composite)) return 'kokoro';
-  return 'chatterbox';
-}
 
 // Language a bare voice belongs to, per engine (Kokoro encodes it in the prefix).
 function langOfVoice(model: string, v: string): string {
