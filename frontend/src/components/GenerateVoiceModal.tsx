@@ -42,6 +42,7 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
   const [models, setModels]   = useState<TtsModel[]>(FALLBACK_MODELS);
   const [model, setModel]     = useState(initialVoice ? engineOf(initialVoice) : 'chatterbox');
   const [allVoices, setAllVoices] = useState<string[]>([]);
+  const [voiceNames, setVoiceNames] = useState<Record<string, string>>({});
   const [voicesState, setVoicesState] = useState<'loading' | 'ready' | 'offline'>('loading');
   const [lang, setLang]       = useState('pt');
   const [selected, setSelected]   = useState<Set<string>>(new Set()); // composites "engine:voice"
@@ -64,14 +65,15 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
   // Load voices whenever the selected model changes.
   useEffect(() => {
     let cancelled = false;
-    setAllVoices([]); setPreview(''); setSampleState('idle'); setVoicesState('loading');
+    setAllVoices([]); setVoiceNames({}); setPreview(''); setSampleState('idle'); setVoicesState('loading');
     fetch(`/api/models/${model}/voices`)
       .then(r => (r.ok ? r.json() : { available: false, voices: [] }))
-      .then((data: { available?: boolean; voices?: string[] }) => {
+      .then((data: { available?: boolean; voices?: string[]; names?: Record<string, string> }) => {
         if (cancelled) return;
         if (data.available === false) { setVoicesState('offline'); return; }
         const list = Array.isArray(data.voices) ? data.voices : [];
         setAllVoices(list);
+        setVoiceNames(data.names && typeof data.names === 'object' ? data.names : {});
         setVoicesState('ready');
         // Keep the current language if it has voices, otherwise switch.
         if (!list.some(x => langOfVoice(model, x) === lang)) {
@@ -203,7 +205,7 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
                     {isSelected && (
                       <span className="absolute top-1 right-1 text-amber-400 text-xs leading-none">✓</span>
                     )}
-                    {friendlyVoice(v)}
+                    {voiceNames[v] ?? friendlyVoice(v)}
                   </button>
                 );
               })}
@@ -219,7 +221,7 @@ export default function GenerateVoiceModal({ bookId, initialVoice, exclude, onCo
                     key={composite}
                     className="inline-flex items-center gap-1.5 rounded-full pl-3 pr-2 py-1 text-xs border border-amber-500/60 bg-amber-600/10 text-amber-300"
                   >
-                    {friendlyVoice(composite.slice(composite.indexOf(':') + 1))}
+                    {voiceNames[composite.slice(composite.indexOf(':') + 1)] ?? friendlyVoice(composite.slice(composite.indexOf(':') + 1))}
                     <button
                       className="text-amber-400/60 hover:text-red-400 leading-none text-sm"
                       onClick={() => setSelected(prev => { const n = new Set(prev); n.delete(composite); return n; })}

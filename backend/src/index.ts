@@ -80,12 +80,16 @@ async function main() {
         const r = await fetch(`${s.url}/v1/audio/voices`, { signal: AbortSignal.timeout(4000) });
         if (!r.ok) continue;
         const data = await r.json() as unknown;
+        const obj = (data && typeof data === 'object') ? data as Record<string, unknown> : null;
         const list = Array.isArray(data)
           ? data
-          : (data && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).voices))
-            ? (data as Record<string, unknown>).voices as string[]
+          : (obj && Array.isArray(obj.voices))
+            ? obj.voices as string[]
             : null;
-        if (Array.isArray(list) && list.length) return res.json({ available: true, voices: list });
+        const names = (obj && obj.names && typeof obj.names === 'object')
+          ? obj.names as Record<string, string>
+          : undefined;
+        if (Array.isArray(list) && list.length) return res.json({ available: true, voices: list, names });
       } catch { /* try the next server */ }
     }
     res.json({ available: true, voices: model.fallbackVoices });
