@@ -2,11 +2,12 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import { Server as SocketServer } from 'socket.io';
-import { Book, IBook, IChapter, IVoiceTrack, ISegment, freshTracks, trackForVoice, deriveTrackStatus, serializeChaptersForClient } from '../models/Book.js';
+import { Types, Document } from 'mongoose';
+import { Book, IBook, IChapter, IVoiceTrack, ISegment, ISentence, freshTracks, trackForVoice, deriveTrackStatus, serializeChaptersForClient } from '../models/Book.js';
 import { splitPdfIntoPages, findPageImagePath, getAllPagePaths, copyPageAsCover } from '../services/pdfService.js';
 import { ocrPage, detectChapters, extractBookTitle, detectLanguage } from '../services/ocrService.js';
 import { sanitizePageText } from '../lib/sanitize.js';
-import { synthesizeSegment, assembleChapter } from '../services/ttsService.js';
+import { synthesizeSegment, renderSegmentPieces, RenderedPiece, assembleChapter } from '../services/ttsService.js';
 import { reflowSentences, splitLongSentence } from '../lib/sentences.js';
 import { normalizeForSpeech } from '../services/textNormalizer.js';
 import { parseVoice } from '../services/ttsEngines.js';
@@ -536,9 +537,19 @@ interface SegmentTask {
   idx: number;
   voice: string;
   seg: ISegment;
+  sentence: ISentence & Document;
   text: string;
   segPath: string;
   language: string;
+}
+
+// A sentence the primary voice broke into smaller pieces during verification. The
+// first piece reuses the original sentence (its text/audio already updated in
+// place); `extra` are the additional pieces to splice in after it once the
+// chapter's render pool has drained (so no in-flight task holds a stale subdoc).
+interface PendingSplit {
+  sentenceId: string;
+  extra: RenderedPiece[];
 }
 
 // Books with audio generation currently in flight, and those a user has asked to
@@ -599,23 +610,35 @@ export async function recoverInterruptedAudio(io: SocketServer): Promise<void> {
 }
 
 // Synthesize one sentence on a balanced, healthy server (falling back across the
-// others on error), then persist + emit the segment's outcome.
+// others on error), then persist + emit the segment's outcome. If verification had
+// to split the text, the first piece is written here (the sentence's text updated
+// in place) and the rest are recorded in `splits` to be spliced in as new
+// sentences once the pool drains — after which every other voice re-renders the
+// chapter so all voices share the same split.
 async function renderSegment(
   book: IBook,
   io: SocketServer,
   pool: TtsServerPool,
   task: SegmentTask,
   lock: SaveLock,
+  splits: PendingSplit[],
 ): Promise<void> {
   if (stopRequested(book)) throw new AudioStopped();
-  const { idx, voice, seg, text, segPath, language } = task;
+  const { idx, voice, seg, sentence, text, segPath, language } = task;
   seg.audioStatus = 'generating';
   seg.audioError = undefined;
   try {
-    const durationSecs = await pool.run(server =>
-      synthesizeSegment(text, segPath, server.url, voice, language));
+    const pieces = await pool.run(server => renderSegmentPieces(text, server.url, voice, language));
+    // First piece reuses this sentence/segment; the rest get spliced in later.
+    await fs.mkdir(path.dirname(segPath), { recursive: true });
+    await fs.writeFile(segPath, pieces[0].buffer);
     seg.audioPath = segPath;
-    seg.durationSecs = durationSecs;
+    seg.durationSecs = pieces[0].durationSecs;
+    if (pieces.length > 1) {
+      sentence.text = pieces[0].text;
+      sentence.display = pieces[0].text;
+      splits.push({ sentenceId: String(sentence._id), extra: pieces.slice(1) });
+    }
     seg.audioStatus = 'complete';
     seg.audioError = undefined;
   } catch (err) {
@@ -628,6 +651,74 @@ async function renderSegment(
   emit(io, book, {
     segmentUpdate: { chapterIdx: idx, voice, sentenceId: String(seg.sentenceId), audioStatus: seg.audioStatus, audioError: seg.audioError },
   });
+}
+
+// Splice the primary voice's verification splits into the chapter's sentence list
+// once its render pool has drained. Each split's first piece already lives in the
+// original sentence; the `extra` pieces become new sentences right after it. Every
+// voice's segments are re-reconciled to the new sentence set, the primary voice's
+// freshly-rendered piece audio is saved to its new segment files (complete), and
+// the other voices' new segments are left pending for their own render pass.
+async function applyChapterSplits(
+  book: IBook,
+  io: SocketServer,
+  idx: number,
+  voice: string,
+  audioDir: string,
+  splits: PendingSplit[],
+  lock: SaveLock,
+): Promise<void> {
+  if (splits.length === 0) return;
+  const chapter = book.chapters[idx];
+  const extraById = new Map(splits.map(s => [s.sentenceId, s.extra]));
+
+  // Rebuild the ordered sentence list, expanding each split sentence in place.
+  const newAudioByNewId: { id: string; piece: RenderedPiece }[] = [];
+  const rebuilt: { _id: Types.ObjectId; text: string; display: string }[] = [];
+  for (const s of [...chapter.sentences].sort((a, b) => a.order - b.order)) {
+    rebuilt.push({ _id: s._id, text: s.text, display: s.display ?? s.text });
+    for (const piece of extraById.get(String(s._id)) ?? []) {
+      const _id = new Types.ObjectId();
+      rebuilt.push({ _id, text: piece.text, display: piece.text });
+      newAudioByNewId.push({ id: String(_id), piece });
+    }
+  }
+
+  setSubdoc(chapter, 'sentences', rebuilt.map((s, order) => ({ ...s, order })));
+  for (const track of chapter.tracks) ensureSegments(track, chapter);
+
+  // Keep the split consistent across voices: every other voice must re-render this
+  // chapter to match the new sentence set. Their unchanged segments stay complete
+  // (skipped on re-render), so only the new pieces are synthesized, then the
+  // chapter is reassembled. Marking the track stale makes the generation loop pick
+  // it up even if it had already finished in a prior run.
+  for (const t of chapter.tracks) {
+    if (t.voice === voice) continue;
+    t.audioStatus = 'stale';
+    t.audioError = undefined;
+  }
+
+  // Persist the primary voice's already-rendered audio for the new pieces.
+  const track = trackForVoice(chapter, voice);
+  const orderById = new Map(chapter.sentences.map(s => [String(s._id), s.order]));
+  for (const { id, piece } of newAudioByNewId) {
+    const order = orderById.get(id);
+    if (track && order !== undefined) {
+      const segPath = segmentAudioPath(audioDir, idx, voice, order);
+      await fs.mkdir(path.dirname(segPath), { recursive: true });
+      await fs.writeFile(segPath, piece.buffer);
+      const newSeg = track.segments.find(s => String(s.sentenceId) === id);
+      if (newSeg) {
+        newSeg.audioPath = segPath;
+        newSeg.durationSecs = piece.durationSecs;
+        newSeg.audioStatus = 'complete';
+        newSeg.audioError = undefined;
+      }
+    }
+  }
+
+  await lock.run(() => book.save());
+  emit(io, book, { chapters: serializeChaptersForClient(book.chapters) });
 }
 
 // Build a chapter's sentences/segments once, mark the track generating, and
@@ -688,6 +779,7 @@ async function prepareChapterTasks(
       idx,
       voice,
       seg,
+      sentence,
       text: sentence.text.trim(),
       segPath: segmentAudioPath(audioDir, idx, voice, sentence.order),
       language,
@@ -698,7 +790,9 @@ async function prepareChapterTasks(
 }
 
 // Render one chapter for one voice, balancing its sentences across all ready
-// servers with at most TTS_CONCURRENCY in flight, then assemble.
+// servers with at most TTS_CONCURRENCY in flight, then assemble. Returns true if
+// the primary voice restructured the chapter's sentences (so a single-voice caller
+// can bring the other voices into line).
 async function renderChapter(
   book: IBook,
   io: SocketServer,
@@ -707,9 +801,9 @@ async function renderChapter(
   audioDir: string,
   lock: SaveLock,
   progress: { done: number; total: number },
-): Promise<void> {
+): Promise<boolean> {
   const track = trackForVoice(book.chapters[idx], voice);
-  if (!track || track.audioStatus === 'complete') return;
+  if (!track || track.audioStatus === 'complete') return false;
 
   const { model } = parseVoice(voice);
   const servers = await readyServersFor(model.id);
@@ -721,40 +815,78 @@ async function renderChapter(
     progress.done++;
     await lock.run(() => book.save());
     emit(io, book, { chapterUpdate: { idx, voice, audioStatus: 'error', audioError } });
-    return;
+    return false;
   }
 
   const pool = new TtsServerPool(servers, model.id);
   const tasks = await prepareChapterTasks(book, io, voice, idx, audioDir, lock, progress);
-  await runPool(tasks, TTS_CONCURRENCY, task => renderSegment(book, io, pool, task, lock));
+  const splits: PendingSplit[] = [];
+  await runPool(tasks, TTS_CONCURRENCY, task => renderSegment(book, io, pool, task, lock, splits));
+  await applyChapterSplits(book, io, idx, voice, audioDir, splits, lock);
   await finalizeTrack(book, io, idx, voice, audioDir, lock);
+  return splits.length > 0;
 }
 
-// Render every pending chapter for one voice, one chapter at a time: all ready
-// servers focus their TTS_CONCURRENCY on a single chapter until it finalizes and
-// becomes playable, then move to the next. This lets the user start listening to
-// early chapters before the whole book is done, rather than having every chapter
-// in flight at once.
-async function renderVoice(
+// Cap on how many times one (voice, chapter) may re-render within a single work
+// run, so a pathological split/verify cycle can't loop forever. Splits only ever
+// subdivide sentences, so a handful of passes always reaches a fixpoint.
+const MAX_CHAPTER_RENDERS = 8;
+
+// Render a worklist of (voice, chapter) jobs to completion, keeping all voices'
+// splits consistent: whenever a chapter's render restructures its sentences, every
+// other voice's same chapter is re-queued. Those re-renders only synthesize the
+// new pieces (unchanged segments stay complete) and reassemble. Converges because
+// each split strictly shrinks sentences.
+async function renderWork(
   book: IBook,
   io: SocketServer,
-  voice: string,
   audioDir: string,
   lock: SaveLock,
   progress: { done: number; total: number },
+  seed: { voice: string; idx: number }[],
 ): Promise<void> {
-  const pending = book.chapters
-    .map((_, i) => i)
-    .filter(i => {
-      const t = trackForVoice(book.chapters[i], voice);
-      return t && t.audioStatus !== 'complete';
-    });
-  if (pending.length === 0) return;
+  const key = (voice: string, idx: number) => `${voice}|${idx}`;
+  const queue = [...seed];
+  const queued = new Set(seed.map(s => key(s.voice, s.idx)));
+  const renders = new Map<string, number>();
 
-  for (const idx of pending) {
+  while (queue.length > 0) {
     if (stopRequested(book)) throw new AudioStopped();
-    await renderChapter(book, io, voice, idx, audioDir, lock, progress);
+    const job = queue.shift()!;
+    const k = key(job.voice, job.idx);
+    queued.delete(k);
+
+    const count = (renders.get(k) ?? 0) + 1;
+    renders.set(k, count);
+    if (count > MAX_CHAPTER_RENDERS) {
+      console.warn(`renderWork ${book._id}: ${k} hit the re-render cap; leaving as-is`);
+      continue;
+    }
+
+    const didSplit = await renderChapter(book, io, job.voice, job.idx, audioDir, lock, progress);
+    if (!didSplit) continue;
+
+    // A split here invalidated every other voice's copy of this chapter; re-queue
+    // them so the new sentence structure is rendered for all voices.
+    for (const other of book.voices) {
+      if (other === job.voice) continue;
+      const ok = key(other, job.idx);
+      if (!queued.has(ok)) { queued.add(ok); queue.push({ voice: other, idx: job.idx }); }
+    }
   }
+}
+
+// Seed jobs for the voices' chapters that still need rendering, voice-major so each
+// server loads a voice's model once and renders all its chapters before moving on.
+function pendingJobs(book: IBook, voices: string[]): { voice: string; idx: number }[] {
+  const jobs: { voice: string; idx: number }[] = [];
+  for (const voice of voices) {
+    for (let idx = 0; idx < book.chapters.length; idx++) {
+      const t = trackForVoice(book.chapters[idx], voice);
+      if (t && t.audioStatus !== 'complete') jobs.push({ voice, idx });
+    }
+  }
+  return jobs;
 }
 
 // A user stopped generation: keep finished chapters playable and flag the rest
@@ -816,11 +948,11 @@ async function generateForVoices(
   const bookId = book._id.toString();
   activeAudioBooks.add(bookId);
   try {
-    // Voices render one at a time so each server loads a model once per voice
-    // (no hot-swap thrashing); a voice's chapters fan out across the servers.
-    for (const voice of voices) {
-      await renderVoice(book, io, voice, audioDir, lock, progress);
-    }
+    // Voice-major worklist (each server loads a voice's model once and renders all
+    // its chapters before the next). When any voice's chapter splits a sentence,
+    // renderWork re-queues that chapter for the other voices so all stay in sync —
+    // including voices outside `voices` that were already complete.
+    await renderWork(book, io, audioDir, lock, progress, pendingJobs(book, voices));
   } catch (err) {
     if (err instanceof AudioStopped) {
       await finalizeStop(book, io, manageBookStatus, lock);
@@ -909,9 +1041,7 @@ export async function regenerateChapterAudio(bookId: string, chapterIdx: number,
 
   const lock = new SaveLock();
   const progress = { done: 0, total: book.voices.length };
-  for (const voice of book.voices) {
-    await renderChapter(book, io, voice, chapterIdx, audioDir, lock, progress);
-  }
+  await renderWork(book, io, audioDir, lock, progress, pendingJobs(book, book.voices).filter(j => j.idx === chapterIdx));
 }
 
 // Discard one voice's cached segments + audio files for a chapter so it
@@ -971,7 +1101,7 @@ export async function regenerateChapterVoiceAudio(bookId: string, chapterIdx: nu
 
   const lock = new SaveLock();
   const progress = { done: 0, total: 1 };
-  await renderChapter(book, io, voice, chapterIdx, audioDir, lock, progress);
+  await renderWork(book, io, audioDir, lock, progress, [{ voice, idx: chapterIdx }]);
 }
 
 // Continue a single chapter/voice after an error or interruption: keep every
@@ -997,7 +1127,7 @@ export async function continueChapterVoiceAudio(bookId: string, chapterIdx: numb
 
   const lock = new SaveLock();
   const progress = { done: 0, total: 1 };
-  await renderChapter(book, io, voice, chapterIdx, audioDir, lock, progress);
+  await renderWork(book, io, audioDir, lock, progress, [{ voice, idx: chapterIdx }]);
 }
 
 // Rebuild chapter mp3s + read-along timelines from already-rendered segment

@@ -1,6 +1,6 @@
 {
   "name": "book-reader-backend",
-  "version": "1.17.0",
+  "version": "1.18.0",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
