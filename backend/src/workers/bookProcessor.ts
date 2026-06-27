@@ -628,7 +628,8 @@ async function renderSegment(
   seg.audioStatus = 'generating';
   seg.audioError = undefined;
   try {
-    const pieces = await pool.run(server => renderSegmentPieces(text, server.url, voice, language));
+    const display = sentence.display?.trim() || text;
+    const pieces = await pool.run(server => renderSegmentPieces(display, text, server.url, voice, language));
     // First piece reuses this sentence/segment; the rest get spliced in later.
     await fs.mkdir(path.dirname(segPath), { recursive: true });
     await fs.writeFile(segPath, pieces[0].buffer);
@@ -636,7 +637,7 @@ async function renderSegment(
     seg.durationSecs = pieces[0].durationSecs;
     if (pieces.length > 1) {
       sentence.text = pieces[0].text;
-      sentence.display = pieces[0].text;
+      sentence.display = pieces[0].display;
       splits.push({ sentenceId: String(sentence._id), extra: pieces.slice(1) });
     }
     seg.audioStatus = 'complete';
@@ -679,7 +680,7 @@ async function applyChapterSplits(
     rebuilt.push({ _id: s._id, text: s.text, display: s.display ?? s.text });
     for (const piece of extraById.get(String(s._id)) ?? []) {
       const _id = new Types.ObjectId();
-      rebuilt.push({ _id, text: piece.text, display: piece.text });
+      rebuilt.push({ _id, text: piece.text, display: piece.display });
       newAudioByNewId.push({ id: String(_id), piece });
     }
   }

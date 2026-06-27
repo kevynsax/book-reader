@@ -54,10 +54,13 @@ function hasSpeech(s: string): boolean {
 // Split a too-long text in two for re-rendering when verification failed. Tries
 // punctuation in descending strength — period, colon, semicolon, comma ("ponto",
 // "dois pontos", "ponto e vírgula", "vírgula") — splitting at the occurrence
-// nearest the middle so the halves stay balanced. The punctuation stays attached
-// to the left half. Returns null when no usable split point exists (the caller
-// then asks the SLM to break the text down while preserving meaning).
+// nearest the middle so the halves stay balanced. Only true clause boundaries
+// count: the mark (plus any closing quote/bracket) must be followed by whitespace,
+// so a reference or decimal like "6:23" or "3.14" is never split mid-token. The
+// punctuation stays on the left half. Returns null when no usable split point
+// exists (the caller then asks the SLM to break the text down while keeping meaning).
 const SPLIT_PUNCT = ['.', ':', ';', ','];
+const CLOSER = /["'”’)\]}]/;
 
 export function splitOnPunctuation(text: string): [string, string] | null {
   const s = text.trim();
@@ -66,13 +69,17 @@ export function splitOnPunctuation(text: string): [string, string] | null {
     let best = -1;
     for (let i = 0; i < s.length; i++) {
       if (s[i] !== sep) continue;
-      // Don't split on the final punctuation mark — it yields an empty right half.
-      if (i >= s.length - 1) continue;
-      if (best === -1 || Math.abs(i - mid) < Math.abs(best - mid)) best = i;
+      // The cut sits after the mark and any closing quotes/brackets glued to it.
+      let cut = i + 1;
+      while (cut < s.length && CLOSER.test(s[cut])) cut++;
+      // A real clause boundary is followed by whitespace; anything else (a digit,
+      // a letter) means the mark is inside a token — skip it.
+      if (cut >= s.length || !/\s/.test(s[cut])) continue;
+      if (best === -1 || Math.abs(cut - mid) < Math.abs(best - mid)) best = cut;
     }
     if (best === -1) continue;
-    const left = s.slice(0, best + 1).trim();
-    const right = s.slice(best + 1).trim();
+    const left = s.slice(0, best).trim();
+    const right = s.slice(best).trim();
     if (hasSpeech(left) && hasSpeech(right)) return [left, right];
   }
   return null;

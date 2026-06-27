@@ -7,6 +7,9 @@ export const SLM_API = process.env.SLM_API || 'https://slm.kevyn.com.br';
 // Tried in order: SLM_API first, then SLM_API_FALLBACK when the primary errors.
 export const SLM_API_FALLBACK = process.env.SLM_API_FALLBACK || 'https://ollama-macbook.kevyn.com.br';
 export const SLM_MODEL = process.env.SLM_MODEL || 'qwen2.5:3b';
+// Model used to split an over-long sentence in two during TTS verification. Runs
+// on the ORIGINAL (un-normalized) sentence text so the split keeps a clean display.
+export const SLM_SPLIT_MODEL = process.env.SLM_SPLIT_MODEL || 'gemma4:latest';
 // Relative share of bulk-review work each SLM server takes. The balancer routes
 // by least in-flight / weight, so a slow box (e.g. the Mac fallback) with a low
 // weight only picks up a job when the fast server is already saturated.

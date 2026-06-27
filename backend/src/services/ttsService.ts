@@ -3,7 +3,7 @@ import path from 'path';
 import os from 'os';
 import {
   TTS_SPEED, DEFAULT_LANGUAGE, TTS_VOLUME_GAIN, TITLE_MAX_WORDS, TITLE_SILENCE_SECS, TITLE_VOLUME_GAIN,
-  TTS_VERIFY, TTS_VERIFY_THRESHOLD, TTS_VERIFY_MAX_DEPTH, TTS_VERIFY_MIN_CHARS,
+  TTS_VERIFY, TTS_VERIFY_THRESHOLD, TTS_VERIFY_MAX_DEPTH, TTS_VERIFY_MIN_CHARS, SLM_SPLIT_MODEL,
 } from '../config.js';
 import { concatAudio, probeDurationSecs, decodedDurationSecs, probeMp3Buffer, probeAudioFormat, generateSilence, applyVolume } from './audioProbe.js';
 import { normalizeForSpeech } from './textNormalizer.js';
@@ -121,15 +121,17 @@ async function concatBuffers(buffers: Buffer[]): Promise<Buffer> {
   }
 }
 
-// Break a text that failed verification into smaller pieces: first on punctuation
-// (period → colon → semicolon → comma, nearest the middle), then, if there's no
-// usable punctuation, by asking the SLM to divide it while preserving meaning.
-async function splitForRerender(text: string): Promise<[string, string] | null> {
-  const byPunct = splitOnPunctuation(text);
+// Break the ORIGINAL (un-normalized) sentence text that failed verification into
+// two: first on punctuation (period → colon → semicolon → comma, nearest the
+// middle), then, if there's no usable punctuation, by asking gemma to divide it
+// while preserving meaning. Splitting the original — not the dictionary/bible-ref
+// expanded speech text — keeps each piece's on-screen display clean.
+async function splitForRerender(display: string): Promise<[string, string] | null> {
+  const byPunct = splitOnPunctuation(display);
   if (byPunct) return byPunct;
 
   try {
-    const sug = await splitLineIntoSentences(text);
+    const sug = await splitLineIntoSentences(display, SLM_SPLIT_MODEL);
     const left = sug?.left?.trim();
     const right = sug?.right?.trim();
     if (left && right) return [left, right];
@@ -139,21 +141,24 @@ async function splitForRerender(text: string): Promise<[string, string] | null> 
   return null;
 }
 
-// One verified leaf of a sentence: its (possibly split-down) text and the audio
-// that was confirmed — within tolerance — to say it.
+// One verified leaf of a sentence: the original `display` text, the speech-ready
+// `text` actually synthesized, and the audio confirmed (within tolerance) to say it.
 export interface RenderedPiece {
+  display: string;
   text: string;
   buffer: Buffer;
   durationSecs: number;
 }
 
-// Render a chunk and confirm — via Whisper — that it says what was asked. On a
-// mismatch the text is split and each half re-rendered + re-verified. Returns the
-// flat list of verified leaves (length 1 when the text rendered cleanly or could
-// not be broken down / hit the depth cap, in which case the best attempt is kept).
-async function renderVerifiedPieces(text: string, ctx: RenderContext, depth = 0): Promise<RenderedPiece[]> {
+// Render a chunk and confirm — via Whisper — that it says what was asked. The
+// `text` (speech-normalized) is what's synthesized, whispered, and compared; the
+// `display` (original) is what gets split on a mismatch, with each original half
+// re-normalized for its own render. Returns the flat list of verified leaves
+// (length 1 when it rendered cleanly, can't be split, or hit the depth cap — best
+// attempt kept).
+async function renderVerifiedPieces(display: string, text: string, ctx: RenderContext, depth = 0): Promise<RenderedPiece[]> {
   const result = await renderChunkToBuffer(text, ctx);
-  const leaf: RenderedPiece = { text, buffer: result.buffer, durationSecs: result.durationSecs };
+  const leaf: RenderedPiece = { display, text, buffer: result.buffer, durationSecs: result.durationSecs };
 
   if (!TTS_VERIFY || text.trim().length < TTS_VERIFY_MIN_CHARS) return [leaf];
 
@@ -164,25 +169,31 @@ async function renderVerifiedPieces(text: string, ctx: RenderContext, depth = 0)
   if (similarity >= TTS_VERIFY_THRESHOLD) return [leaf];
 
   if (depth >= TTS_VERIFY_MAX_DEPTH) {
-    console.warn(`tts verify: keeping best after ${depth} splits (sim=${similarity.toFixed(2)}) for "${text.slice(0, 60)}"`);
+    console.warn(`tts verify: keeping best after ${depth} splits (sim=${similarity.toFixed(2)}) for "${display.slice(0, 60)}"`);
     return [leaf];
   }
 
-  const parts = await splitForRerender(text);
+  const parts = await splitForRerender(display);
   if (!parts) {
-    console.warn(`tts verify: unsplittable mismatch (sim=${similarity.toFixed(2)}) for "${text.slice(0, 60)}"`);
+    console.warn(`tts verify: unsplittable mismatch (sim=${similarity.toFixed(2)}) for "${display.slice(0, 60)}"`);
     return [leaf];
   }
 
   const pieces: RenderedPiece[] = [];
-  for (const part of parts) pieces.push(...await renderVerifiedPieces(part, ctx, depth + 1));
+  for (const part of parts) {
+    const speakable = (await normalizeForSpeech(part, ctx.language)).trim() || part;
+    pieces.push(...await renderVerifiedPieces(part, speakable, ctx, depth + 1));
+  }
   return pieces;
 }
 
 // Verify a sentence and return the leaf pieces it broke down into (one entry when
-// nothing needed splitting). The caller decides whether to persist the pieces as
-// real sentences or stitch their audio back into one segment.
+// nothing needed splitting). `display` is the original sentence text and `text` is
+// its speech-ready form; pass them equal when there's no separate display. The
+// caller decides whether to persist the pieces as real sentences or stitch their
+// audio back into one segment.
 export async function renderSegmentPieces(
+  display: string,
   text: string,
   serverUrl: string,
   voice: string,
@@ -192,7 +203,7 @@ export async function renderSegmentPieces(
   const { model, voice: bareVoice } = parseVoice(voice);
   const speakable = text.trim();
   if (!speakable) throw new Error('Empty sentence');
-  return renderVerifiedPieces(speakable, { serverUrl, model, voice: bareVoice, speed, language });
+  return renderVerifiedPieces(display.trim() || speakable, speakable, { serverUrl, model, voice: bareVoice, speed, language });
 }
 
 // Render one sentence to its own mp3 file, verifying it against Whisper. On a
@@ -207,7 +218,7 @@ export async function synthesizeSegment(
   language: string = DEFAULT_LANGUAGE,
   speed: number = TTS_SPEED,
 ): Promise<number> {
-  const pieces = await renderSegmentPieces(text, serverUrl, voice, language, speed);
+  const pieces = await renderSegmentPieces(text, text, serverUrl, voice, language, speed);
   const buffer = await concatBuffers(pieces.map(p => p.buffer));
   const durationSecs = pieces.length === 1 ? pieces[0].durationSecs : await probeMp3Buffer(buffer);
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
