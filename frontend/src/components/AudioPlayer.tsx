@@ -46,6 +46,12 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
   const lastSave     = useRef(0);
   const waitingNext  = useRef(false);
   const morePendingRef = useRef(false);
+  // Switching voice keeps the *sentence*, not the clock time: each voice's audio
+  // runs at a different length, so we remember which line was playing and resume
+  // the new voice at that same line (timelines align 1:1 by sentence index).
+  const activeLineRef       = useRef(-1);
+  const prevVoiceRef        = useRef(voice);
+  const pendingSentenceSeek = useRef(-1);
 
   const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
   const [speed, setSpeed] = useState(1);
@@ -76,6 +82,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
   const [activeLine, setActiveLine] = useState(-1);
 
   useEffect(() => { idxRef.current = currentIdx; }, [currentIdx]);
+  useEffect(() => { activeLineRef.current = activeLine; }, [activeLine]);
 
   // We ran out of ready chapters mid-playback; once the next one finishes
   // rendering, pick up where we left off automatically.
@@ -102,8 +109,14 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
 
   useEffect(() => { onChapterChange?.(chapterIdx); }, [chapterIdx, onChapterChange]);
 
-  // Load the read-along timeline for the current chapter/voice (404 => none).
+  // Load the read-along timeline for the current chapter/voice (404 => none). On a
+  // voice switch, capture the line that was playing *before* it's cleared so we can
+  // resume the new voice's audio at that same sentence once its timeline arrives.
   useEffect(() => {
+    if (prevVoiceRef.current !== voice) {
+      pendingSentenceSeek.current = activeLineRef.current;
+      prevVoiceRef.current = voice;
+    }
     setTimeline([]); timelineRef.current = []; setActiveLine(-1);
     if (chapterIdx < 0) return;
     let cancelled = false;
@@ -114,8 +127,20 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
         const t = Array.isArray(data) ? data : [];
         timelineRef.current = t;
         setTimeline(t);
+
+        // Resume at the same sentence index in the new voice's timeline.
+        if (pendingSentenceSeek.current >= 0 && t.length > 0) {
+          const target = t[Math.min(pendingSentenceSeek.current, t.length - 1)].start;
+          const audio = audioRef.current;
+          if (audio && isFinite(audio.duration) && audio.duration > 0) {
+            audio.currentTime = Math.min(target, audio.duration - 0.05);
+          } else {
+            seekOnLoad.current = target;
+          }
+        }
+        pendingSentenceSeek.current = -1;
       })
-      .catch(() => {});
+      .catch(() => { pendingSentenceSeek.current = -1; });
     return () => { cancelled = true; };
   }, [bookId, chapterIdx, voice, audioVersion]);
 
@@ -139,8 +164,10 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
     setCurrentTime(0);
     setDuration(0);
 
+    // A pending voice switch resumes by sentence (handled in the timeline effect),
+    // so don't also restore the saved clock time here — it would fight that seek.
     const saved = loadJson<{ chapterIdx: number; time: number }>(POS_KEY(bookId), { chapterIdx: 0, time: 0 });
-    if (saved.chapterIdx === currentIdx && saved.time > 1) {
+    if (pendingSentenceSeek.current < 0 && saved.chapterIdx === currentIdx && saved.time > 1) {
       seekOnLoad.current = saved.time;
     }
 
