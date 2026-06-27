@@ -7,6 +7,7 @@ import { connectDb } from './db.js';
 import { migrateLegacyVoices, migrateSanitizeOcrText, migrateSummaryPages } from './models/Book.js';
 import { seedLexicons } from './models/Lexicon.js';
 import { booksRouter, registerBookSync } from './routes/books.js';
+import { recoverInterruptedAudio } from './workers/bookProcessor.js';
 import { lexiconRouter } from './routes/lexicon.js';
 import { PORT, FRONTEND_ORIGIN, DATA_DIR } from './config.js';
 import { MODELS, getModel, clonedVoiceModel } from './services/ttsEngines.js';
@@ -109,6 +110,12 @@ async function main() {
   app.get('/health', (_req, res) => res.json({ ok: true }));
 
   registerBookSync(io);
+
+  // Unstick any audio job left mid-render by a previous crash/restart so finished
+  // chapters stay playable and the rest can be resumed (non-destructive).
+  await recoverInterruptedAudio(io).catch(err =>
+    console.error('Failed to recover interrupted audio:', err)
+  );
 
   io.on('connection', socket => {
     console.log('Client connected:', socket.id);

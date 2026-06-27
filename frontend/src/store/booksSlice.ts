@@ -140,6 +140,13 @@ export const regenerateChapterVoice = createAsyncThunk(
   }
 );
 
+export const continueChapterVoice = createAsyncThunk(
+  'books/continueChapterVoice',
+  async ({ bookId, chapterIdx, voice }: { bookId: string; chapterIdx: number; voice: string }) => {
+    await api.post(`/api/books/${bookId}/chapters/${chapterIdx}/voices/${encodeURIComponent(voice)}/continue`);
+  }
+);
+
 const booksSlice = createSlice({
   name: 'books',
   initialState,

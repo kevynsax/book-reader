@@ -6,7 +6,7 @@ import { createReadStream, existsSync } from 'fs';
 import { Server as SocketServer } from 'socket.io';
 import { Book, IVoiceTrack, ISegment, ISentence, freshTracks, trackForVoice, serializeChaptersForClient } from '../models/Book.js';
 import { DATA_DIR, DELETE_ALLOWED_IPS } from '../config.js';
-import { processBook, reprocessPageOcr, generateBookAudio, generateVoiceAudio, regenerateChapterAudio, regenerateVoiceAudio, regenerateChapterVoiceAudio, reassembleBookAudio, editSentence, deleteSentence, regenerateSegment, bookSpeechLanguage, stopBookAudio } from '../workers/bookProcessor.js';
+import { processBook, reprocessPageOcr, generateBookAudio, generateVoiceAudio, regenerateChapterAudio, regenerateVoiceAudio, regenerateChapterVoiceAudio, continueChapterVoiceAudio, reassembleBookAudio, editSentence, deleteSentence, regenerateSegment, bookSpeechLanguage, stopBookAudio } from '../workers/bookProcessor.js';
 import { normalizeForSpeech } from '../services/textNormalizer.js';
 import { findPageImagePath, copyPageAsCover } from '../services/pdfService.js';
 import { detectChapters, fetchSlmModels, splitLineIntoSentences, reviewLineGrammar } from '../services/ocrService.js';
@@ -761,6 +761,30 @@ export function booksRouter(io: SocketServer) {
 
     regenerateChapterVoiceAudio(book._id.toString(), idx, voice, io).catch(err =>
       console.error(`regenerateChapterVoiceAudio ${book._id} ch${idx} ${voice} failed:`, err)
+    );
+  });
+
+  // Continue (resume) a chapter for one voice after an error/interruption: keep
+  // every finished sentence and render only the missing ones, then reassemble.
+  router.post('/:id/chapters/:idx/voices/:voice/continue', async (req, res) => {
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).json({ error: 'Not found' });
+
+    const idx = parseInt(req.params.idx);
+    if (!book.chapters[idx]) return res.status(404).json({ error: 'Chapter not found' });
+
+    const voice = req.params.voice;
+    if (!book.voices.includes(voice)) return res.status(404).json({ error: 'Voice not found' });
+
+    const track = trackForVoice(book.chapters[idx], voice);
+    if (track) track.audioStatus = 'generating';
+    await book.save();
+    io.emit('book:update', { bookId: book._id.toString(), updatedAt: book.updatedAt, chapters: serializeChaptersForClient(book.chapters) });
+
+    res.json({ message: 'Continue started' });
+
+    continueChapterVoiceAudio(book._id.toString(), idx, voice, io).catch(err =>
+      console.error(`continueChapterVoiceAudio ${book._id} ch${idx} ${voice} failed:`, err)
     );
   });
 

@@ -413,6 +413,15 @@ function segmentAudioPath(audioDir: string, chapterIdx: number, voice: string, o
   return path.join(segmentDir(audioDir, chapterIdx, voice), `seg-${String(order + 1).padStart(4, '0')}.mp3`);
 }
 
+// Whether a segment's rendered mp3 is still present and non-empty on disk. A
+// cheap stat (no decode) so resuming a chapter only re-synthesizes the segments
+// whose audio actually went missing — a flaky machine can lose a file the DB
+// still calls "complete", which would otherwise fail assembly for the whole chapter.
+async function segmentFilePresent(p?: string): Promise<boolean> {
+  if (!p) return false;
+  try { return (await fs.stat(p)).size > 0; } catch { return false; }
+}
+
 // Make a track's segments run 1:1 with the chapter's sentences, preserving any
 // already-rendered segment audio (matched by sentenceId).
 function ensureSegments(track: IVoiceTrack, chapter: IChapter): void {
@@ -568,6 +577,27 @@ export async function stopBookAudio(bookId: string, io: SocketServer): Promise<b
   return true;
 }
 
+// On server boot, recover any audio job a crash/restart left mid-flight: the
+// in-memory job (and its stop registry) is gone, so the book would otherwise sit
+// reading "generating" forever. Mirror a user Stop — finished chapters stay
+// playable and the rest go 'stale' — so a single Generate (or per-chapter
+// Continue) resumes them from the segments already on disk instead of starting
+// over. Purely a status reconciliation: no audio files are touched.
+export async function recoverInterruptedAudio(io: SocketServer): Promise<void> {
+  const stuck = await Book.find({
+    deleted: { $ne: true },
+    $or: [
+      { status: 'generating_audio' },
+      { 'chapters.tracks.audioStatus': 'generating' },
+      { 'chapters.tracks.segments.audioStatus': 'generating' },
+    ],
+  });
+  for (const book of stuck) {
+    await finalizeStop(book, io, book.status === 'generating_audio', new SaveLock());
+    console.log(`Recovered interrupted audio for "${book.name || book._id}"`);
+  }
+}
+
 // Synthesize one sentence on a balanced, healthy server (falling back across the
 // others on error), then persist + emit the segment's outcome.
 async function renderSegment(
@@ -641,10 +671,19 @@ async function prepareChapterTasks(
   const language = chapterSpeechLanguage(book, idx);
   const sentenceById = new Map(chapter.sentences.map(s => [String(s._id), s]));
   const tasks: SegmentTask[] = [];
+  let reconciled = false;
   for (const seg of track.segments) {
-    if (seg.audioStatus === 'complete') continue;
     const sentence = sentenceById.get(String(seg.sentenceId));
     if (!sentence) continue;
+    // A segment counts as done only if its audio is still on disk. On a flaky
+    // machine a file the DB calls "complete" can vanish; re-render just that one
+    // sentence rather than skipping it and letting assembly fail the whole chapter.
+    if (seg.audioStatus === 'complete') {
+      if (await segmentFilePresent(seg.audioPath)) continue;
+      seg.audioStatus = 'pending';
+      seg.audioError = undefined;
+      reconciled = true;
+    }
     tasks.push({
       idx,
       voice,
@@ -654,6 +693,7 @@ async function prepareChapterTasks(
       language,
     });
   }
+  if (reconciled) await lock.run(() => book.save());
   return tasks;
 }
 
@@ -928,6 +968,32 @@ export async function regenerateChapterVoiceAudio(bookId: string, chapterIdx: nu
   await clearTrackAudio(book, audioDir, chapterIdx, voice);
   await book.save();
   emit(io, book, { chapterUpdate: { idx: chapterIdx, voice, audioStatus: 'pending' } });
+
+  const lock = new SaveLock();
+  const progress = { done: 0, total: 1 };
+  await renderChapter(book, io, voice, chapterIdx, audioDir, lock, progress);
+}
+
+// Continue a single chapter/voice after an error or interruption: keep every
+// segment already on disk and synthesize only the ones still missing, then
+// assemble. Unlike regenerate, nothing is wiped — this is the resume path so a
+// flaky run can be finished without re-reading the whole chapter.
+export async function continueChapterVoiceAudio(bookId: string, chapterIdx: number, voice: string, io: SocketServer): Promise<void> {
+  const book = await Book.findById(bookId);
+  if (!book) return;
+
+  const chapter = book.chapters[chapterIdx];
+  if (!chapter || !book.voices.includes(voice)) return;
+
+  await ensureBookLanguage(book, io);
+
+  const audioDir = path.join(book.folderPath, 'audio');
+  await fs.mkdir(audioDir, { recursive: true });
+
+  const track = trackForVoice(chapter, voice);
+  if (!track || track.audioStatus === 'complete') return;
+  track.audioError = undefined;
+  await book.save();
 
   const lock = new SaveLock();
   const progress = { done: 0, total: 1 };

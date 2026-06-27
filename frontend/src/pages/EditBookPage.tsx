@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { AppDispatch, RootState } from '../store';
-import { confirmChapters, deleteBook, renameBook, generateBook, stopBook, regenerateVoice, regenerateChapterVoice, resumeBook, dismissBookError } from '../store/booksSlice';
+import { confirmChapters, deleteBook, renameBook, generateBook, stopBook, regenerateVoice, regenerateChapterVoice, continueChapterVoice, resumeBook, dismissBookError } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus } from '../types';
 import { chapterStatus, bookVoices, trackFor, hasPlayableAudio } from '../lib/format';
@@ -287,11 +287,20 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
                 <span className={`text-[11px] shrink-0 ${TRACK_TEXT[s] ?? 'text-gray-500'}`}>
                   {TRACK_LABEL[s] ?? s}
                 </span>
+                {s === 'error' && (
+                  <button
+                    className="text-[11px] font-medium text-amber-400 hover:text-amber-300 transition-colors shrink-0"
+                    onClick={() => dispatch(continueChapterVoice({ bookId: book._id, chapterIdx: i, voice }))}
+                    title={t('Continue this chapter — keep finished sentences, render only what failed')}
+                  >
+                    {t('Continue')}
+                  </button>
+                )}
                 <button
                   className="text-gray-600 hover:text-amber-400 disabled:opacity-30 disabled:hover:text-gray-600 transition-colors shrink-0"
                   disabled={s === 'generating'}
                   onClick={() => dispatch(regenerateChapterVoice({ bookId: book._id, chapterIdx: i, voice }))}
-                  title={t('Regenerate this chapter for this voice')}
+                  title={t('Regenerate this chapter from scratch for this voice')}
                 >
                   <RegenIcon className="w-3 h-3" />
                 </button>
