@@ -45,6 +45,39 @@ export function splitLongSentence(s: string): string[] {
   return s.length <= MAX_LEN ? [s] : splitLong(s, MAX_LEN);
 }
 
+// Whether a string carries any spoken content (a letter or digit). Pure
+// punctuation has none and can't be a standalone synthesis piece.
+function hasSpeech(s: string): boolean {
+  return /[\p{L}\p{N}]/u.test(s);
+}
+
+// Split a too-long text in two for re-rendering when verification failed. Tries
+// punctuation in descending strength — period, colon, semicolon, comma ("ponto",
+// "dois pontos", "ponto e vírgula", "vírgula") — splitting at the occurrence
+// nearest the middle so the halves stay balanced. The punctuation stays attached
+// to the left half. Returns null when no usable split point exists (the caller
+// then asks the SLM to break the text down while preserving meaning).
+const SPLIT_PUNCT = ['.', ':', ';', ','];
+
+export function splitOnPunctuation(text: string): [string, string] | null {
+  const s = text.trim();
+  const mid = s.length / 2;
+  for (const sep of SPLIT_PUNCT) {
+    let best = -1;
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] !== sep) continue;
+      // Don't split on the final punctuation mark — it yields an empty right half.
+      if (i >= s.length - 1) continue;
+      if (best === -1 || Math.abs(i - mid) < Math.abs(best - mid)) best = i;
+    }
+    if (best === -1) continue;
+    const left = s.slice(0, best + 1).trim();
+    const right = s.slice(best + 1).trim();
+    if (hasSpeech(left) && hasSpeech(right)) return [left, right];
+  }
+  return null;
+}
+
 // A title is a short standalone line — at most `maxWords` words. Used to pad
 // silence around chapter/section headings during assembly.
 export function isTitle(text: string, maxWords = 5): boolean {

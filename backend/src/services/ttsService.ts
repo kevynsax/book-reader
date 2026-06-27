@@ -1,11 +1,18 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { TTS_SPEED, DEFAULT_LANGUAGE, TTS_VOLUME_GAIN, TITLE_MAX_WORDS, TITLE_SILENCE_SECS, TITLE_VOLUME_GAIN } from '../config.js';
+import os from 'os';
+import {
+  TTS_SPEED, DEFAULT_LANGUAGE, TTS_VOLUME_GAIN, TITLE_MAX_WORDS, TITLE_SILENCE_SECS, TITLE_VOLUME_GAIN,
+  TTS_VERIFY, TTS_VERIFY_THRESHOLD, TTS_VERIFY_MAX_DEPTH, TTS_VERIFY_MIN_CHARS,
+} from '../config.js';
 import { concatAudio, probeDurationSecs, decodedDurationSecs, probeMp3Buffer, probeAudioFormat, generateSilence, applyVolume } from './audioProbe.js';
 import { normalizeForSpeech } from './textNormalizer.js';
-import { isTitle } from '../lib/sentences.js';
+import { isTitle, splitOnPunctuation } from '../lib/sentences.js';
+import { wordSimilarity } from '../lib/verify.js';
 import { parseVoice, TtsModel } from './ttsEngines.js';
 import { pickReadyServer } from './ttsServers.js';
+import { transcribeAudio } from './whisperService.js';
+import { splitLineIntoSentences } from './ocrService.js';
 
 export interface TimelineEntry {
   text: string;
@@ -68,8 +75,104 @@ async function synthesizeChunk(
   return { buffer, durationSecs };
 }
 
-// Render one sentence to its own mp3 file, retrying transient failures so a
-// single dropped request doesn't fail the chapter. Returns the duration.
+// Everything needed to (re-)render a chunk on the server originally picked for
+// this segment, threaded through the verify/split recursion.
+interface RenderContext {
+  serverUrl: string;
+  model: TtsModel;
+  voice: string;
+  speed: number;
+  language: string;
+}
+
+// Synthesize one chunk to an mp3 buffer, retrying transient failures so a single
+// dropped request doesn't fail the chapter.
+async function renderChunkToBuffer(text: string, ctx: RenderContext): Promise<{ buffer: Buffer; durationSecs: number }> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= CHUNK_RETRIES; attempt++) {
+    try {
+      return await synthesizeChunk(text, ctx.serverUrl, ctx.model, ctx.voice, ctx.speed, ctx.language);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+// Join rendered mp3 buffers into one (PCM-domain concat + re-encode), no gain —
+// chapter assembly applies the volume boost later.
+async function concatBuffers(buffers: Buffer[]): Promise<Buffer> {
+  if (buffers.length === 1) return buffers[0];
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'segpieces-'));
+  try {
+    const files: string[] = [];
+    for (let i = 0; i < buffers.length; i++) {
+      const f = path.join(dir, `p${String(i).padStart(3, '0')}.mp3`);
+      await fs.writeFile(f, buffers[i]);
+      files.push(f);
+    }
+    const listPath = path.join(dir, 'list.txt');
+    await fs.writeFile(listPath, files.map(concatLine).join('\n'));
+    const outPath = path.join(dir, 'out.mp3');
+    await concatAudio(listPath, outPath);
+    return await fs.readFile(outPath);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// Break a text that failed verification into smaller pieces: first on punctuation
+// (period → colon → semicolon → comma, nearest the middle), then, if there's no
+// usable punctuation, by asking the SLM to divide it while preserving meaning.
+async function splitForRerender(text: string): Promise<[string, string] | null> {
+  const byPunct = splitOnPunctuation(text);
+  if (byPunct) return byPunct;
+
+  try {
+    const sug = await splitLineIntoSentences(text);
+    const left = sug?.left?.trim();
+    const right = sug?.right?.trim();
+    if (left && right) return [left, right];
+  } catch (err) {
+    console.warn('SLM split failed:', err instanceof Error ? err.message : err);
+  }
+  return null;
+}
+
+// Render a chunk and confirm — via Whisper — that it says what was asked. On a
+// mismatch the text is split and each half re-rendered + re-verified, with the
+// verified halves concatenated. Bottoms out (keeping the best attempt) when the
+// text can't be split further or the depth cap is reached.
+async function renderVerified(text: string, ctx: RenderContext, depth = 0): Promise<{ buffer: Buffer; durationSecs: number }> {
+  const result = await renderChunkToBuffer(text, ctx);
+
+  if (!TTS_VERIFY || text.trim().length < TTS_VERIFY_MIN_CHARS) return result;
+
+  const transcript = await transcribeAudio(result.buffer, ctx.language);
+  if (transcript === null) return result; // ASR unavailable — don't block on it
+
+  const similarity = wordSimilarity(text, transcript);
+  if (similarity >= TTS_VERIFY_THRESHOLD) return result;
+
+  if (depth >= TTS_VERIFY_MAX_DEPTH) {
+    console.warn(`tts verify: keeping best after ${depth} splits (sim=${similarity.toFixed(2)}) for "${text.slice(0, 60)}"`);
+    return result;
+  }
+
+  const parts = await splitForRerender(text);
+  if (!parts) {
+    console.warn(`tts verify: unsplittable mismatch (sim=${similarity.toFixed(2)}) for "${text.slice(0, 60)}"`);
+    return result;
+  }
+
+  const rendered: { buffer: Buffer; durationSecs: number }[] = [];
+  for (const part of parts) rendered.push(await renderVerified(part, ctx, depth + 1));
+  const buffer = await concatBuffers(rendered.map(r => r.buffer));
+  return { buffer, durationSecs: await probeMp3Buffer(buffer) };
+}
+
+// Render one sentence to its own mp3 file, verifying it against Whisper and
+// splitting/re-rendering on a mismatch. Returns the duration.
 export async function synthesizeSegment(
   text: string,
   outputPath: string,
@@ -82,18 +185,12 @@ export async function synthesizeSegment(
   const speakable = text.trim();
   if (!speakable) throw new Error('Empty sentence');
 
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= CHUNK_RETRIES; attempt++) {
-    try {
-      const { buffer, durationSecs } = await synthesizeChunk(speakable, serverUrl, model, bareVoice, speed, language);
-      await fs.mkdir(path.dirname(outputPath), { recursive: true });
-      await fs.writeFile(outputPath, buffer);
-      return durationSecs;
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  const { buffer, durationSecs } = await renderVerified(speakable, {
+    serverUrl, model, voice: bareVoice, speed, language,
+  });
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await fs.writeFile(outputPath, buffer);
+  return durationSecs;
 }
 
 // A concat-demuxer manifest entry. Paths are absolute and single-quotes escaped

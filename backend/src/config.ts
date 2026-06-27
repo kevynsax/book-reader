@@ -71,6 +71,41 @@ function parseQwenVlServers(): QwenVlServerConfig[] {
 }
 
 export const QWENVL_SERVERS: QwenVlServerConfig[] = parseQwenVlServers();
+
+// Whisper ASR servers (OpenAI-compatible /v1/audio/transcriptions). Used to
+// verify that a synthesized segment actually says what it was asked to say.
+// Load-balanced by least in-flight, with the others used as fallback on error.
+// Configure via WHISPER_SERVERS (comma/newline-separated URLs); defaults to the
+// remote box with the MacBook as fallback.
+export const WHISPER_SERVERS: string[] = (() => {
+  const raw = process.env.WHISPER_SERVERS
+    || 'https://whisper.kevyn.com.br,https://whisper-macbook.kevyn.com.br';
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of raw.split(/[\n,]+/)) {
+    const url = entry.trim().replace(/\/+$/, '');
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    out.push(url);
+  }
+  return out;
+})();
+export const WHISPER_MODEL = process.env.WHISPER_MODEL || 'deepdml/faster-whisper-large-v3-turbo-ct2';
+export const WHISPER_TIMEOUT_MS = parseInt(process.env.WHISPER_TIMEOUT_MS || '60000');
+
+// Post-synthesis verification: transcribe each rendered segment and compare it to
+// the requested text. On a mismatch the text is split into smaller pieces (on
+// punctuation, then via the SLM) and re-rendered. Toggle with TTS_VERIFY=0.
+export const TTS_VERIFY = (process.env.TTS_VERIFY ?? '1') !== '0';
+// Word-similarity (0..1) at or above which a transcript is accepted as a match.
+export const TTS_VERIFY_THRESHOLD = parseFloat(process.env.TTS_VERIFY_THRESHOLD || '0.85');
+// How many times a failing segment may be split & re-rendered before its best
+// attempt is kept as-is.
+export const TTS_VERIFY_MAX_DEPTH = parseInt(process.env.TTS_VERIFY_MAX_DEPTH || '3');
+// Texts shorter than this skip verification — too short for Whisper to score
+// reliably, and not worth the round-trip.
+export const TTS_VERIFY_MIN_CHARS = parseInt(process.env.TTS_VERIFY_MIN_CHARS || '8');
+
 export const DATA_DIR = process.env.DATA_DIR || './data';
 // IPs allowed to delete books, comma-separated. Empty/unset disables the IP
 // restriction so deletion is allowed from anywhere (e.g. behind a proxy that
