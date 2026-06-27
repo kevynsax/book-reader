@@ -7,7 +7,7 @@ import { connectDb } from './db.js';
 import { migrateLegacyVoices, migrateSanitizeOcrText, migrateSummaryPages } from './models/Book.js';
 import { seedLexicons } from './models/Lexicon.js';
 import { booksRouter, registerBookSync } from './routes/books.js';
-import { recoverInterruptedAudio } from './workers/bookProcessor.js';
+import { recoverInterruptedAudio, migrateUnspeakableSentences } from './workers/bookProcessor.js';
 import { lexiconRouter } from './routes/lexicon.js';
 import { PORT, FRONTEND_ORIGIN, DATA_DIR } from './config.js';
 import { MODELS, getModel, clonedVoiceModel } from './services/ttsEngines.js';
@@ -123,6 +123,12 @@ async function main() {
   });
 
   server.listen(PORT, () => console.log(`Book Reader backend listening on port ${PORT}`));
+
+  // Repair (and re-render) sentences that are pure leftover punctuation, which the
+  // TTS server rejects. Runs in the background so it doesn't delay startup.
+  migrateUnspeakableSentences(io).catch(err =>
+    console.error('Failed to migrate unspeakable sentences:', err)
+  );
 }
 
 main().catch(err => {

@@ -1177,3 +1177,109 @@ export async function regenerateSegment(
   const voices = voice ? [voice] : book.voices;
   await rerenderSegment(book, io, chapterIdx, sentenceId, voices);
 }
+
+// A sentence the TTS server can't voice: it carries no letters or digits — only
+// leftover punctuation like ".", ".”", or ".'?" that sentence splitting stranded
+// on its own line. Fish/openaudio errors on these ("No audio tokens were
+// generated"), wedging the chapter.
+function isUnspeakable(text?: string): boolean {
+  return !text || !/[\p{L}\p{N}]/u.test(text);
+}
+
+// Repair sentences that are pure punctuation by folding each back into the real
+// sentence that precedes it (reconstructing e.g. "I was doing something..."),
+// dropping the orphan, then re-rendering just the merged sentence. Idempotent:
+// once a book has no unspeakable sentences left it is skipped on later startups.
+export async function migrateUnspeakableSentences(io: SocketServer): Promise<void> {
+  const books = await Book.find({ deleted: { $ne: true } });
+  let fixedChapters = 0;
+
+  for (const book of books) {
+    const audioDir = path.join(book.folderPath, 'audio');
+    const lock = new SaveLock();
+    const rerenderTargets: { idx: number; sentenceId: string }[] = [];
+    const reassembleOnly: number[] = [];
+    const removedAudio: string[] = [];
+    let bookTouched = false;
+
+    for (let idx = 0; idx < book.chapters.length; idx++) {
+      const chapter = book.chapters[idx];
+      const ordered = [...chapter.sentences].sort((a, b) => a.order - b.order);
+      const garbageIds = new Set(ordered.filter(s => isUnspeakable(s.text)).map(s => String(s._id)));
+      if (garbageIds.size === 0) continue;
+
+      if (garbageIds.size === ordered.length) {
+        console.warn(`migrateUnspeakableSentences: ${book._id} ch${idx + 1} is all punctuation; leaving as-is`);
+        continue;
+      }
+
+      const targetIds = new Set<string>();
+      for (let i = 0; i < ordered.length; i++) {
+        if (!garbageIds.has(String(ordered[i]._id))) continue;
+        let target: typeof ordered[number] | undefined;
+        for (let j = i - 1; j >= 0; j--) {
+          if (!garbageIds.has(String(ordered[j]._id))) { target = ordered[j]; break; }
+        }
+        if (!target) continue; // leading junk with no real sentence before it: just drop it
+
+        const orphan = ordered[i].text.trim();
+        const prevText = target.text.trim();
+        const prevDisplay = target.display && target.display.trim() ? target.display.trim() : prevText;
+        target.text = (prevText + orphan).trim();
+        target.display = (prevDisplay + orphan).trim();
+        targetIds.add(String(target._id));
+      }
+
+      for (const track of chapter.tracks) {
+        for (const seg of track.segments) {
+          if (targetIds.has(String(seg.sentenceId))) { seg.audioStatus = 'stale'; seg.audioError = undefined; }
+          if (garbageIds.has(String(seg.sentenceId)) && seg.audioPath) removedAudio.push(seg.audioPath);
+        }
+      }
+
+      setSubdoc(chapter, 'sentences', ordered
+        .filter(s => !garbageIds.has(String(s._id)))
+        .map((s, order) => ({ _id: s._id, order, text: s.text, display: s.display })));
+
+      for (const track of chapter.tracks) {
+        setSubdoc(track, 'segments', track.segments
+          .filter(s => !garbageIds.has(String(s.sentenceId)))
+          .map(s => ({
+            sentenceId: s.sentenceId,
+            audioPath: s.audioPath,
+            durationSecs: s.durationSecs,
+            audioStatus: s.audioStatus,
+            audioError: s.audioError,
+          })));
+      }
+
+      if (targetIds.size > 0) {
+        for (const sentenceId of targetIds) rerenderTargets.push({ idx, sentenceId });
+      } else {
+        reassembleOnly.push(idx);
+      }
+      bookTouched = true;
+      fixedChapters++;
+    }
+
+    if (!bookTouched) continue;
+
+    await lock.run(() => book.save());
+    emit(io, book, { chapters: serializeChaptersForClient(book.chapters) });
+    await Promise.all(removedAudio.map(p => fs.unlink(p).catch(() => {})));
+
+    console.log(`migrateUnspeakableSentences: ${book._id} — fixed unspeakable sentences in ${rerenderTargets.length + reassembleOnly.length} chapter(s)`);
+
+    for (const { idx, sentenceId } of rerenderTargets) {
+      await rerenderSegment(book, io, idx, sentenceId, book.voices).catch(err =>
+        console.error(`migrateUnspeakableSentences rerender ${book._id} ch${idx + 1}:`, err));
+    }
+    for (const idx of reassembleOnly) {
+      for (const voice of book.voices) {
+        await finalizeTrack(book, io, idx, voice, audioDir, lock).catch(() => {});
+      }
+    }
+  }
+
+  if (fixedChapters > 0) console.log(`migrateUnspeakableSentences: repaired ${fixedChapters} chapter(s)`);
+}
