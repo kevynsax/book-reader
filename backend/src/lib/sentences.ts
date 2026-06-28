@@ -18,6 +18,14 @@ const CLOSERS = /["'”’)\]}]/;
 const ABBREVS = ['ch', 'chap', 'chaps', 'chs', 'v', 'vv', 'vs', 'p', 'pp', 'cf', 'vol', 'vols', 'esp', 'ff'];
 const ABBREV_END = new RegExp(`(?:^|[\\s(\\[])(?:${ABBREVS.join('|')})\\.$`, 'i');
 
+// Whether the next non-space character after `i` is a dot — used to detect
+// ellipsis runs, including OCR's spaced form (". . .").
+function nextNonSpaceIsDot(text: string, i: number): boolean {
+  let j = i + 1;
+  while (j < text.length && /\s/.test(text[j])) j++;
+  return text[j] === '.';
+}
+
 function hardSplit(s: string, max: number): string[] {
   const out: string[] = [];
   for (let i = 0; i < s.length; i += max) out.push(s.slice(i, i + max));
@@ -129,6 +137,19 @@ function splitParagraph(text: string): string[] {
         i = grp.end;
         continue;
       }
+    }
+
+    if (ch === '…' || (ch === '.' && nextNonSpaceIsDot(text, i))) {
+      // An ellipsis ("...", "…", or OCR's spaced ". . .") is not a sentence
+      // boundary — keep the whole run inline.
+      if (ch === '…') { buf += ch; i++; }
+      else {
+        buf += text[i]; i++;
+        while (i < text.length && (text[i] === '.' || (/\s/.test(text[i]) && nextNonSpaceIsDot(text, i)))) {
+          buf += text[i]; i++;
+        }
+      }
+      continue;
     }
 
     if (ch === '.' && ABBREV_END.test(buf + ch)) {
