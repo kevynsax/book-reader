@@ -92,6 +92,9 @@ export interface Book {
   chapters: Chapter[];
   ocrPages: OcrPage[];
   progress: Progress;
+  // Transient (socket-only, never persisted): set while a chapter's sentences are
+  // being split for TTS, cleared (null) when done. Drives a separate progress bar.
+  splitProgress?: Progress | null;
   errorMessage?: string;
   createdAt: string;
   updatedAt: string;

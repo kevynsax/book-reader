@@ -33,6 +33,37 @@ const STATUS_LABEL: Record<BookStatus, string> = Object.fromEntries(
 
 const STATUS_ORDER = STATUS_STEPS.map(s => s.status);
 
+// A labelled progress bar that, once it fills to 100%, holds briefly then
+// collapses out (fade + height) instead of lingering. Re-expands if a fresh
+// sub-100% value arrives (e.g. the next chapter starts splitting).
+function AutoHideBar({ current, total, message, color }: {
+  current: number; total: number; message: string; color: 'amber' | 'sky';
+}) {
+  const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
+  const [hidden, setHidden] = useState(false);
+  useEffect(() => {
+    if (pct < 100) { setHidden(false); return; }
+    const timer = setTimeout(() => setHidden(true), 700);
+    return () => clearTimeout(timer);
+  }, [pct]);
+
+  const fill = color === 'sky' ? 'bg-sky-400' : 'bg-amber-400';
+  const pctText = color === 'sky' ? 'text-sky-400' : 'text-amber-400';
+  return (
+    <div className={`space-y-1.5 overflow-hidden transition-all duration-500 ${
+      hidden ? 'max-h-0 opacity-0' : 'max-h-16 opacity-100'
+    }`}>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-gray-400">{message}</p>
+        <span className={`text-xs ${pctText} tabular-nums shrink-0`}>{pct}%</span>
+      </div>
+      <div className="w-full h-1 bg-gray-800 rounded-full overflow-hidden">
+        <div className={`h-full ${fill} rounded-full transition-all duration-500`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function StatusIndicator({ book }: { book: Book }) {
   const [open,     setOpen]     = useState(false);
   const [eta,      setEta]      = useState<string | null>(null);
@@ -549,25 +580,24 @@ export default function EditBookPage() {
                 )}
               </div>
             </div>
-            {book.progress.message && (
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm text-gray-400">{book.progress.message}</p>
-                  {book.progress.total > 0 && (
-                    <span className="text-xs text-amber-400 tabular-nums shrink-0">
-                      {Math.round((book.progress.current / book.progress.total) * 100)}%
-                    </span>
-                  )}
-                </div>
-                {book.progress.total > 0 && (
-                  <div className="w-full h-1 bg-gray-800 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-amber-400 rounded-full transition-all duration-500"
-                      style={{ width: `${Math.round((book.progress.current / book.progress.total) * 100)}%` }}
-                    />
-                  </div>
-                )}
-              </div>
+            {book.progress.message && book.progress.total > 0 && (
+              <AutoHideBar
+                current={book.progress.current}
+                total={book.progress.total}
+                message={book.progress.message}
+                color="amber"
+              />
+            )}
+            {book.progress.message && book.progress.total === 0 && (
+              <p className="text-sm text-gray-400">{book.progress.message}</p>
+            )}
+            {book.splitProgress && book.splitProgress.total > 0 && (
+              <AutoHideBar
+                current={book.splitProgress.current}
+                total={book.splitProgress.total}
+                message={`${book.splitProgress.message} (${book.splitProgress.current}/${book.splitProgress.total})`}
+                color="sky"
+              />
             )}
             {bookVoices(book)
               .filter(voice => book.chapters.some(c => chapterStatus(c, [voice]) !== 'pending'))

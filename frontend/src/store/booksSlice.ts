@@ -174,6 +174,7 @@ const booksSlice = createSlice({
       if (patch.name) book.name = patch.name as string;
       if (patch.status) book.status = patch.status as Book['status'];
       if (patch.progress) book.progress = patch.progress as Progress;
+      if ('splitProgress' in patch) book.splitProgress = patch.splitProgress as Progress | null;
       if (patch.totalPages) book.totalPages = patch.totalPages as number;
       if (patch.coverImagePath) {
         book.coverImagePath = patch.coverImagePath as string;

@@ -497,11 +497,15 @@ async function buildSentences(book: IBook, io: SocketServer, idx: number, lock: 
 
   const language = chapterSpeechLanguage(book, idx);
   const sentences: { text: string; display: string }[] = [];
+  // Splitting happens once per chapter (shared by every voice). Report it on its
+  // own transient `splitProgress` channel — a separate bar from the overall
+  // generation progress — emitting completed-count so it climbs to 100%; the
+  // client hides the bar once it fills.
+  const splitMsg = `Splitting sentences in "${chapter.title}"…`;
+  emit(io, book, { splitProgress: { current: 0, total: units.length, message: splitMsg } });
   for (let i = 0; i < units.length; i++) {
-    emit(io, book, {
-      progress: { current: i, total: units.length, message: `Splitting sentences in "${chapter.title}"… (${i}/${units.length})` },
-    });
     sentences.push(...await splitUnitForTts(units[i], language));
+    emit(io, book, { splitProgress: { current: i + 1, total: units.length, message: splitMsg } });
   }
   if (sentences.length === 0) return false;
 
