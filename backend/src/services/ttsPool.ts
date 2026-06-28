@@ -1,4 +1,4 @@
-import { TTS_SERVER_COOLDOWN_MS } from '../config.js';
+import { TTS_SERVER_COOLDOWN_MS, TTS_SERVER_PROBE_MS } from '../config.js';
 import { TtsServer, ensureModelLoaded } from './ttsServers.js';
 
 interface PoolEntry {
@@ -8,19 +8,65 @@ interface PoolEntry {
   downUntil: number;
 }
 
+interface PoolOptions {
+  // Ids of servers known ready at construction; any configured server not listed
+  // starts parked, so a server that was offline at chapter start can still be
+  // brought in by the background re-probe once it reconnects.
+  readyIds?: Set<string>;
+  // Background re-probe cadence (ms); defaults to TTS_SERVER_PROBE_MS, 0 disables.
+  probeMs?: number;
+}
+
 // A live, shared view of which TTS servers are usable right now, balancing work
 // across them per request. The state is mutated on every dispatch and error so a
 // server that throws is parked for a cooldown (and later re-probed) while the
-// healthy ones keep taking work — instead of being chosen once up front.
+// healthy ones keep taking work — instead of being chosen once up front. A
+// background timer re-probes parked servers so a reconnected one rejoins mid-run
+// rather than waiting for the next chapter's server snapshot.
 export class TtsServerPool {
   private entries: PoolEntry[];
+  private timer?: ReturnType<typeof setInterval>;
+  private probing = false;
 
-  constructor(servers: TtsServer[], private modelId: string) {
-    this.entries = servers.map(server => ({ server, inFlight: 0, downUntil: 0 }));
+  constructor(servers: TtsServer[], private modelId: string, opts: PoolOptions = {}) {
+    const { readyIds } = opts;
+    this.entries = servers.map(server => ({
+      server,
+      inFlight: 0,
+      downUntil: readyIds && !readyIds.has(server.id) ? Date.now() + TTS_SERVER_COOLDOWN_MS : 0,
+    }));
+    const probeMs = opts.probeMs ?? TTS_SERVER_PROBE_MS;
+    if (probeMs > 0) {
+      this.timer = setInterval(() => { void this.reprobe(); }, probeMs);
+      this.timer.unref?.();
+    }
   }
 
   get size(): number {
     return this.entries.length;
+  }
+
+  // Background sweep: re-probe every parked server and either un-park it (model
+  // ready again) or push its cooldown forward, so a dead server stays parked
+  // without wasting real requests while a recovered one rejoins promptly.
+  private async reprobe(): Promise<void> {
+    if (this.probing) return;
+    this.probing = true;
+    try {
+      const now = Date.now();
+      const parked = this.entries.filter(e => e.downUntil > now);
+      await Promise.all(parked.map(async e => {
+        const ok = await ensureModelLoaded(e.server, this.modelId);
+        e.downUntil = ok ? 0 : Date.now() + TTS_SERVER_COOLDOWN_MS;
+      }));
+    } finally {
+      this.probing = false;
+    }
+  }
+
+  // Stop the background re-probe. Call once the run that owns this pool is done.
+  stop(): void {
+    if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
   }
 
   // Reserve the least-loaded server that's healthy now and not already tried for

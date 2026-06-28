@@ -11,7 +11,7 @@ import { synthesizeSegment, renderSegmentPieces, RenderedPiece, assembleChapter,
 import { reflowSentences } from '../lib/sentences.js';
 import { normalizeForSpeech } from '../services/textNormalizer.js';
 import { parseVoice } from '../services/ttsEngines.js';
-import { readyServersFor, pickReadyServer } from '../services/ttsServers.js';
+import { readyServersFor, pickReadyServer, getServers } from '../services/ttsServers.js';
 import { TtsServerPool, runPool } from '../services/ttsPool.js';
 import { DEFAULT_LANGUAGE, TTS_CONCURRENCY, QWENVL_SERVERS, TTS_MAX_SENTENCE_CHARS } from '../config.js';
 import { resolveLang } from '../data/bibleBooks.js';
@@ -838,8 +838,8 @@ async function renderChapter(
   if (!track || track.audioStatus === 'complete') return false;
 
   const { model } = parseVoice(voice);
-  const servers = await readyServersFor(model.id);
-  if (servers.length === 0) {
+  const ready = await readyServersFor(model.id);
+  if (ready.length === 0) {
     const audioError = `No TTS server is online for model "${model.id}" — start the server and try again.`;
     console.error(`renderChapter ${book._id} ch${idx + 1} (${voice}): ${audioError}`);
     track.audioStatus = 'error';
@@ -850,10 +850,18 @@ async function renderChapter(
     return false;
   }
 
-  const pool = new TtsServerPool(servers, model.id);
-  const tasks = await prepareChapterTasks(book, io, voice, idx, audioDir, lock, progress);
+  // Build the pool from every configured server (not just the ones ready now), so
+  // the background re-probe can pull a reconnected server into this chapter's
+  // rotation. Servers not ready at the start begin parked.
+  const readyIds = new Set(ready.map(s => s.id));
+  const pool = new TtsServerPool(getServers(), model.id, { readyIds });
   const splits: PendingSplit[] = [];
-  await runPool(tasks, TTS_CONCURRENCY, task => renderSegment(book, io, pool, task, lock, splits));
+  try {
+    const tasks = await prepareChapterTasks(book, io, voice, idx, audioDir, lock, progress);
+    await runPool(tasks, TTS_CONCURRENCY, task => renderSegment(book, io, pool, task, lock, splits));
+  } finally {
+    pool.stop();
+  }
   await applyChapterSplits(book, io, idx, voice, audioDir, splits, lock);
   await finalizeTrack(book, io, idx, voice, audioDir, lock);
   return splits.length > 0;

@@ -130,6 +130,9 @@ export const TTS_SPEED = parseFloat(process.env.TTS_SPEED || '1.0');
 export const TTS_CONCURRENCY = parseInt(process.env.TTS_CONCURRENCY || '5');
 // How long a server that errored is parked before the balancer re-probes it.
 export const TTS_SERVER_COOLDOWN_MS = parseInt(process.env.TTS_SERVER_COOLDOWN_MS || '15000');
+// How often the balancer re-probes parked/offline servers in the background so a
+// reconnected one rejoins mid-chapter. 0 disables the background probe.
+export const TTS_SERVER_PROBE_MS = parseInt(process.env.TTS_SERVER_PROBE_MS || '10000');
 export const TTS_VOLUME_GAIN = parseFloat(process.env.TTS_VOLUME_GAIN || '1.15');
 export const TITLE_MAX_WORDS = parseInt(process.env.TITLE_MAX_WORDS || '5');
 export const TITLE_SILENCE_SECS = parseFloat(process.env.TITLE_SILENCE_SECS || '0.7');
