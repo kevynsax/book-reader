@@ -43,6 +43,8 @@ const DEFAULT_ACRONYMS: Record<string, IAcronym[]> = {
     { term: 'AMP', say: 'Amplified Bible' },
     { term: 'e.g.', say: 'for example' },
     { term: 'i.e.', say: 'that is' },
+    { term: 'cf.', say: 'compare' },
+    { term: '=', say: 'equals' },
   ],
   pt: [
     { term: 'NVI', say: 'Nova Versão Internacional' },
@@ -55,6 +57,8 @@ const DEFAULT_ACRONYMS: Record<string, IAcronym[]> = {
     { term: 'KJA', say: 'King James Atualizada' },
     { term: 'e.g.', say: 'por exemplo' },
     { term: 'i.e.', say: 'isto é' },
+    { term: 'cf.', say: 'confira' },
+    { term: '=', say: 'igual a' },
   ],
 };
 

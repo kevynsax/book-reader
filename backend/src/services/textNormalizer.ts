@@ -264,10 +264,23 @@ export function expandAcronyms(text: string, acronyms: IAcronym[]): string {
   if (!acronyms.length) return text;
   const sorted = [...acronyms].sort((a, b) => b.term.length - a.term.length);
   const say = new Map(sorted.map(a => [a.term, a.say]));
-  // Boundaries are "not a letter/digit" rather than \b so terms ending in a
-  // period ("e.g.", "i.e.") still match when followed by a space or comma.
-  const re = new RegExp(`(?<![\\p{L}\\d])(${sorted.map(a => escapeRe(a.term)).join('|')})(?![\\p{L}\\d])`, 'gu');
-  return text.replace(re, m => say.get(m) ?? m);
+  // Word terms get letter/digit boundaries so "NVI" doesn't fire inside "NVIS"
+  // (lookarounds, not \b, so terms ending in a period like "e.g." still match
+  // before a space or comma). Symbol terms ("=") carry no alphanumerics, so they
+  // need no boundary and match even when glued to text ("x=5").
+  const isWord = (t: string) => /[\p{L}\d]/u.test(t[0]) || /[\p{L}\d]/u.test(t[t.length - 1]);
+  const words = sorted.filter(a => isWord(a.term)).map(a => escapeRe(a.term));
+  const symbols = sorted.filter(a => !isWord(a.term)).map(a => escapeRe(a.term));
+  const parts: string[] = [];
+  if (words.length) parts.push(`(?<![\\p{L}\\d])(?:${words.join('|')})(?![\\p{L}\\d])`);
+  if (symbols.length) parts.push(`(?:${symbols.join('|')})`);
+  const re = new RegExp(parts.join('|'), 'gu');
+  // Symbol terms can be glued to text ("x=5"), so pad their spoken form with
+  // spaces ("x equals 5") and collapse the doubles a word term already separated.
+  return text
+    .replace(re, m => (isWord(m) ? (say.get(m) ?? m) : ` ${say.get(m) ?? m} `))
+    .replace(/ {2,}/g, ' ')
+    .trim();
 }
 
 // Rewrite text into a more speakable form for TTS. Read-time only — never mutate
