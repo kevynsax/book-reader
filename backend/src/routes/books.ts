@@ -941,7 +941,6 @@ export function booksRouter(io: SocketServer) {
 
     const voice = req.params.voice;
     if (!book.voices.includes(voice)) return res.status(404).json({ error: 'Voice not found' });
-    if (book.voices.length <= 1) return res.status(400).json({ error: 'A book must have at least one voice' });
 
     const safeVoice = voice.replace(/[^a-zA-Z0-9._-]/g, '_');
     const audioDir = path.join(book.folderPath, 'audio');

@@ -35,7 +35,6 @@ export default function VoiceManager({ book, activeVoice, onSelectVoice, editabl
 
   const handleRemove = (e: React.MouseEvent, voice: string) => {
     e.stopPropagation();
-    if (voices.length <= 1) return;
     setRemoving(voice);
   };
 
@@ -77,7 +76,7 @@ export default function VoiceManager({ book, activeVoice, onSelectVoice, editabl
                   </svg>
                 </button>
               )}
-              {editable && allowModify && voices.length > 1 && (
+              {editable && allowModify && (
                 <button
                   className="text-gray-500 hover:text-red-400 leading-none text-base"
                   onClick={e => handleRemove(e, voice)}
