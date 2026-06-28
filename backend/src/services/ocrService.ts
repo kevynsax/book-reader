@@ -93,6 +93,25 @@ function parseLineReviewSuggestion(raw: string): LineReviewSuggestion | null {
   return clean ? { corrected: clean } : null;
 }
 
+// Parse the SLM's multi-way split: a JSON array of sentence strings, or an object
+// wrapping one under `parts`/`sentences`. Empties are dropped; null if none remain.
+function parseSplitParts(raw: string): string[] | null {
+  const text = stripMarkdownFence(raw.trim());
+  const parsed =
+    (() => { try { return JSON.parse(text); } catch { return extractLooseJson(text); } })();
+  const arr = Array.isArray(parsed)
+    ? parsed
+    : (parsed && typeof parsed === 'object'
+        ? ((parsed as Record<string, unknown>).parts ?? (parsed as Record<string, unknown>).sentences)
+        : null);
+  if (!Array.isArray(arr)) return null;
+  const parts = arr
+    .filter((s): s is string => typeof s === 'string')
+    .map(s => sanitizePageText(s).trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts : null;
+}
+
 function parseSplitLineSuggestion(raw: string): SplitLineSuggestion | null {
   const text = stripMarkdownFence(raw.trim());
   const parsed =
@@ -302,6 +321,31 @@ export async function splitLineIntoSentences(line: string, model?: string): Prom
     'race',
   );
   return parseSplitLineSuggestion(raw);
+}
+
+// Ask the SLM to break one long sentence into as many complete, natural sentences
+// as needed so each is at most `maxChars` characters — more than two is fine.
+// Preserves language, meaning, entities, and reading order. Returns null when the
+// model declines or errors (or yields a single piece, i.e. no real split).
+export async function splitLineIntoParts(line: string, maxChars: number, model?: string): Promise<string[] | null> {
+  const raw = await callSlm(
+    [
+      'You split a single long book sentence into several complete, natural, valid sentences for text-to-speech.',
+      `Each output sentence must be at most ${maxChars} characters long.`,
+      'Return one valid JSON array of strings and nothing else, e.g. ["First sentence.", "Second sentence."].',
+      'Preserve the original language, meaning, named entities, and reading order exactly.',
+      'Split only at natural sentence or clause boundaries; never split inside a word, number, or reference.',
+      'Use as many pieces as needed so every piece is within the limit, but no more pieces than necessary.',
+      'You may add or adjust only the minimal punctuation and capitalization needed to make each output a complete sentence.',
+      'Do not summarize, translate, expand, omit meaning, add commentary, or use markdown.',
+      'If the sentence cannot be split, return an array containing only the original sentence.',
+    ].join(' '),
+    line,
+    model || SLM_MODEL,
+    'race',
+  );
+  const parts = parseSplitParts(raw);
+  return parts && parts.length > 1 ? parts : null;
 }
 
 export async function reviewLineGrammar(line: string, model?: string): Promise<LineReviewSuggestion | null> {

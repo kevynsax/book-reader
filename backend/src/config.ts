@@ -7,8 +7,10 @@ export const SLM_API = process.env.SLM_API || 'https://slm.kevyn.com.br';
 // Tried in order: SLM_API first, then SLM_API_FALLBACK when the primary errors.
 export const SLM_API_FALLBACK = process.env.SLM_API_FALLBACK || 'https://ollama-macbook.kevyn.com.br';
 export const SLM_MODEL = process.env.SLM_MODEL || 'qwen2.5:3b';
-// Model used to split an over-long sentence in two during TTS verification. Runs
-// on the ORIGINAL (un-normalized) sentence text so the split keeps a clean display.
+// Model used to split an over-long sentence in two — both up front (any sentence
+// whose spoken text exceeds TTS_MAX_SENTENCE_CHARS) and during TTS verification.
+// Runs on the ORIGINAL (un-normalized) sentence text so the split keeps a clean
+// display.
 export const SLM_SPLIT_MODEL = process.env.SLM_SPLIT_MODEL || 'gemma4:latest';
 // Relative share of bulk-review work each SLM server takes. The balancer routes
 // by least in-flight / weight, so a slow box (e.g. the Mac fallback) with a low
@@ -108,6 +110,11 @@ export const TTS_VERIFY_MAX_DEPTH = parseInt(process.env.TTS_VERIFY_MAX_DEPTH ||
 // Texts shorter than this skip verification — too short for Whisper to score
 // reliably, and not worth the round-trip.
 export const TTS_VERIFY_MIN_CHARS = parseInt(process.env.TTS_VERIFY_MIN_CHARS || '8');
+
+// Maximum spoken (speech-normalized) length of a single sentence before audio
+// generation. Anything longer is broken into natural sub-sentences by the SLM
+// (gemma) up front, rather than hand-split on clause punctuation.
+export const TTS_MAX_SENTENCE_CHARS = parseInt(process.env.TTS_MAX_SENTENCE_CHARS || '220');
 
 export const DATA_DIR = process.env.DATA_DIR || './data';
 // IPs allowed to delete books, comma-separated. Empty/unset disables the IP

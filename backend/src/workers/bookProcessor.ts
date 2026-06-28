@@ -7,13 +7,13 @@ import { Book, IBook, IChapter, IVoiceTrack, ISegment, ISentence, freshTracks, t
 import { splitPdfIntoPages, findPageImagePath, getAllPagePaths, copyPageAsCover } from '../services/pdfService.js';
 import { ocrPage, detectChapters, extractBookTitle, detectLanguage } from '../services/ocrService.js';
 import { sanitizePageText } from '../lib/sanitize.js';
-import { synthesizeSegment, renderSegmentPieces, RenderedPiece, assembleChapter } from '../services/ttsService.js';
-import { reflowSentences, splitLongSentence } from '../lib/sentences.js';
+import { synthesizeSegment, renderSegmentPieces, RenderedPiece, assembleChapter, slmSplitToMax } from '../services/ttsService.js';
+import { reflowSentences } from '../lib/sentences.js';
 import { normalizeForSpeech } from '../services/textNormalizer.js';
 import { parseVoice } from '../services/ttsEngines.js';
 import { readyServersFor, pickReadyServer } from '../services/ttsServers.js';
 import { TtsServerPool, runPool } from '../services/ttsPool.js';
-import { DEFAULT_LANGUAGE, TTS_CONCURRENCY, QWENVL_SERVERS } from '../config.js';
+import { DEFAULT_LANGUAGE, TTS_CONCURRENCY, QWENVL_SERVERS, TTS_MAX_SENTENCE_CHARS } from '../config.js';
 import { resolveLang } from '../data/bibleBooks.js';
 
 function emit(io: SocketServer, book: IBook, update: Record<string, unknown>) {
@@ -450,6 +450,39 @@ function orderedSegmentInputs(chapter: IChapter, track: IVoiceTrack) {
     });
 }
 
+// How many times a single reviewed sentence may be SLM-split in two before its
+// best attempt is kept as-is, so a sentence the model keeps over-splitting can't
+// loop forever. Each split halves the text, so a few passes always converge.
+const SENTENCE_SPLIT_MAX_DEPTH = 4;
+
+// Break one reviewed sentence into TTS-ready pieces. A sentence whose spoken
+// (speech-normalized) form fits under TTS_MAX_SENTENCE_CHARS is kept whole; a
+// longer one is divided by the SLM (gemma) into as many natural sub-sentences as
+// needed to fit the limit — possibly more than two — and each piece re-checked
+// (since speech normalization can re-inflate length). `text` is what gets read
+// (speech-normalized); `display` keeps the clean original (or the SLM's clean
+// sub-sentence) so the player shows that instead of the TTS conversions. A piece
+// the SLM can't divide is kept whole — verification re-splits it later if it
+// renders wrong.
+async function splitUnitForTts(
+  display: string,
+  language: string,
+  depth = 0,
+): Promise<{ text: string; display: string }[]> {
+  const clean = display.trim();
+  if (!clean) return [];
+  const norm = (await normalizeForSpeech(clean, language)).trim();
+  if (!norm) return [];
+  if (norm.length <= TTS_MAX_SENTENCE_CHARS || depth >= SENTENCE_SPLIT_MAX_DEPTH) {
+    return [{ text: norm, display: clean }];
+  }
+  const parts = await slmSplitToMax(clean, TTS_MAX_SENTENCE_CHARS);
+  if (!parts) return [{ text: norm, display: clean }];
+  const out: { text: string; display: string }[] = [];
+  for (const part of parts) out.push(...await splitUnitForTts(part, language, depth + 1));
+  return out;
+}
+
 // Build the editable, speech-ready sentence list for a chapter (once). Returns
 // false if there's no readable text yet.
 async function buildSentences(book: IBook, idx: number, lock: SaveLock): Promise<boolean> {
@@ -461,16 +494,9 @@ async function buildSentences(book: IBook, idx: number, lock: SaveLock): Promise
   if (units.length === 0) return false;
 
   const language = chapterSpeechLanguage(book, idx);
-  // `text` is what gets read (speech-normalized); `display` keeps the original
-  // reviewed text so the player shows it instead of the TTS conversions. A long
-  // sentence that splits for TTS falls back to the piece text for display.
   const sentences: { text: string; display: string }[] = [];
   for (const unit of units) {
-    const norm = (await normalizeForSpeech(unit, language)).trim();
-    if (!norm) continue;
-    const pieces = splitLongSentence(norm).map(piece => piece.trim()).filter(Boolean);
-    if (pieces.length === 1) sentences.push({ text: pieces[0], display: unit.trim() });
-    else for (const piece of pieces) sentences.push({ text: piece, display: piece });
+    sentences.push(...await splitUnitForTts(unit, language));
   }
   if (sentences.length === 0) return false;
 

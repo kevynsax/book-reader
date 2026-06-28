@@ -7,12 +7,12 @@ import {
 } from '../config.js';
 import { concatAudio, probeDurationSecs, decodedDurationSecs, probeMp3Buffer, probeAudioFormat, generateSilence, applyVolume } from './audioProbe.js';
 import { normalizeForSpeech } from './textNormalizer.js';
-import { isTitle, splitOnPunctuation } from '../lib/sentences.js';
+import { isTitle } from '../lib/sentences.js';
 import { wordSimilarity } from '../lib/verify.js';
 import { parseVoice, TtsModel } from './ttsEngines.js';
 import { pickReadyServer } from './ttsServers.js';
 import { transcribeAudio } from './whisperService.js';
-import { splitLineIntoSentences } from './ocrService.js';
+import { splitLineIntoSentences, splitLineIntoParts } from './ocrService.js';
 
 export interface TimelineEntry {
   text: string;
@@ -121,15 +121,12 @@ async function concatBuffers(buffers: Buffer[]): Promise<Buffer> {
   }
 }
 
-// Break the ORIGINAL (un-normalized) sentence text that failed verification into
-// two: first on punctuation (period → colon → semicolon → comma, nearest the
-// middle), then, if there's no usable punctuation, by asking gemma to divide it
-// while preserving meaning. Splitting the original — not the dictionary/bible-ref
-// expanded speech text — keeps each piece's on-screen display clean.
-async function splitForRerender(display: string): Promise<[string, string] | null> {
-  const byPunct = splitOnPunctuation(display);
-  if (byPunct) return byPunct;
-
+// Ask the SLM (gemma) to divide the ORIGINAL (un-normalized) sentence text into
+// two complete sub-sentences, preserving meaning and reading order. Splitting the
+// original — not the dictionary/bible-ref expanded speech text — keeps each piece's
+// on-screen display clean. Returns null when the model declines or errors. Used
+// both up front (sentences over the length limit) and on a verification mismatch.
+export async function slmSplitInTwo(display: string): Promise<[string, string] | null> {
   try {
     const sug = await splitLineIntoSentences(display, SLM_SPLIT_MODEL);
     const left = sug?.left?.trim();
@@ -139,6 +136,18 @@ async function splitForRerender(display: string): Promise<[string, string] | nul
     console.warn('SLM split failed:', err instanceof Error ? err.message : err);
   }
   return null;
+}
+
+// Ask the SLM (gemma) to divide the ORIGINAL sentence text into as many natural
+// sub-sentences as needed so each is at most `maxChars` long — possibly more than
+// two. Returns null when the model declines, errors, or finds no usable split.
+export async function slmSplitToMax(display: string, maxChars: number): Promise<string[] | null> {
+  try {
+    return await splitLineIntoParts(display, maxChars, SLM_SPLIT_MODEL);
+  } catch (err) {
+    console.warn('SLM split failed:', err instanceof Error ? err.message : err);
+    return null;
+  }
 }
 
 // One verified leaf of a sentence: the original `display` text, the speech-ready
@@ -173,7 +182,7 @@ async function renderVerifiedPieces(display: string, text: string, ctx: RenderCo
     return [leaf];
   }
 
-  const parts = await splitForRerender(display);
+  const parts = await slmSplitInTwo(display);
   if (!parts) {
     console.warn(`tts verify: unsplittable mismatch (sim=${similarity.toFixed(2)}) for "${display.slice(0, 60)}"`);
     return [leaf];
