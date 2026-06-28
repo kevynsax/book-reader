@@ -484,8 +484,10 @@ async function splitUnitForTts(
 }
 
 // Build the editable, speech-ready sentence list for a chapter (once). Returns
-// false if there's no readable text yet.
-async function buildSentences(book: IBook, idx: number, lock: SaveLock): Promise<boolean> {
+// false if there's no readable text yet. Emits per-unit progress over the socket
+// (without a DB write — it's transient UI) so the status bar shows splitting
+// advancing before any audio renders.
+async function buildSentences(book: IBook, io: SocketServer, idx: number, lock: SaveLock): Promise<boolean> {
   const chapter = book.chapters[idx];
   if (chapter.sentences.length > 0) return true;
 
@@ -495,8 +497,11 @@ async function buildSentences(book: IBook, idx: number, lock: SaveLock): Promise
 
   const language = chapterSpeechLanguage(book, idx);
   const sentences: { text: string; display: string }[] = [];
-  for (const unit of units) {
-    sentences.push(...await splitUnitForTts(unit, language));
+  for (let i = 0; i < units.length; i++) {
+    emit(io, book, {
+      progress: { current: i, total: units.length, message: `Splitting sentences in "${chapter.title}"… (${i}/${units.length})` },
+    });
+    sentences.push(...await splitUnitForTts(units[i], language));
   }
   if (sentences.length === 0) return false;
 
@@ -765,7 +770,7 @@ async function prepareChapterTasks(
   const track = trackForVoice(chapter, voice);
   if (!track || track.audioStatus === 'complete') return [];
 
-  if (!(await buildSentences(book, idx, lock))) {
+  if (!(await buildSentences(book, io, idx, lock))) {
     const audioError = 'No readable text for this chapter (run OCR first?)';
     console.error(`prepareChapterTasks ${book._id} ch${idx + 1} (${voice}): ${audioError}`);
     track.audioStatus = 'error';

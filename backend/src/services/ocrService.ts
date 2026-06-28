@@ -318,7 +318,7 @@ export async function splitLineIntoSentences(line: string, model?: string): Prom
     ].join(' '),
     line,
     model || SLM_MODEL,
-    'race',
+    'balance',
   );
   return parseSplitLineSuggestion(raw);
 }
@@ -342,7 +342,7 @@ export async function splitLineIntoParts(line: string, maxChars: number, model?:
     ].join(' '),
     line,
     model || SLM_MODEL,
-    'race',
+    'balance',
   );
   const parts = parseSplitParts(raw);
   return parts && parts.length > 1 ? parts : null;

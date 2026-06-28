@@ -549,7 +549,26 @@ export default function EditBookPage() {
                 )}
               </div>
             </div>
-            {book.progress.message && <p className="text-sm text-gray-400">{book.progress.message}</p>}
+            {book.progress.message && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-gray-400">{book.progress.message}</p>
+                  {book.progress.total > 0 && (
+                    <span className="text-xs text-amber-400 tabular-nums shrink-0">
+                      {Math.round((book.progress.current / book.progress.total) * 100)}%
+                    </span>
+                  )}
+                </div>
+                {book.progress.total > 0 && (
+                  <div className="w-full h-1 bg-gray-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-amber-400 rounded-full transition-all duration-500"
+                      style={{ width: `${Math.round((book.progress.current / book.progress.total) * 100)}%` }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
             {bookVoices(book).map(voice => (
               <VoiceGenProgress key={voice} book={book} voice={voice} />
             ))}
