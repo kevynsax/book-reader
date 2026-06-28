@@ -790,10 +790,9 @@ async function prepareChapterTasks(
   track.audioError = undefined;
   progress.done++;
   await lock.run(() => book.save());
-  emit(io, book, {
-    progress: { current: progress.done, total: progress.total, message: `Generating "${chapter.title}"…` },
-    chapterUpdate: { idx, voice, audioStatus: 'generating' },
-  });
+  // The bar's percent tracks this chapter's own segments (the label names the
+  // chapter), not the whole book — renderChapter emits it per segment below.
+  emit(io, book, { chapterUpdate: { idx, voice, audioStatus: 'generating' } });
 
   const language = chapterSpeechLanguage(book, idx);
   const sentenceById = new Map(chapter.sentences.map(s => [String(s._id), s]));
@@ -862,7 +861,19 @@ async function renderChapter(
   const splits: PendingSplit[] = [];
   try {
     const tasks = await prepareChapterTasks(book, io, voice, idx, audioDir, lock, progress);
-    await runPool(tasks, TTS_CONCURRENCY, task => renderSegment(book, io, pool, task, lock, splits));
+    // Per-chapter progress: percent reflects this chapter's segments (matching the
+    // "Generating …" label), counting any already-complete (resumed) ones.
+    const title = book.chapters[idx].title;
+    const emitChapterProgress = () => {
+      const done = track.segments.filter(s => s.audioStatus === 'complete').length;
+      book.progress = { current: done, total: track.segments.length, message: `Generating "${title}"…` };
+      emit(io, book, { progress: book.progress });
+    };
+    emitChapterProgress();
+    await runPool(tasks, TTS_CONCURRENCY, async task => {
+      await renderSegment(book, io, pool, task, lock, splits);
+      emitChapterProgress();
+    });
   } finally {
     pool.stop();
   }
