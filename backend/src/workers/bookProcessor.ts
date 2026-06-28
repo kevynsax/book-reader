@@ -1032,6 +1032,11 @@ async function generateForVoices(
 }
 
 export async function generateBookAudio(bookId: string, io: SocketServer): Promise<void> {
+  // A book-level (re)generate is a resume — already-complete segments are skipped.
+  // If a run is already in flight, ignore the call so a Continue click can't spawn
+  // a second concurrent render over the same tracks.
+  if (activeAudioBooks.has(bookId)) return;
+
   const book = await Book.findById(bookId);
   if (!book) return;
 

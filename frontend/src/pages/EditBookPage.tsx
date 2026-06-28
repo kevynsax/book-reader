@@ -444,10 +444,11 @@ export default function EditBookPage() {
   // a run failed or finished with some pages unreadable.
   const canReprocess  = book.status === 'error' || failedPages > 0;
   // A newly added voice renders in the background while the book stays 'complete'
-  // (so it remains listenable), leaving its tracks pending/generating — treat that
-  // as active generation so the progress section shows.
+  // (so it remains listenable) — treat an actively-rendering track as generation so
+  // the progress section shows. Only 'generating' counts: leftover 'pending'/'stale'
+  // tracks from an interrupted run mean nothing is running (offer Continue instead).
   const voiceRendering = book.status === 'complete'
-    && book.chapters.some(c => c.tracks?.some(t => t.audioStatus === 'pending' || t.audioStatus === 'generating'));
+    && book.chapters.some(c => c.tracks?.some(t => t.audioStatus === 'generating'));
   const isGenerating  = book.status === 'generating_audio'
     || book.chapters.some(c => chapterStatus(c) === 'generating')
     || voiceRendering;
@@ -616,7 +617,7 @@ export default function EditBookPage() {
                     d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
                 </svg>
                 <p className="text-sm text-amber-300">
-                  {t('Text or chapters have been modified — the current audio no longer reflects the latest content. Click')} <strong>{t('Generate')}</strong> {t('to rebuild.')}
+                  {t('Audio generation is incomplete or out of date. Click')} <strong>{t('Continue')}</strong> {t('to resume — finished chapters are kept and only the rest are rendered.')}
                 </p>
               </div>
             )}
@@ -625,7 +626,7 @@ export default function EditBookPage() {
               disabled={generating}
               onClick={() => book.status === 'complete' || book.status === 'error' ? runGenerate() : setShowVoiceDialog(true)}
             >
-              {generating ? t('Generating…') : book.status === 'error' ? t('Retry') : t('Generate')}
+              {generating ? t('Generating…') : hasStaleAudio ? t('Continue') : book.status === 'error' ? t('Retry') : t('Generate')}
             </button>
           </div>
         )}
