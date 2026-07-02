@@ -1,5 +1,18 @@
 version: '3.8'
 
+# Role workers: one deployment per (role, AI server). Each polls its own
+# server's health every 5s and consumes tasks for its role one at a time.
+# Load balancing is emergent — whichever healthy worker is free claims the
+# next task; a dead worker's unacked task is redelivered by the broker.
+x-worker-base: &worker-base
+  build: ./backend-go
+  restart: unless-stopped
+  command: worker
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  depends_on:
+    - rabbitmq
+
 services:
 
   mongodb:
@@ -8,7 +21,124 @@ services:
     volumes:
       - mongo-data:/data/db
 
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: bookreader
+      RABBITMQ_DEFAULT_PASS: bookreader
+    ports:
+      # Host ports offset to avoid the unrelated broker already on 5672.
+      - "5673:5672"
+      - "15673:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
+  worker-tts:
+    <<: *worker-base
+    environment:
+      AMQP_URL: amqp://bookreader:bookreader@rabbitmq:5672/
+      WORKER_ROLE: tts
+      WORKER_SERVER_ID: tts
+      WORKER_SERVER_LABEL: TTS
+      WORKER_SERVER_URL: https://tts.kevyn.com.br
+
+  worker-tts-macbook:
+    <<: *worker-base
+    environment:
+      AMQP_URL: amqp://bookreader:bookreader@rabbitmq:5672/
+      WORKER_ROLE: tts
+      WORKER_SERVER_ID: macbook
+      WORKER_SERVER_LABEL: MacBook
+      WORKER_SERVER_URL: http://host.docker.internal:8000
+
+  worker-vlm:
+    <<: *worker-base
+    environment:
+      AMQP_URL: amqp://bookreader:bookreader@rabbitmq:5672/
+      WORKER_ROLE: vlm
+      WORKER_SERVER_ID: server
+      WORKER_SERVER_LABEL: Server
+      WORKER_SERVER_URL: https://qwenvl.kevyn.com.br
+      WORKER_SERVER_MODEL: Qwen/Qwen2.5-VL-7B-Instruct-AWQ
+
+  worker-vlm-macbook:
+    <<: *worker-base
+    environment:
+      AMQP_URL: amqp://bookreader:bookreader@rabbitmq:5672/
+      WORKER_ROLE: vlm
+      WORKER_SERVER_ID: macbook
+      WORKER_SERVER_LABEL: MacBook
+      WORKER_SERVER_URL: https://ollama-macbook.kevyn.com.br
+      WORKER_SERVER_MODEL: qwen2.5vl:7b-q8_0
+
+  worker-slm:
+    <<: *worker-base
+    environment:
+      AMQP_URL: amqp://bookreader:bookreader@rabbitmq:5672/
+      WORKER_ROLE: slm
+      WORKER_SERVER_ID: slm
+      WORKER_SERVER_LABEL: SLM
+      WORKER_SERVER_URL: https://slm.kevyn.com.br
+
+  worker-slm-macbook:
+    <<: *worker-base
+    environment:
+      AMQP_URL: amqp://bookreader:bookreader@rabbitmq:5672/
+      WORKER_ROLE: slm
+      WORKER_SERVER_ID: macbook
+      WORKER_SERVER_LABEL: MacBook
+      WORKER_SERVER_URL: https://ollama-macbook.kevyn.com.br
+
+  worker-whisper:
+    <<: *worker-base
+    environment:
+      AMQP_URL: amqp://bookreader:bookreader@rabbitmq:5672/
+      WORKER_ROLE: whisper
+      WORKER_SERVER_ID: whisper
+      WORKER_SERVER_LABEL: Whisper
+      WORKER_SERVER_URL: https://whisper.kevyn.com.br
+
+  worker-whisper-macbook:
+    <<: *worker-base
+    environment:
+      AMQP_URL: amqp://bookreader:bookreader@rabbitmq:5672/
+      WORKER_ROLE: whisper
+      WORKER_SERVER_ID: macbook
+      WORKER_SERVER_LABEL: MacBook
+      WORKER_SERVER_URL: https://whisper-macbook.kevyn.com.br
+
   backend:
+    build: ./backend-go
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    # Server lists (QWENVL_SERVERS for OCR, TTS_SERVERS for synthesis) come from
+    # backend/.env, so config is identical across environments. Keys in
+    # `environment` override the env_file.
+    env_file:
+      - ./backend/.env
+    environment:
+      PORT: 3001
+      MONGODB_URI: mongodb://mongodb:27017/book-reader
+      AMQP_URL: amqp://bookreader:bookreader@rabbitmq:5672/
+      DATA_DIR: /app/data
+      TTS_VOICE: ${TTS_VOICE:-pt-BR-FranciscaNeural}
+      TTS_SPEED: ${TTS_SPEED:-1.0}
+      TTS_LANGUAGE: ${TTS_LANGUAGE:-en}
+      FRONTEND_ORIGIN: http://localhost:5173
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # so the container can reach the host TTS server
+    volumes:
+      - book-data:/app/data
+    depends_on:
+      - mongodb
+      - rabbitmq
+
+  # Retired Node backend, kept for rollback while the Go port soaks:
+  #   docker compose --profile node up -d backend-node   (stop `backend` first — same port)
+  backend-node:
+    profiles: ["node"]
     build:
       context: ./backend
       dockerfile: Dockerfile.dev   # installs poppler-utils; only rebuilt when this file changes
@@ -20,18 +150,16 @@ services:
     environment:
       PORT: 3001
       MONGODB_URI: mongodb://mongodb:27017/book-reader
-      # Server lists (QWENVL_SERVERS for OCR, TTS_SERVERS for synthesis) are read
-      # from backend/.env by dotenv, so config is identical across environments.
       DATA_DIR: /app/data
       TTS_VOICE: ${TTS_VOICE:-pt-BR-FranciscaNeural}
       TTS_SPEED: ${TTS_SPEED:-1.0}
       TTS_LANGUAGE: ${TTS_LANGUAGE:-en}
       FRONTEND_ORIGIN: http://localhost:5173
     extra_hosts:
-      - "host.docker.internal:host-gateway"   # so the container can reach the host TTS server
+      - "host.docker.internal:host-gateway"
     volumes:
-      - ./backend:/app                  # live source edits
-      - backend_modules:/app/node_modules  # isolated from host
+      - ./backend:/app
+      - backend_modules:/app/node_modules
       - book-data:/app/data
     depends_on:
       - mongodb
@@ -51,6 +179,7 @@ services:
 
 volumes:
   mongo-data:
+  rabbitmq-data:
   book-data:
   backend_modules:
   frontend_modules:

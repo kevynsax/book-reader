@@ -43,6 +43,10 @@ export interface ISentence {
   // expanded). `display` is the original reviewed text shown to the reader.
   text: string;
   display?: string;
+  // The book's reviewed sentence as it was BEFORE the SLM (gemma) split it. Only
+  // set on sentences produced by an SLM split — pieces of the same source share
+  // the same `original` — so the model's splitting can be supervised.
+  original?: string;
 }
 
 export interface IChapter {
@@ -165,6 +169,7 @@ const SentenceSchema = new Schema<ISentence>({
   order: { type: Number, required: true },
   text: { type: String, default: '' },
   display: { type: String, default: '' },
+  original: { type: String },
 });
 
 const ChapterSchema = new Schema<IChapter>({

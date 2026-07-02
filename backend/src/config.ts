@@ -128,6 +128,12 @@ export const DEFAULT_VOICE = process.env.TTS_VOICE || 'chatterbox:pt-BR-Francisc
 export const TTS_SPEED = parseFloat(process.env.TTS_SPEED || '1.0');
 // Max sentence syntheses in flight at once, balanced across the ready servers.
 export const TTS_CONCURRENCY = parseInt(process.env.TTS_CONCURRENCY || '5');
+// Max syntheses committed to a single TTS server at once. The tts-2 servers
+// render one request at a time, so anything queued on a slow server is stuck
+// there even when a faster server goes idle; 1 keeps dispatch work-conserving
+// (the next segment always goes to whichever server frees up first). Raise it
+// to pipeline the whisper-verify gap at the cost of deeper per-server queues.
+export const TTS_SERVER_CONCURRENCY = Math.max(1, parseInt(process.env.TTS_SERVER_CONCURRENCY || '1'));
 // How long a server that errored is parked before the balancer re-probes it.
 export const TTS_SERVER_COOLDOWN_MS = parseInt(process.env.TTS_SERVER_COOLDOWN_MS || '15000');
 // How often the balancer re-probes parked/offline servers in the background so a

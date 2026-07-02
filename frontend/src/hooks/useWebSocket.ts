@@ -1,21 +1,71 @@
 import { useEffect } from 'react';
-import { io, Socket } from 'socket.io-client';
 import { useDispatch } from 'react-redux';
 import { AppDispatch, store } from '../store';
 import { applyWsUpdate, syncBooks, fetchDeletePermission, removeBook } from '../store/booksSlice';
 import { Book } from '../types';
 
-let socket: Socket | null = null;
+type Handler = (data: never) => void;
 
-function getSocket(): Socket {
-  if (!socket) {
-    socket = io({ path: '/socket.io', transports: ['websocket', 'polling'] });
+let ws: WebSocket | null = null;
+let backoff = 500;
+const listeners = new Map<string, Set<Handler>>();
+const pending: string[] = [];
+
+function fire(event: string, data: unknown) {
+  listeners.get(event)?.forEach(cb => (cb as (d: unknown) => void)(data));
+}
+
+function on(event: string, cb: Handler): () => void {
+  let set = listeners.get(event);
+  if (!set) {
+    set = new Set();
+    listeners.set(event, set);
   }
+  set.add(cb);
+  return () => { set!.delete(cb); };
+}
+
+function ensureSocket(): WebSocket {
+  if (ws) return ws;
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const socket = new WebSocket(`${proto}://${location.host}/ws`);
+  ws = socket;
+
+  socket.onopen = () => {
+    backoff = 500;
+    pending.splice(0).forEach(msg => socket.send(msg));
+    fire('connect', undefined);
+  };
+  socket.onmessage = e => {
+    try {
+      const { event, data } = JSON.parse(e.data);
+      fire(event, data);
+    } catch {
+      /* ignore malformed frames */
+    }
+  };
+  socket.onclose = () => {
+    if (ws === socket) ws = null;
+    setTimeout(ensureSocket, backoff);
+    backoff = Math.min(backoff * 2, 10_000);
+  };
+  socket.onerror = () => socket.close();
   return socket;
 }
 
+function isConnected(): boolean {
+  return ws?.readyState === WebSocket.OPEN;
+}
+
+function emit(event: string, data: unknown) {
+  const msg = JSON.stringify({ event, data });
+  const socket = ensureSocket();
+  if (socket.readyState === WebSocket.OPEN) socket.send(msg);
+  else pending.push(msg);
+}
+
 export function requestBook(bookId: string) {
-  getSocket().emit('subscribe-to-book', { bookId });
+  emit('subscribe-to-book', { bookId });
 }
 
 // Subscribe to raw book:update payloads (e.g. segment/sentence events the editor
@@ -23,9 +73,8 @@ export function requestBook(bookId: string) {
 export function onBookUpdate(
   cb: (data: { bookId: string } & Record<string, unknown>) => void
 ): () => void {
-  const s = getSocket();
-  s.on('book:update', cb);
-  return () => { s.off('book:update', cb); };
+  ensureSocket();
+  return on('book:update', cb as Handler);
 }
 
 function lastUpdateFromStore(): string | undefined {
@@ -41,36 +90,29 @@ export function useWebSocket() {
 
   useEffect(() => {
     dispatch(fetchDeletePermission());
-    const s = getSocket();
+    ensureSocket();
 
     const onConnect = () => {
-      s.emit('subscribe-to-books', { lastUpdate: lastUpdateFromStore() });
+      emit('subscribe-to-books', { lastUpdate: lastUpdateFromStore() });
     };
-
-    const onSync = (books: Book[]) => {
+    const offConnect = on('connect', onConnect);
+    const offSync = on('books:sync', ((books: Book[]) => {
       dispatch(syncBooks(books));
-    };
-
-    const onUpdate = (data: { bookId: string; updatedAt?: string } & Record<string, unknown>) => {
+    }) as Handler);
+    const offUpdate = on('book:update', ((data: { bookId: string; updatedAt?: string } & Record<string, unknown>) => {
       dispatch(applyWsUpdate(data));
-    };
-
-    const onDeleted = (data: { bookId: string }) => {
+    }) as Handler);
+    const offDeleted = on('book:deleted', ((data: { bookId: string }) => {
       dispatch(removeBook(data.bookId));
-    };
+    }) as Handler);
 
-    s.on('connect', onConnect);
-    s.on('books:sync', onSync);
-    s.on('book:update', onUpdate);
-    s.on('book:deleted', onDeleted);
-
-    if (s.connected) onConnect();
+    if (isConnected()) onConnect();
 
     return () => {
-      s.off('connect', onConnect);
-      s.off('books:sync', onSync);
-      s.off('book:update', onUpdate);
-      s.off('book:deleted', onDeleted);
+      offConnect();
+      offSync();
+      offUpdate();
+      offDeleted();
     };
   }, [dispatch]);
 }

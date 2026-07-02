@@ -1,4 +1,4 @@
-import { TTS_SERVER_COOLDOWN_MS, TTS_SERVER_PROBE_MS } from '../config.js';
+import { TTS_SERVER_CONCURRENCY, TTS_SERVER_COOLDOWN_MS, TTS_SERVER_PROBE_MS } from '../config.js';
 import { TtsServer, ensureModelLoaded } from './ttsServers.js';
 
 interface PoolEntry {
@@ -27,6 +27,7 @@ export class TtsServerPool {
   private entries: PoolEntry[];
   private timer?: ReturnType<typeof setInterval>;
   private probing = false;
+  private waiters: (() => void)[] = [];
 
   constructor(servers: TtsServer[], private modelId: string, opts: PoolOptions = {}) {
     const { readyIds } = opts;
@@ -58,6 +59,7 @@ export class TtsServerPool {
       await Promise.all(parked.map(async e => {
         const ok = await ensureModelLoaded(e.server, this.modelId);
         e.downUntil = ok ? 0 : Date.now() + TTS_SERVER_COOLDOWN_MS;
+        if (ok) this.wake();
       }));
     } finally {
       this.probing = false;
@@ -69,15 +71,35 @@ export class TtsServerPool {
     if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
   }
 
-  // Reserve the least-loaded server that's healthy now and not already tried for
-  // this request. Returns null when every candidate is busy-tried or parked.
+  // Reserve the least-loaded server that's healthy now, under its concurrency
+  // cap, and not already tried for this request. Returns null when every
+  // candidate is at capacity, tried, or parked.
   private take(exclude: Set<string>, now: number): PoolEntry | null {
     const free = this.entries
-      .filter(e => e.downUntil <= now && !exclude.has(e.server.id))
+      .filter(e => e.downUntil <= now && !exclude.has(e.server.id) && e.inFlight < TTS_SERVER_CONCURRENCY)
       .sort((a, b) => a.inFlight - b.inFlight);
     if (free.length === 0) return null;
     free[0].inFlight++;
     return free[0];
+  }
+
+  // Whether an untried, healthy server exists that's merely at capacity — i.e.
+  // waiting for a slot to free is worthwhile (as opposed to everything being
+  // tried or parked).
+  private atCapacity(exclude: Set<string>, now: number): boolean {
+    return this.entries.some(e =>
+      e.downUntil <= now && !exclude.has(e.server.id) && e.inFlight >= TTS_SERVER_CONCURRENCY);
+  }
+
+  private waitForSlot(): Promise<void> {
+    return new Promise(resolve => this.waiters.push(resolve));
+  }
+
+  // Wake every waiter to re-run take(); losers just queue up again.
+  private wake(): void {
+    const waiters = this.waiters;
+    this.waiters = [];
+    for (const w of waiters) w();
   }
 
   // Last resort for a single request: re-probe one parked-and-not-yet-tried
@@ -91,8 +113,11 @@ export class TtsServerPool {
   }
 
   // Run `fn` against a balanced server, falling back to the others if it throws.
-  // Each failing server is parked so concurrent and later calls skip it. Throws
-  // the last error only when no server can complete the request.
+  // When every healthy server is at its concurrency cap, wait for a slot instead
+  // of over-committing to one — the next segment always lands on whichever server
+  // frees up first, so a fast server pulls proportionally more work. Each failing
+  // server is parked so concurrent and later calls skip it. Throws the last error
+  // only when no server can complete the request.
   async run<T>(fn: (server: TtsServer) => Promise<T>): Promise<T> {
     const tried = new Set<string>();
     let lastErr: unknown;
@@ -100,6 +125,10 @@ export class TtsServerPool {
       const now = Date.now();
       const entry = this.take(tried, now);
       if (!entry) {
+        if (this.atCapacity(tried, now)) {
+          await this.waitForSlot();
+          continue;
+        }
         if (await this.revive(tried, now)) continue;
         break;
       }
@@ -111,6 +140,7 @@ export class TtsServerPool {
         tried.add(entry.server.id);
       } finally {
         entry.inFlight = Math.max(0, entry.inFlight - 1);
+        this.wake();
       }
     }
     throw lastErr instanceof Error ? lastErr : new Error('No TTS server available');

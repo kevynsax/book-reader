@@ -1,0 +1,610 @@
+{
+  "normalize": [
+    {
+      "lang": "en",
+      "text": "See Genesis 1:1 for the beginning.",
+      "want": "See genesis chapter one verse one for the beginning."
+    },
+    {
+      "lang": "en",
+      "text": "Compare 1 Cor 13:4-7 and 2 Sam 11:2, 4, 26-27.",
+      "want": "Compare first corinthians chapter thirteen verses four through seven and second samuel chapter eleven verses two, four and twenty six and twenty seven."
+    },
+    {
+      "lang": "en",
+      "text": "As shown in Rom 8:28–30, all things work together.",
+      "want": "As shown in romans chapter eight verses twenty eight through thirty, all things work together."
+    },
+    {
+      "lang": "en",
+      "text": "Read Psalm 23:1-6, then pp. 119-176 in the commentary.",
+      "want": "Read psalms chapter twenty three verses one through six, then on the pages one hundred nineteen through one hundred seventy six in the commentary."
+    },
+    {
+      "lang": "en",
+      "text": "In ch. 38 the LORD answers Job. See also chs. 6-9, 12.",
+      "want": "In chapter thirty eight the LORD answers Job. See also chapters six through nine and twelve."
+    },
+    {
+      "lang": "en",
+      "text": "vv. 2, 3, 21 and 23 make the point (see v. 5).",
+      "want": "verses two, three and twenty one and twenty three make the point (see verse five)."
+    },
+    {
+      "lang": "en",
+      "text": "The books of 1 and 2 Samuel form one narrative.",
+      "want": "The books of first and second samuel form one narrative."
+    },
+    {
+      "lang": "en",
+      "text": "Gen 24 records the marriage; Luke 1 – 2 the birth.",
+      "want": "genesis twenty four records the marriage; luke one and two the birth."
+    },
+    {
+      "lang": "en",
+      "text": "The story of 2 Samuel is about David.",
+      "want": "The story of two Samuel is about David."
+    },
+    {
+      "lang": "en",
+      "text": "It costs 2.3 million dollars, about 1,000 per unit.",
+      "want": "It costs two point three million dollars, about one thousand per unit."
+    },
+    {
+      "lang": "en",
+      "text": "In 1994 there were 25 churches (42 – 45).",
+      "want": "In one thousand nine hundred ninety four there were twenty five churches (forty two through forty five)."
+    },
+    {
+      "lang": "en",
+      "text": "chapters 42 – 45 discuss restoration.",
+      "want": "chapters forty two through forty five discuss restoration."
+    },
+    {
+      "lang": "en",
+      "text": "The NIV and ESV translate it differently, e.g. as \"love\".",
+      "want": "The New International Version and English Standard Version translate it differently, for example as \"love\"."
+    },
+    {
+      "lang": "en",
+      "text": "x=5 means x equals five.",
+      "want": "x equals five means x equals five."
+    },
+    {
+      "lang": "en",
+      "text": "See 3:16 for the gospel in miniature.",
+      "want": "See chapter three verse sixteen for the gospel in miniature."
+    },
+    {
+      "lang": "en",
+      "text": "He waited 3 days and 40 nights, cf. the flood.",
+      "want": "He waited three days and forty nights, compare the flood."
+    },
+    {
+      "lang": "en",
+      "text": "A job 1 means work; Job 1 means scripture.",
+      "want": "A job one means work; job one means scripture."
+    },
+    {
+      "lang": "en",
+      "text": "version v1.5 and the 1st item stay untouched, h2o too.",
+      "want": "version v1.5 and the 1st item stay untouched, h2o too."
+    },
+    {
+      "lang": "en",
+      "text": "Isaiah 53 and Isa 61:1-3 speak of the servant.",
+      "want": "isaiah fifty three and isaiah chapter sixty one verses one through three speak of the servant."
+    },
+    {
+      "lang": "en",
+      "text": "Some numbers: 0, 7, 19, 20, 21, 100, 101, 999, 1000, 2500, 999999, 1000000.",
+      "want": "Some numbers: zero, seven, nineteen, twenty, twenty one, one hundred, one hundred one, nine hundred ninety nine, one thousand, two thousand five hundred, nine hundred ninety nine thousand nine hundred ninety nine, one million."
+    },
+    {
+      "lang": "pt",
+      "text": "Veja Gênesis 1.1 no começo.",
+      "want": "Veja gênesis capítulo um versículo um no começo."
+    },
+    {
+      "lang": "pt",
+      "text": "Compare 1 Co 13.4-7 e 2 Sm 11.2, 4, 26-27.",
+      "want": "Compare primeira coríntios capítulo treze versículos quatro a sete e segunda samuel capítulo onze versículos dois, quatro e vinte e seis e vinte e sete."
+    },
+    {
+      "lang": "pt",
+      "text": "Leia o Salmo 23.1-6 e depois João 3.16.",
+      "want": "Leia o salmos capítulo vinte e três versículos um a seis e depois joão capítulo três versículo dezesseis."
+    },
+    {
+      "lang": "pt",
+      "text": "Os livros de 1 e 2 Samuel formam uma narrativa.",
+      "want": "Os livros de primeira e segunda samuel formam uma narrativa."
+    },
+    {
+      "lang": "pt",
+      "text": "Custa 2,5 milhões, cerca de 1.000 por unidade.",
+      "want": "Custa dois vírgula cinco milhões, cerca de mil por unidade."
+    },
+    {
+      "lang": "pt",
+      "text": "capítulos 42 – 45 tratam da restauração.",
+      "want": "capítulos quarenta e dois a quarenta e cinco tratam da restauração."
+    },
+    {
+      "lang": "pt",
+      "text": "A NVI e a ARA traduzem diferente, i.e. de outra forma.",
+      "want": "A Nova Versão Internacional e a Almeida Revista e Atualizada traduzem diferente, isto é de outra forma."
+    },
+    {
+      "lang": "pt",
+      "text": "Números soltos: 0, 7, 19, 21, 100, 101, 345, 999, 1000, 2500, 550055.",
+      "want": "Números soltos: zero, sete, dezenove, vinte e um, cem, cento e um, trezentos e quarenta e cinco, novecentos e noventa e nove, mil, dois mil e quinhentos, quinhentos e cinquenta mil e cinquenta e cinco."
+    },
+    {
+      "lang": "pt",
+      "text": "Em 2 Reis 2.23 e também 2 Rs 4.1 há milagres.",
+      "want": "Em segunda reis capítulo dois versículo vinte e três e também segunda reis capítulo quatro versículo um há milagres."
+    },
+    {
+      "lang": "pt",
+      "text": "O livro de Jó fala de sofrimento; jó 3 não conta.",
+      "want": "O livro de Jó fala de sofrimento; jó três não conta."
+    },
+    {
+      "lang": "unknown",
+      "text": "Genesis 1:1 with unknown language falls back to English, 42 too.",
+      "want": "genesis chapter one verse one with unknown language falls back to English, forty two too."
+    },
+    {
+      "lang": "pt-br",
+      "text": "Marcos 4.35 na língua pt-br.",
+      "want": "marcos capítulo quatro versículo trinta e cinco na língua pt-br."
+    }
+  ],
+  "reflow": [
+    {
+      "text": "The quick brown fox. It jumped over the dog.\nAnd then it ran away!",
+      "want": "The quick brown fox.\nIt jumped over the dog.\nAnd then it ran away!"
+    },
+    {
+      "text": "A hard\nwrapped line that continues\non the next line. Second sentence here.",
+      "want": "A hard wrapped line that continues on the next line.\nSecond sentence here."
+    },
+    {
+      "text": "He said \"Hello.\" Then left.\n\nNew paragraph starts. (A short aside.) More text.",
+      "want": "He said \"Hello.\"\nThen left.\n\nNew paragraph starts. (A short aside.)\nMore text."
+    },
+    {
+      "text": "See ch. 38 for details. It continues.",
+      "want": "See ch. 38 for details.\nIt continues."
+    },
+    {
+      "text": "Wait... what happened? The OCR spaced dots . . . remain inline.",
+      "want": "Wait... what happened?\nThe OCR spaced dots . . . remain inline."
+    },
+    {
+      "text": "A sentence with (a bracketed aside that is quite short) inside it. Next one.",
+      "want": "A sentence with (a bracketed aside that is quite short) inside it.\nNext one."
+    },
+    {
+      "text": "Title Line\n\nBody text follows here. And more. And more still?",
+      "want": "Title Line\n\nBody text follows here.\nAnd more.\nAnd more still?"
+    },
+    {
+      "text": "Ele disse: \"Olá!\" E saiu. (Um aparte curto.) Fim da história…",
+      "want": "Ele disse: \"Olá!\"\nE saiu. (Um aparte curto.)\nFim da história…"
+    },
+    {
+      "text": "Verses vv. 6-9 stay glued. As do pp. 12-14 and vol. 3 references.",
+      "want": "Verses vv. 6-9 stay glued.\nAs do pp. 12-14 and vol. 3 references."
+    }
+  ],
+  "isTitle": [
+    {
+      "text": "Chapter One",
+      "want": true
+    },
+    {
+      "text": "A somewhat longer line of text that runs on",
+      "want": false
+    },
+    {
+      "text": "One",
+      "want": true
+    },
+    {
+      "text": "",
+      "want": false
+    },
+    {
+      "text": "Five words exactly in here",
+      "want": true
+    }
+  ],
+  "similarity": [
+    {
+      "a": "Hello world, this is a test.",
+      "b": "hello world this is a test",
+      "want": 1,
+      "words": [
+        "hello",
+        "world",
+        "this",
+        "is",
+        "a",
+        "test"
+      ]
+    },
+    {
+      "a": "Genesis chapter one verse one",
+      "b": "genesis chapter 1 verse 1",
+      "want": 0.6,
+      "words": [
+        "genesis",
+        "chapter",
+        "one",
+        "verse",
+        "one"
+      ]
+    },
+    {
+      "a": "completely different text here",
+      "b": "nothing alike whatsoever friend",
+      "want": 0,
+      "words": [
+        "completely",
+        "different",
+        "text",
+        "here"
+      ]
+    },
+    {
+      "a": "Coração de João",
+      "b": "coracao de joao",
+      "want": 1,
+      "words": [
+        "coracao",
+        "de",
+        "joao"
+      ]
+    },
+    {
+      "a": "",
+      "b": "",
+      "want": 1,
+      "words": []
+    },
+    {
+      "a": "something",
+      "b": "",
+      "want": 0,
+      "words": [
+        "something"
+      ]
+    }
+  ],
+  "sanitize": [
+    {
+      "text": "```json\n{\"language\":\"en\",\"content\":\"Hello world\"}\n```",
+      "want": "Hello world"
+    },
+    {
+      "text": "{\"language\":\"pt\",\"content\":\"Linha um\\nLinha dois\"}",
+      "want": "Linha um\nLinha dois"
+    },
+    {
+      "text": "Plain text stays as is.",
+      "want": "Plain text stays as is."
+    },
+    {
+      "text": "{\"content\": \"Broken json without close",
+      "want": "Broken json without close"
+    },
+    {
+      "text": "  {\"language\":\"en\",\"content\":\"trimmed\"}  ",
+      "want": "trimmed"
+    }
+  ],
+  "numbers": [
+    {
+      "lang": "en",
+      "n": 0,
+      "words": "zero"
+    },
+    {
+      "lang": "en",
+      "n": 1,
+      "words": "one"
+    },
+    {
+      "lang": "en",
+      "n": 7,
+      "words": "seven"
+    },
+    {
+      "lang": "en",
+      "n": 13,
+      "words": "thirteen"
+    },
+    {
+      "lang": "en",
+      "n": 19,
+      "words": "nineteen"
+    },
+    {
+      "lang": "en",
+      "n": 20,
+      "words": "twenty"
+    },
+    {
+      "lang": "en",
+      "n": 21,
+      "words": "twenty one"
+    },
+    {
+      "lang": "en",
+      "n": 42,
+      "words": "forty two"
+    },
+    {
+      "lang": "en",
+      "n": 99,
+      "words": "ninety nine"
+    },
+    {
+      "lang": "en",
+      "n": 100,
+      "words": "one hundred"
+    },
+    {
+      "lang": "en",
+      "n": 101,
+      "words": "one hundred one"
+    },
+    {
+      "lang": "en",
+      "n": 110,
+      "words": "one hundred ten"
+    },
+    {
+      "lang": "en",
+      "n": 199,
+      "words": "one hundred ninety nine"
+    },
+    {
+      "lang": "en",
+      "n": 200,
+      "words": "two hundred"
+    },
+    {
+      "lang": "en",
+      "n": 345,
+      "words": "three hundred forty five"
+    },
+    {
+      "lang": "en",
+      "n": 999,
+      "words": "nine hundred ninety nine"
+    },
+    {
+      "lang": "en",
+      "n": 1000,
+      "words": "one thousand"
+    },
+    {
+      "lang": "en",
+      "n": 1001,
+      "words": "one thousand one"
+    },
+    {
+      "lang": "en",
+      "n": 1100,
+      "words": "one thousand one hundred"
+    },
+    {
+      "lang": "en",
+      "n": 2500,
+      "words": "two thousand five hundred"
+    },
+    {
+      "lang": "en",
+      "n": 2550,
+      "words": "two thousand five hundred fifty"
+    },
+    {
+      "lang": "en",
+      "n": 100000,
+      "words": "one hundred thousand"
+    },
+    {
+      "lang": "en",
+      "n": 550055,
+      "words": "five hundred fifty thousand fifty five"
+    },
+    {
+      "lang": "en",
+      "n": 999999,
+      "words": "nine hundred ninety nine thousand nine hundred ninety nine"
+    },
+    {
+      "lang": "en",
+      "n": 1000000,
+      "words": "one million"
+    },
+    {
+      "lang": "en",
+      "n": 1000001,
+      "words": "one million one"
+    },
+    {
+      "lang": "en",
+      "n": 2000000,
+      "words": "two million"
+    },
+    {
+      "lang": "en",
+      "n": 2500000,
+      "words": "two million five hundred thousand"
+    },
+    {
+      "lang": "en",
+      "n": 999999999,
+      "words": "nine hundred ninety nine million nine hundred ninety nine thousand nine hundred ninety nine"
+    },
+    {
+      "lang": "en",
+      "n": 1000000000,
+      "words": "1000000000"
+    },
+    {
+      "lang": "pt",
+      "n": 0,
+      "words": "zero"
+    },
+    {
+      "lang": "pt",
+      "n": 1,
+      "words": "um"
+    },
+    {
+      "lang": "pt",
+      "n": 7,
+      "words": "sete"
+    },
+    {
+      "lang": "pt",
+      "n": 13,
+      "words": "treze"
+    },
+    {
+      "lang": "pt",
+      "n": 19,
+      "words": "dezenove"
+    },
+    {
+      "lang": "pt",
+      "n": 20,
+      "words": "vinte"
+    },
+    {
+      "lang": "pt",
+      "n": 21,
+      "words": "vinte e um"
+    },
+    {
+      "lang": "pt",
+      "n": 42,
+      "words": "quarenta e dois"
+    },
+    {
+      "lang": "pt",
+      "n": 99,
+      "words": "noventa e nove"
+    },
+    {
+      "lang": "pt",
+      "n": 100,
+      "words": "cem"
+    },
+    {
+      "lang": "pt",
+      "n": 101,
+      "words": "cento e um"
+    },
+    {
+      "lang": "pt",
+      "n": 110,
+      "words": "cento e dez"
+    },
+    {
+      "lang": "pt",
+      "n": 199,
+      "words": "cento e noventa e nove"
+    },
+    {
+      "lang": "pt",
+      "n": 200,
+      "words": "duzentos"
+    },
+    {
+      "lang": "pt",
+      "n": 345,
+      "words": "trezentos e quarenta e cinco"
+    },
+    {
+      "lang": "pt",
+      "n": 999,
+      "words": "novecentos e noventa e nove"
+    },
+    {
+      "lang": "pt",
+      "n": 1000,
+      "words": "mil"
+    },
+    {
+      "lang": "pt",
+      "n": 1001,
+      "words": "mil e um"
+    },
+    {
+      "lang": "pt",
+      "n": 1100,
+      "words": "mil e cem"
+    },
+    {
+      "lang": "pt",
+      "n": 2500,
+      "words": "dois mil e quinhentos"
+    },
+    {
+      "lang": "pt",
+      "n": 2550,
+      "words": "dois mil quinhentos e cinquenta"
+    },
+    {
+      "lang": "pt",
+      "n": 100000,
+      "words": "cem mil"
+    },
+    {
+      "lang": "pt",
+      "n": 550055,
+      "words": "quinhentos e cinquenta mil e cinquenta e cinco"
+    },
+    {
+      "lang": "pt",
+      "n": 999999,
+      "words": "novecentos e noventa e nove mil novecentos e noventa e nove"
+    },
+    {
+      "lang": "pt",
+      "n": 1000000,
+      "words": "um milhão"
+    },
+    {
+      "lang": "pt",
+      "n": 1000001,
+      "words": "um milhão e um"
+    },
+    {
+      "lang": "pt",
+      "n": 2000000,
+      "words": "dois milhões"
+    },
+    {
+      "lang": "pt",
+      "n": 2500000,
+      "words": "dois milhões e quinhentos mil"
+    },
+    {
+      "lang": "pt",
+      "n": 999999999,
+      "words": "novecentos e noventa e nove milhões novecentos e noventa e nove mil novecentos e noventa e nove"
+    },
+    {
+      "lang": "pt",
+      "n": 1000000000,
+      "words": "1000000000"
+    }
+  ]
+}

@@ -11,7 +11,7 @@ export default defineConfig({
     host: true, // bind 0.0.0.0 so Docker port-mapping works
     proxy: {
       '/api': { target: backendUrl, changeOrigin: true },
-      '/socket.io': { target: backendUrl, ws: true, changeOrigin: true },
+      '/ws': { target: backendUrl, ws: true, changeOrigin: true },
     },
   },
 });

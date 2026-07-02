@@ -468,18 +468,19 @@ async function splitUnitForTts(
   display: string,
   language: string,
   depth = 0,
-): Promise<{ text: string; display: string }[]> {
+  original?: string,
+): Promise<{ text: string; display: string; original?: string }[]> {
   const clean = display.trim();
   if (!clean) return [];
   const norm = (await normalizeForSpeech(clean, language)).trim();
   if (!norm) return [];
   if (norm.length <= TTS_MAX_SENTENCE_CHARS || depth >= SENTENCE_SPLIT_MAX_DEPTH) {
-    return [{ text: norm, display: clean }];
+    return [{ text: norm, display: clean, original }];
   }
   const parts = await slmSplitToMax(clean, TTS_MAX_SENTENCE_CHARS);
-  if (!parts) return [{ text: norm, display: clean }];
-  const out: { text: string; display: string }[] = [];
-  for (const part of parts) out.push(...await splitUnitForTts(part, language, depth + 1));
+  if (!parts) return [{ text: norm, display: clean, original }];
+  const out: { text: string; display: string; original?: string }[] = [];
+  for (const part of parts) out.push(...await splitUnitForTts(part, language, depth + 1, original ?? clean));
   return out;
 }
 
@@ -496,7 +497,7 @@ async function buildSentences(book: IBook, io: SocketServer, idx: number, lock: 
   if (units.length === 0) return false;
 
   const language = chapterSpeechLanguage(book, idx);
-  const sentences: { text: string; display: string }[] = [];
+  const sentences: { text: string; display: string; original?: string }[] = [];
   // Splitting happens once per chapter (shared by every voice). Report it on its
   // own transient `splitProgress` channel — a separate bar from the overall
   // generation progress — emitting completed-count so it climbs to 100%; the
@@ -585,6 +586,7 @@ interface SegmentTask {
 interface PendingSplit {
   sentenceId: string;
   extra: RenderedPiece[];
+  original: string;
 }
 
 // Books with audio generation currently in flight, and those a user has asked to
@@ -671,9 +673,11 @@ async function renderSegment(
     seg.audioPath = segPath;
     seg.durationSecs = pieces[0].durationSecs;
     if (pieces.length > 1) {
+      const original = sentence.original?.trim() || display;
       sentence.text = pieces[0].text;
       sentence.display = pieces[0].display;
-      splits.push({ sentenceId: String(sentence._id), extra: pieces.slice(1) });
+      sentence.original = original;
+      splits.push({ sentenceId: String(sentence._id), extra: pieces.slice(1), original });
     }
     seg.audioStatus = 'complete';
     seg.audioError = undefined;
@@ -706,16 +710,17 @@ async function applyChapterSplits(
 ): Promise<void> {
   if (splits.length === 0) return;
   const chapter = book.chapters[idx];
-  const extraById = new Map(splits.map(s => [s.sentenceId, s.extra]));
+  const splitById = new Map(splits.map(s => [s.sentenceId, s]));
 
   // Rebuild the ordered sentence list, expanding each split sentence in place.
   const newAudioByNewId: { id: string; piece: RenderedPiece }[] = [];
-  const rebuilt: { _id: Types.ObjectId; text: string; display: string }[] = [];
+  const rebuilt: { _id: Types.ObjectId; text: string; display: string; original?: string }[] = [];
   for (const s of [...chapter.sentences].sort((a, b) => a.order - b.order)) {
-    rebuilt.push({ _id: s._id, text: s.text, display: s.display ?? s.text });
-    for (const piece of extraById.get(String(s._id)) ?? []) {
+    rebuilt.push({ _id: s._id, text: s.text, display: s.display ?? s.text, original: s.original });
+    const split = splitById.get(String(s._id));
+    for (const piece of split?.extra ?? []) {
       const _id = new Types.ObjectId();
-      rebuilt.push({ _id, text: piece.text, display: piece.display });
+      rebuilt.push({ _id, text: piece.text, display: piece.display, original: split!.original });
       newAudioByNewId.push({ id: String(_id), piece });
     }
   }

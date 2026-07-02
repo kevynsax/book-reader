@@ -600,11 +600,9 @@ export default function EditBookPage() {
                 color="sky"
               />
             )}
-            {bookVoices(book)
-              .filter(voice => book.chapters.some(c => chapterStatus(c, [voice]) !== 'pending'))
-              .map(voice => (
-                <VoiceGenProgress key={voice} book={book} voice={voice} />
-              ))}
+            {bookVoices(book).map(voice => (
+              <VoiceGenProgress key={voice} book={book} voice={voice} />
+            ))}
           </div>
         )}
 

@@ -811,6 +811,7 @@ export function booksRouter(io: SocketServer) {
           _id: String(s._id),
           order: s.order,
           text: s.text,
+          original: s.original,
           audioStatus: seg?.audioStatus ?? 'pending',
           audioError: seg?.audioError,
         };
