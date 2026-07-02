@@ -12,12 +12,21 @@ export type BookStatus =
 
 export type AudioStatus = 'pending' | 'stale' | 'generating' | 'complete' | 'error';
 
+export interface Segment {
+  sentenceId: string;
+  audioStatus: AudioStatus;
+  audioPath?: string;
+  durationSecs?: number;
+  audioError?: string;
+}
+
 export interface VoiceTrack {
   voice: string;
   audioPath?: string;
   audioDurationSecs?: number;
   audioStatus: AudioStatus;
   audioError?: string;
+  segments?: Segment[];
 }
 
 // Read-along: a spoken sentence and its start/end time (seconds) in the chapter audio.

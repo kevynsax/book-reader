@@ -234,6 +234,9 @@ const booksSlice = createSlice({
             if (cu.audioPath) track.audioPath = cu.audioPath;
             if (cu.audioDurationSecs !== undefined) track.audioDurationSecs = cu.audioDurationSecs;
           }
+          if (voice && cu.audioStatus !== 'generating' && book.voiceProgress?.[voice]?.chapterIdx === cu.idx) {
+            delete book.voiceProgress[voice];
+          }
         }
       }
     },

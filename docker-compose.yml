@@ -90,7 +90,7 @@ services:
       WORKER_SERVER_ID: macbook
       WORKER_SERVER_LABEL: MacBook
       WORKER_SERVER_URL: https://ollama-macbook.kevyn.com.br
-      WORKER_SERVER_MODEL: gemma4:12b-mlx
+      WORKER_SERVER_MODEL: gemma4:latest
 
   worker-whisper:
     <<: *worker-base

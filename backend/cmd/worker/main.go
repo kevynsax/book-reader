@@ -55,11 +55,83 @@ type worker struct {
 	// queue. Render lanes for different models then split cleanly across
 	// servers instead of one multi-model server hot-swapping on every task.
 	// Goes cold after affinityWindow with no task, re-subscribing to all.
+	//
+	// Exception (starvation guard): a queue whose model has NO other healthy
+	// provider is never dropped — if this worker is the only server that can
+	// render a model, going hot on something else would stall that model's
+	// lane indefinitely. peers tracks the other tts workers' heartbeats.
 	affModel string
 	affAt    time.Time
+	peers    map[string]peerState
 }
 
-const affinityWindow = 30 * time.Second
+type peerState struct {
+	models map[string]bool
+	seen   time.Time
+}
+
+const (
+	affinityWindow = 30 * time.Second
+	peerExpiry     = 15 * time.Second
+)
+
+// watchPeers consumes the heartbeat fanout (own channel — the task channel's
+// Qos(1) must not throttle it) and keeps a live map of which models the other
+// healthy tts workers can serve.
+func (w *worker) watchPeers(conn *amqp.Connection) error {
+	ch, err := conn.Channel()
+	if err != nil {
+		return err
+	}
+	q, err := ch.QueueDeclare("", false, true, true, false, nil)
+	if err != nil {
+		return err
+	}
+	if err := ch.QueueBind(q.Name, "", queue.HeartbeatQueue, false, nil); err != nil {
+		return err
+	}
+	beats, err := ch.Consume(q.Name, "", true, true, false, false, nil)
+	if err != nil {
+		return err
+	}
+	go func() {
+		for d := range beats {
+			var hb queue.Heartbeat
+			if err := json.Unmarshal(d.Body, &hb); err != nil {
+				continue
+			}
+			if hb.Role != queue.RoleTTS || hb.ServerID == w.serverID || !hb.Healthy {
+				continue
+			}
+			models := map[string]bool{}
+			for _, m := range hb.Models {
+				models[m.ID] = true
+			}
+			w.mu.Lock()
+			if w.peers == nil {
+				w.peers = map[string]peerState{}
+			}
+			w.peers[hb.ServerID] = peerState{models: models, seen: time.Now()}
+			w.mu.Unlock()
+		}
+	}()
+	return nil
+}
+
+// hasOtherProvider reports whether any other live tts worker advertises the
+// model. Must be called with w.mu held.
+func (w *worker) hasOtherProviderLocked(model string) bool {
+	for id, p := range w.peers {
+		if time.Since(p.seen) > peerExpiry {
+			delete(w.peers, id)
+			continue
+		}
+		if p.models[model] {
+			return true
+		}
+	}
+	return false
+}
 
 func (w *worker) touchAffinity(model string) {
 	w.mu.Lock()
@@ -136,6 +208,12 @@ func (w *worker) run(amqpURL string, healthEvery time.Duration) error {
 	w.consumers = map[string]string{}
 	w.mu.Unlock()
 
+	if w.role == queue.RoleTTS {
+		if err := w.watchPeers(conn); err != nil {
+			return fmt.Errorf("peer watch: %w", err)
+		}
+	}
+
 	closed := make(chan *amqp.Error, 1)
 	conn.NotifyClose(closed)
 
@@ -173,8 +251,10 @@ func (w *worker) healthCycle() {
 
 	// The queues this worker should be consuming right now: nothing while
 	// unhealthy; the role queue for vlm/slm/whisper; one queue per advertised
-	// model for tts (capability routing) — narrowed to just the hot model
-	// while affinity holds.
+	// model for tts (capability routing) — narrowed to the hot model while
+	// affinity holds, EXCEPT models only this worker can serve: those queues
+	// stay subscribed always, so being hot on a shared model can never starve
+	// a sole-provider model's lane.
 	desired := map[string]bool{}
 	if hb.Healthy {
 		if w.role == queue.RoleTTS {
@@ -183,20 +263,19 @@ func (w *worker) healthCycle() {
 			if hot != "" && time.Since(w.affAt) > affinityWindow {
 				hot, w.affModel = "", ""
 			}
-			w.mu.Unlock()
 			hotAdvertised := false
 			for _, m := range hb.Models {
 				if m.ID == hot {
 					hotAdvertised = true
 				}
 			}
-			if hot != "" && hotAdvertised {
-				desired[queue.TTSTaskQueue(hot)] = true
-			} else {
-				for _, m := range hb.Models {
+			for _, m := range hb.Models {
+				soleProvider := !w.hasOtherProviderLocked(m.ID)
+				if hot == "" || !hotAdvertised || m.ID == hot || soleProvider {
 					desired[queue.TTSTaskQueue(m.ID)] = true
 				}
 			}
+			w.mu.Unlock()
 		} else {
 			desired[queue.TaskQueueName(w.role)] = true
 		}

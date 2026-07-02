@@ -277,7 +277,22 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
   const generating = statuses.some(s => s === 'generating');
   const errored    = statuses.some(s => s === 'error');
   const allDone    = total > 0 && done === total;
-  const live       = generating ? book.voiceProgress?.[voice] : undefined;
+  // Segment progress: live WS numbers when we have them; derived from the
+  // generating chapter's segments otherwise (e.g. right after a page reload,
+  // before the next voiceProgress event arrives).
+  let live = generating ? book.voiceProgress?.[voice] : undefined;
+  if (generating && !live) {
+    const genIdx = statuses.findIndex(s => s === 'generating');
+    const segs = genIdx !== -1 ? trackFor(book.chapters[genIdx], voice)?.segments : undefined;
+    if (segs?.length) {
+      live = {
+        voice, chapterIdx: genIdx,
+        current: segs.filter(s => s.audioStatus === 'complete').length,
+        total: segs.length,
+        message: t('Generating {title}…', { title: `"${book.chapters[genIdx].title || t('Chapter {n}', { n: genIdx + 1 })}"` }),
+      };
+    }
+  }
 
   return (
     <div className="rounded-lg border border-gray-800 bg-gray-900/40 overflow-hidden">
