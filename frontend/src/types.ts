@@ -27,6 +27,10 @@ export interface VoiceTrack {
   audioStatus: AudioStatus;
   audioError?: string;
   segments?: Segment[];
+  // Present on the WS sync payload (segments themselves are stripped there):
+  // seeds the per-voice progress bar right after a page load.
+  segmentsDone?: number;
+  segmentsTotal?: number;
 }
 
 // Read-along: a spoken sentence and its start/end time (seconds) in the chapter audio.

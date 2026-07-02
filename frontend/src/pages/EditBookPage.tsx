@@ -283,12 +283,14 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
   let live = generating ? book.voiceProgress?.[voice] : undefined;
   if (generating && !live) {
     const genIdx = statuses.findIndex(s => s === 'generating');
-    const segs = genIdx !== -1 ? trackFor(book.chapters[genIdx], voice)?.segments : undefined;
-    if (segs?.length) {
+    const track = genIdx !== -1 ? trackFor(book.chapters[genIdx], voice) : undefined;
+    const segTotal = track?.segmentsTotal ?? track?.segments?.length ?? 0;
+    const segDone = track?.segmentsDone ?? track?.segments?.filter(s => s.audioStatus === 'complete').length ?? 0;
+    if (track && segTotal > 0) {
       live = {
         voice, chapterIdx: genIdx,
-        current: segs.filter(s => s.audioStatus === 'complete').length,
-        total: segs.length,
+        current: segDone,
+        total: segTotal,
         message: t('Generating {title}…', { title: `"${book.chapters[genIdx].title || t('Chapter {n}', { n: genIdx + 1 })}"` }),
       };
     }

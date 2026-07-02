@@ -193,6 +193,11 @@ type ClientTrack struct {
 	AudioDurationSecs *float64    `json:"audioDurationSecs,omitempty"`
 	AudioStatus       AudioStatus `json:"audioStatus"`
 	AudioError        *string     `json:"audioError,omitempty"`
+	// Segment progress counts (segments themselves are stripped from the
+	// sync payload) so the UI can seed per-voice progress bars on page load,
+	// before the first live voiceProgress event arrives.
+	SegmentsDone  int `json:"segmentsDone"`
+	SegmentsTotal int `json:"segmentsTotal"`
 }
 
 type ClientChapter struct {
@@ -208,12 +213,20 @@ func SerializeChaptersForClient(chapters []Chapter) []ClientChapter {
 	for i, c := range chapters {
 		tracks := make([]ClientTrack, len(c.Tracks))
 		for j, t := range c.Tracks {
+			done := 0
+			for _, s := range t.Segments {
+				if s.AudioStatus == AudioComplete {
+					done++
+				}
+			}
 			tracks[j] = ClientTrack{
 				Voice:             t.Voice,
 				AudioPath:         t.AudioPath,
 				AudioDurationSecs: t.AudioDurationSecs,
 				AudioStatus:       t.AudioStatus,
 				AudioError:        t.AudioError,
+				SegmentsDone:      done,
+				SegmentsTotal:     len(t.Segments),
 			}
 		}
 		out[i] = ClientChapter{ID: c.ID, Title: c.Title, StartPage: c.StartPage, StartChar: c.StartChar, Tracks: tracks}
