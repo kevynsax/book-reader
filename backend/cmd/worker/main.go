@@ -77,7 +77,12 @@ type peerState struct {
 // model's task, paying two hot-swaps per lapse.
 const (
 	affinityWindow = 120 * time.Second
-	peerExpiry     = 15 * time.Second
+	// How long a peer's last healthy heartbeat keeps counting it as a
+	// provider. Generous on purpose: a GPU busy with a long render can miss
+	// health probes for a few cycles, and treating that flap as "the peer is
+	// gone" makes this worker take over the peer's queue and hot-swap-thrash.
+	// A truly dead server still fails over in ~a minute.
+	peerExpiry = 75 * time.Second
 )
 
 // watchPeers consumes the heartbeat fanout (own channel — the task channel's
