@@ -50,24 +50,16 @@ type worker struct {
 	// executes one task at a time across all its queues.
 	consumers map[string]string
 
-	// Soft model affinity: while this tts worker is "hot" on a model (a
-	// synthesize task for it ran recently), it consumes ONLY that model's
-	// queue. Render lanes for different models then split cleanly across
-	// servers instead of one multi-model server hot-swapping on every task.
-	// Goes cold after affinityWindow with no task, re-subscribing to all.
-	//
-	// Exception (starvation guard): a queue whose model has NO other healthy
-	// provider is never dropped — if this worker is the only server that can
-	// render a model, going hot on something else would stall that model's
-	// lane indefinitely. peers tracks the other tts workers' heartbeats.
-	affModel string
-	affAt    time.Time
-	peers    map[string]peerState
-}
-
-type peerState struct {
-	models map[string]bool
-	seen   time.Time
+	// One model at a time: a tts worker consumes exactly one model's queue
+	// while that model has work, so its server keeps a single model in memory
+	// instead of hot-swap-thrashing when several models' lanes are active at
+	// once. focusModel is the queue being consumed; affModel/affAt track the
+	// last executed task so a lane's think-gaps (whisper + SLM between synths)
+	// don't drop the focus.
+	affModel   string
+	affAt      time.Time
+	focusModel string
+	focusSince time.Time
 }
 
 // affinityWindow must comfortably exceed the gap between two synthesize tasks
@@ -77,66 +69,74 @@ type peerState struct {
 // model's task, paying two hot-swaps per lapse.
 const (
 	affinityWindow = 120 * time.Second
-	// How long a peer's last healthy heartbeat keeps counting it as a
-	// provider. Generous on purpose: a GPU busy with a long render can miss
-	// health probes for a few cycles, and treating that flap as "the peer is
-	// gone" makes this worker take over the peer's queue and hot-swap-thrash.
-	// A truly dead server still fails over in ~a minute.
-	peerExpiry = 75 * time.Second
+	// Fairness slice: when another model's queue has work waiting, the focus
+	// rotates after at most this long, so no lane ever waits past the tts RPC
+	// timeout (300s) minus one in-flight render. One swap per slice instead
+	// of one per task.
+	focusSlice = 150 * time.Second
 )
 
-// watchPeers consumes the heartbeat fanout (own channel — the task channel's
-// Qos(1) must not throttle it) and keeps a live map of which models the other
-// healthy tts workers can serve.
-func (w *worker) watchPeers(conn *amqp.Connection) error {
-	ch, err := conn.Channel()
-	if err != nil {
-		return err
-	}
-	q, err := ch.QueueDeclare("", false, true, true, false, nil)
-	if err != nil {
-		return err
-	}
-	if err := ch.QueueBind(q.Name, "", queue.HeartbeatQueue, false, nil); err != nil {
-		return err
-	}
-	beats, err := ch.Consume(q.Name, "", true, true, false, false, nil)
-	if err != nil {
-		return err
-	}
-	go func() {
-		for d := range beats {
-			var hb queue.Heartbeat
-			if err := json.Unmarshal(d.Body, &hb); err != nil {
-				continue
-			}
-			if hb.Role != queue.RoleTTS || hb.ServerID == w.serverID || !hb.Healthy {
-				continue
-			}
-			models := map[string]bool{}
-			for _, m := range hb.Models {
-				models[m.ID] = true
-			}
-			w.mu.Lock()
-			if w.peers == nil {
-				w.peers = map[string]peerState{}
-			}
-			w.peers[hb.ServerID] = peerState{models: models, seen: time.Now()}
-			w.mu.Unlock()
+// pickFocus decides which single model queue this tts worker should consume.
+// Focus sticks while its model has queued work or ran a task recently, and
+// rotates to the deepest waiting queue when it goes idle or exhausts its
+// fairness slice. Empty focus (nothing queued anywhere, nothing recent) means
+// consume all advertised queues — the first task then locks a new focus.
+func (w *worker) pickFocus(ch *amqp.Channel, advertised []string) string {
+	depths := map[string]int{}
+	for _, m := range advertised {
+		d, err := queue.TaskQueueDepth(ch, queue.TTSTaskQueue(m))
+		if err != nil {
+			return ""
 		}
-	}()
-	return nil
+		depths[m] = d
+	}
+	deepest := func(skip string) string {
+		best, bestDepth := "", 0
+		for _, m := range advertised {
+			if m != skip && depths[m] > bestDepth {
+				best, bestDepth = m, depths[m]
+			}
+		}
+		return best
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	focus := w.focusModel
+	if focus != "" && !contains(advertised, focus) {
+		focus = ""
+	}
+	hot := w.affModel != "" && time.Since(w.affAt) <= affinityWindow && contains(advertised, w.affModel)
+
+	if focus == "" {
+		if next := deepest(""); next != "" {
+			focus = next
+		} else if hot {
+			focus = w.affModel
+		}
+	} else {
+		active := depths[focus] > 0 || (hot && w.affModel == focus)
+		waiting := deepest(focus)
+		switch {
+		case waiting != "" && (!active || time.Since(w.focusSince) > focusSlice):
+			focus = waiting
+		case !active && waiting == "":
+			focus = ""
+		}
+	}
+
+	if focus != w.focusModel {
+		w.focusModel, w.focusSince = focus, time.Now()
+		if focus != "" {
+			log.Printf("worker: focusing on model %s", focus)
+		}
+	}
+	return focus
 }
 
-// hasOtherProvider reports whether any other live tts worker advertises the
-// model. Must be called with w.mu held.
-func (w *worker) hasOtherProviderLocked(model string) bool {
-	for id, p := range w.peers {
-		if time.Since(p.seen) > peerExpiry {
-			delete(w.peers, id)
-			continue
-		}
-		if p.models[model] {
+func contains(list []string, v string) bool {
+	for _, item := range list {
+		if item == v {
 			return true
 		}
 	}
@@ -218,12 +218,6 @@ func (w *worker) run(amqpURL string, healthEvery time.Duration) error {
 	w.consumers = map[string]string{}
 	w.mu.Unlock()
 
-	if w.role == queue.RoleTTS {
-		if err := w.watchPeers(conn); err != nil {
-			return fmt.Errorf("peer watch: %w", err)
-		}
-	}
-
 	closed := make(chan *amqp.Error, 1)
 	conn.NotifyClose(closed)
 
@@ -260,32 +254,23 @@ func (w *worker) healthCycle() {
 	})
 
 	// The queues this worker should be consuming right now: nothing while
-	// unhealthy; the role queue for vlm/slm/whisper; one queue per advertised
-	// model for tts (capability routing) — narrowed to the hot model while
-	// affinity holds, EXCEPT models only this worker can serve: those queues
-	// stay subscribed always, so being hot on a shared model can never starve
-	// a sole-provider model's lane.
+	// unhealthy; the role queue for vlm/slm/whisper; for tts, the single
+	// focused model queue (one model in server memory at a time), or all
+	// advertised queues while idle so the next task can lock a new focus.
 	desired := map[string]bool{}
 	if hb.Healthy {
 		if w.role == queue.RoleTTS {
-			w.mu.Lock()
-			hot := w.affModel
-			if hot != "" && time.Since(w.affAt) > affinityWindow {
-				hot, w.affModel = "", ""
-			}
-			hotAdvertised := false
+			advertised := make([]string, 0, len(hb.Models))
 			for _, m := range hb.Models {
-				if m.ID == hot {
-					hotAdvertised = true
+				advertised = append(advertised, m.ID)
+			}
+			if focus := w.pickFocus(ch, advertised); focus != "" {
+				desired[queue.TTSTaskQueue(focus)] = true
+			} else {
+				for _, m := range advertised {
+					desired[queue.TTSTaskQueue(m)] = true
 				}
 			}
-			for _, m := range hb.Models {
-				soleProvider := !w.hasOtherProviderLocked(m.ID)
-				if hot == "" || !hotAdvertised || m.ID == hot || soleProvider {
-					desired[queue.TTSTaskQueue(m.ID)] = true
-				}
-			}
-			w.mu.Unlock()
 		} else {
 			desired[queue.TaskQueueName(w.role)] = true
 		}

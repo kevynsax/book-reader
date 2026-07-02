@@ -26,13 +26,27 @@ var submitTimeouts = map[Role]time.Duration{
 // queue. Idempotent; used for the static role queues and the dynamic
 // per-model tts queues.
 func DeclareTaskQueue(ch *amqp.Channel, name string) error {
-	_, err := ch.QueueDeclare(name, true, false, false, false, amqp.Table{
+	_, err := declareTaskQueue(ch, name)
+	return err
+}
+
+func declareTaskQueue(ch *amqp.Channel, name string) (amqp.Queue, error) {
+	return ch.QueueDeclare(name, true, false, false, false, amqp.Table{
 		"x-queue-type":              "quorum",
 		"x-delivery-limit":          int32(DeliveryLimit),
 		"x-dead-letter-exchange":    "",
 		"x-dead-letter-routing-key": DeadLetterQueue,
 	})
-	return err
+}
+
+// TaskQueueDepth declares the queue idempotently and returns its ready
+// (undelivered) message count.
+func TaskQueueDepth(ch *amqp.Channel, name string) (int, error) {
+	q, err := declareTaskQueue(ch, name)
+	if err != nil {
+		return 0, err
+	}
+	return q.Messages, nil
 }
 
 // DeclareTopology sets up the static role queues (vlm/slm/whisper — tts
