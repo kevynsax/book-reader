@@ -497,10 +497,12 @@ var splitInTwoPrompt = strings.Join([]string{
 	"Return one valid JSON object and nothing else.",
 	`The JSON object must have this exact shape: {"left":"...","right":"..."}`,
 	"Preserve the original language, meaning, named entities, and reading order.",
+	"CRITICAL: Every word in both outputs MUST come from the input. Do NOT add, invent, hallucinate, or generate any new words, numbers, or content.",
 	"Keep left and right close to the same character length whenever possible.",
 	"Prefer a split point near the middle of the original line, but never at the cost of producing unnatural or invalid sentences.",
 	"You may add or adjust only minimal punctuation and capitalization needed to make both outputs complete sentences.",
 	"Do not summarize, translate, expand, omit meaning, add commentary, or use markdown.",
+	"Do not invent or hallucinate words, numbers, sections, or titles that are not in the input.",
 	`If the line cannot be split into two valid sentences, return {"left":"","right":""}.`,
 }, " ")
 
@@ -510,10 +512,12 @@ func splitToMaxPrompt(maxChars int) string {
 		fmt.Sprintf("Each output sentence must be at most %d characters long.", maxChars),
 		`Return one valid JSON array of strings and nothing else, e.g. ["First sentence.", "Second sentence."].`,
 		"Preserve the original language, meaning, named entities, and reading order exactly.",
+		"CRITICAL: Every word in every output sentence MUST come from the input. Do NOT add, invent, hallucinate, or generate any new words, numbers, or content.",
 		"Split only at natural sentence or clause boundaries; never split inside a word, number, or reference.",
 		"Use as many pieces as needed so every piece is within the limit, but no more pieces than necessary.",
 		"You may add or adjust only the minimal punctuation and capitalization needed to make each output a complete sentence.",
 		"Do not summarize, translate, expand, omit meaning, add commentary, or use markdown.",
+		"Do not invent or hallucinate words, numbers, sections, or titles that are not in the input.",
 		"If the sentence cannot be split, return an array containing only the original sentence.",
 	}, " ")
 }
