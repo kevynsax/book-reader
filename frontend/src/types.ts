@@ -76,6 +76,11 @@ export interface Progress {
   message: string;
 }
 
+export interface VoiceProgress extends Progress {
+  voice: string;
+  chapterIdx: number;
+}
+
 export interface Book {
   _id: string;
   name: string;
@@ -95,6 +100,9 @@ export interface Book {
   // Transient (socket-only, never persisted): set while a chapter's sentences are
   // being split for TTS, cleared (null) when done. Drives a separate progress bar.
   splitProgress?: Progress | null;
+  // Transient (socket-only): live segment progress per voice — several voices
+  // can render concurrently (one lane per TTS model), each with its own bar.
+  voiceProgress?: Record<string, VoiceProgress>;
   errorMessage?: string;
   createdAt: string;
   updatedAt: string;

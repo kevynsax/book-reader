@@ -469,13 +469,21 @@ func (w *Worker) applyChapterSplits(ctx context.Context, r *run, idx int, voice,
 		// Keep the split consistent across voices: every other voice must
 		// re-render this chapter to match the new sentence set. Marking the
 		// track stale makes the generation loop pick it up even if it had
-		// already finished in a prior run.
+		// already finished in a prior run. The split PARENT's segment also
+		// goes back to pending for those voices — its audio still speaks the
+		// full pre-split text, which would duplicate the tail pieces.
 		for ti := range chapter.Tracks {
 			if chapter.Tracks[ti].Voice == voice {
 				continue
 			}
 			chapter.Tracks[ti].AudioStatus = model.AudioStale
 			chapter.Tracks[ti].AudioError = nil
+			for si := range chapter.Tracks[ti].Segments {
+				seg := &chapter.Tracks[ti].Segments[si]
+				if splitByID[seg.SentenceID.Hex()] != nil {
+					*seg = model.Segment{SentenceID: seg.SentenceID, AudioStatus: model.AudioPending}
+				}
+			}
 		}
 
 		// Persist the primary voice's already-rendered audio for new pieces.
@@ -603,7 +611,7 @@ func (w *Worker) prepareChapterTasks(ctx context.Context, r *run, voice string, 
 // across all ready servers with at most TtsConcurrency in flight, then
 // assembles. Returns true if the primary voice restructured the chapter's
 // sentences.
-func (w *Worker) renderChapter(ctx context.Context, r *run, voice string, idx int, audioDir string, progress *renderProgress) (bool, error) {
+func (w *Worker) renderChapter(ctx context.Context, r *run, voice string, idx int, audioDir string, progress *renderProgress, chLock *sync.RWMutex) (bool, error) {
 	book := r.book
 	chapter := &book.Chapters[idx]
 	track := book.TrackForVoice(chapter, voice)
@@ -629,6 +637,20 @@ func (w *Worker) renderChapter(ctx context.Context, r *run, voice string, idx in
 		return false, nil
 	}
 
+	// Concurrent lanes may render the SAME chapter (different voices) — the
+	// read lock allows that; only sentence restructuring (applyChapterSplits)
+	// takes the write lock, so no lane ever sees the sentence list change
+	// under its captured task indexes.
+	chLock.RLock()
+	rUnlocked := false
+	rUnlock := func() {
+		if !rUnlocked {
+			rUnlocked = true
+			chLock.RUnlock()
+		}
+	}
+	defer rUnlock()
+
 	var splits []pendingSplit
 	tasks, err := w.prepareChapterTasks(ctx, r, voice, idx, audioDir, progress)
 	if err != nil {
@@ -637,19 +659,29 @@ func (w *Worker) renderChapter(ctx context.Context, r *run, voice string, idx in
 
 	// Per-chapter progress: percent reflects this chapter's own segments
 	// (matching the "Generating …" label), counting resumed ones. Transient —
-	// mutated + emitted without a save.
+	// mutated + emitted without a save. voiceProgress carries the same
+	// numbers keyed by voice, so the UI can show one live bar per lane when
+	// several voices render concurrently.
 	title := chapter.Title
 	emitChapterProgress := func() {
+		var done, total int
 		r.locked(func() {
-			done := 0
 			for _, s := range track.Segments {
 				if s.AudioStatus == model.AudioComplete {
 					done++
 				}
 			}
-			book.Progress = model.Progress{Current: done, Total: len(track.Segments), Message: fmt.Sprintf("Generating %q…", title)}
+			total = len(track.Segments)
+			book.Progress = model.Progress{Current: done, Total: total, Message: fmt.Sprintf("Generating %q…", title)}
 		})
-		w.emit(book, map[string]any{"progress": book.Progress})
+		w.emit(book, map[string]any{
+			"progress": book.Progress,
+			"voiceProgress": map[string]any{
+				"voice": voice, "chapterIdx": idx,
+				"current": done, "total": total,
+				"message": fmt.Sprintf("Generating %q…", title),
+			},
+		})
 	}
 	emitChapterProgress()
 
@@ -664,8 +696,17 @@ func (w *Worker) renderChapter(ctx context.Context, r *run, voice string, idx in
 		return false, err
 	}
 
-	if err := w.applyChapterSplits(ctx, r, idx, voice, audioDir, splits); err != nil {
-		return false, err
+	rUnlock()
+	if len(splits) > 0 {
+		// Exclusive: waits for other lanes' in-flight renders of this chapter
+		// to drain, then restructures. Their tracks get re-staled and the
+		// catch-up promotion re-renders just the new pieces.
+		chLock.Lock()
+		err = w.applyChapterSplits(ctx, r, idx, voice, audioDir, splits)
+		chLock.Unlock()
+		if err != nil {
+			return false, err
+		}
 	}
 	if err := w.finalizeTrack(ctx, r, idx, voice, audioDir, false); err != nil {
 		return false, err
@@ -703,9 +744,9 @@ func (w *Worker) renderWork(ctx context.Context, r *run, audioDir string, progre
 	queues := map[string][]job{}   // lane -> pending jobs
 	queued := map[string]bool{}    // job key -> waiting in some lane
 	renders := map[string]int{}    // job key -> attempts (re-render cap)
-	chapterLocks := map[int]*sync.Mutex{}
+	chapterLocks := map[int]*sync.RWMutex{}
 	for idx := range book.Chapters {
-		chapterLocks[idx] = &sync.Mutex{}
+		chapterLocks[idx] = &sync.RWMutex{}
 	}
 	var laneOrder []string
 	for _, j := range seed {
@@ -793,10 +834,7 @@ func (w *Worker) renderWork(ctx context.Context, r *run, audioDir string, progre
 				if w.stopRequested(book.ID.Hex()) {
 					err = ErrStopped
 				} else {
-					chLock := chapterLocks[j.idx]
-					chLock.Lock()
-					didSplit, err = w.renderChapter(ctx, r, j.voice, j.idx, audioDir, progress)
-					chLock.Unlock()
+					didSplit, err = w.renderChapter(ctx, r, j.voice, j.idx, audioDir, progress, chapterLocks[j.idx])
 				}
 
 				mu.Lock()

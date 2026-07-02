@@ -1,6 +1,6 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import axios from 'axios';
-import { Book, Chapter, OcrPage, Progress, VoiceTrack } from '../types';
+import { Book, Chapter, OcrPage, Progress, VoiceProgress, VoiceTrack } from '../types';
 import { api } from '../api/booksApi';
 import { loadPersistedBooks } from './persist';
 
@@ -185,6 +185,10 @@ const booksSlice = createSlice({
       if (patch.status) book.status = patch.status as Book['status'];
       if (patch.progress) book.progress = patch.progress as Progress;
       if ('splitProgress' in patch) book.splitProgress = patch.splitProgress as Progress | null;
+      if (patch.voiceProgress) {
+        const vp = patch.voiceProgress as VoiceProgress;
+        book.voiceProgress = { ...book.voiceProgress, [vp.voice]: vp };
+      }
       if (patch.totalPages) book.totalPages = patch.totalPages as number;
       if (patch.coverImagePath) {
         book.coverImagePath = patch.coverImagePath as string;

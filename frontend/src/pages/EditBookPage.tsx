@@ -277,6 +277,7 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
   const generating = statuses.some(s => s === 'generating');
   const errored    = statuses.some(s => s === 'error');
   const allDone    = total > 0 && done === total;
+  const live       = generating ? book.voiceProgress?.[voice] : undefined;
 
   return (
     <div className="rounded-lg border border-gray-800 bg-gray-900/40 overflow-hidden">
@@ -302,6 +303,23 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
           </button>
         </span>
       </div>
+
+      {live && live.total > 0 && (
+        <div className="px-3 pb-2 space-y-1">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs text-gray-400 truncate">{live.message}</p>
+            <span className="text-xs text-amber-400 tabular-nums shrink-0">
+              {live.current}/{live.total} · {Math.min(100, Math.round((live.current / live.total) * 100))}%
+            </span>
+          </div>
+          <div className="h-1.5 rounded-full bg-gray-800 overflow-hidden">
+            <div
+              className="h-full bg-amber-400 rounded-full transition-all duration-500"
+              style={{ width: `${Math.min(100, (live.current / live.total) * 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       <div className="border-t border-gray-800 divide-y divide-gray-800/60 max-h-56 overflow-y-auto">
         {book.chapters.map((c, i) => {
@@ -581,7 +599,9 @@ export default function EditBookPage() {
                 )}
               </div>
             </div>
-            {book.progress.message && book.progress.total > 0 && (
+            {/* While voices render concurrently each card shows its own live
+                bar — the single global bar would just flip between lanes. */}
+            {book.progress.message && book.progress.total > 0 && !Object.keys(book.voiceProgress ?? {}).length && (
               <AutoHideBar
                 current={book.progress.current}
                 total={book.progress.total}
