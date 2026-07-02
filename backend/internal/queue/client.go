@@ -290,6 +290,11 @@ func (c *Client) submitTo(ctx context.Context, queueName string, role Role, task
 		ReplyTo:       "amq.rabbitmq.reply-to",
 		Body:          task,
 		DeliveryMode:  amqp.Persistent,
+		// A task nobody can answer anymore must die in the queue, not be
+		// rendered: past the RPC timeout the submitter has given up (or the
+		// pod restarted and the reply channel is gone), so executing it only
+		// wastes an AI server and delays live tasks queued behind it.
+		Expiration: fmt.Sprintf("%d", timeout.Milliseconds()),
 	})
 	if err != nil {
 		c.mu.Lock()
