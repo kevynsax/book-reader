@@ -70,8 +70,13 @@ type peerState struct {
 	seen   time.Time
 }
 
+// affinityWindow must comfortably exceed the gap between two synthesize tasks
+// of an active lane — each segment goes synth → whisper transcribe → SLM
+// judge (→ retries) before the next synth task lands, easily 30s+. A window
+// shorter than that makes the worker go cold mid-lane and grab another
+// model's task, paying two hot-swaps per lapse.
 const (
-	affinityWindow = 30 * time.Second
+	affinityWindow = 120 * time.Second
 	peerExpiry     = 15 * time.Second
 )
 
