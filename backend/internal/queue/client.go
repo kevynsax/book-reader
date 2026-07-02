@@ -357,6 +357,13 @@ func (c *Client) SplitToMax(ctx context.Context, line string, maxChars int, mode
 	return r.Parts, err
 }
 
+// VerifyTranscript asks an slm worker to judge whether a low-similarity
+// transcript lost content (true) or is benignly different (false).
+func (c *Client) VerifyTranscript(ctx context.Context, expected, transcript, model string) (VerifyTranscriptResult, error) {
+	return submitAs[VerifyTranscriptResult](c, ctx, RoleSLM, TypeVerifyTranscript,
+		VerifyTranscriptPayload{Expected: expected, Transcript: transcript, Model: model})
+}
+
 func (c *Client) Transcribe(ctx context.Context, audio []byte, language string) (string, error) {
 	r, err := submitAs[TranscribeResult](c, ctx, RoleWhisper, TypeTranscribe, TranscribePayload{Audio: audio, Language: language})
 	return r.Text, err

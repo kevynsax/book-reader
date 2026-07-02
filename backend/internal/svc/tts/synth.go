@@ -217,11 +217,13 @@ type RenderedPiece struct {
 }
 
 // renderVerifiedPieces renders a chunk and confirms — via Whisper — that it
-// says what was asked. A mismatch is re-synthesized up to TtsVerifyAttempts
-// times (TTS output is nondeterministic; a retry is far cheaper than a
-// split) and only then is the SLM asked to split the original `display`
-// text. Returns the flat list of verified leaves (length 1 when it rendered
-// cleanly, can't be split, or hit the depth cap — best attempt kept).
+// says what was asked. On a low-similarity transcript an SLM judge decides
+// whether the audio actually LOST content or merely differs in benign ways
+// (spelled-out numbers, mis-heard names): benign → the audio is accepted;
+// missing content → re-synthesize up to TtsVerifyAttempts times and only
+// then ask the SLM to split the original `display` text. Returns the flat
+// list of verified leaves (length 1 when it rendered cleanly, can't be
+// split, or hit the depth cap — best attempt kept).
 func renderVerifiedPieces(ctx context.Context, display, text string, rc renderContext, depth int, parentTranscripts []string) ([]RenderedPiece, error) {
 	transcripts := append([]string(nil), parentTranscripts...)
 
@@ -257,8 +259,21 @@ func renderVerifiedPieces(ctx context.Context, display, text string, rc renderCo
 			bestSimilarity = similarity
 			best = leaf
 		}
-		log.Printf("tts verify: attempt %d/%d mismatch (sim=%.2f) for %q",
-			attempt, config.TtsVerifyAttempts, similarity, truncate(display, 60))
+
+		// Below threshold: let the SLM judge whether content is actually
+		// missing. Whisper quirks on reference-heavy text sit just under the
+		// threshold constantly — only truly lost chunks justify a re-render.
+		verdict, err := rc.q.VerifyTranscript(ctx, text, transcript, config.SlmSplitModel)
+		if err != nil {
+			log.Printf("tts verify: SLM judge unavailable (%v) — treating mismatch as missing content", err)
+		} else if !verdict.Missing {
+			log.Printf("tts verify: sim=%.2f but SLM judged content complete (%s) — accepting %q",
+				similarity, truncate(verdict.Reason, 80), truncate(display, 60))
+			return []RenderedPiece{leaf}, nil
+		} else {
+			log.Printf("tts verify: attempt %d/%d missing content (sim=%.2f, %s) for %q",
+				attempt, config.TtsVerifyAttempts, similarity, truncate(verdict.Reason, 80), truncate(display, 60))
+		}
 	}
 	best.Transcripts = transcripts
 

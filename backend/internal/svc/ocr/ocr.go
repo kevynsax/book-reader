@@ -563,6 +563,34 @@ func SplitLineIntoPartsOn(ctx context.Context, base, line string, maxChars int, 
 	return nil, nil
 }
 
+var verifyTranscriptPrompt = strings.Join([]string{
+	"You compare the text that was sent to a text-to-speech engine with the transcript a speech recognizer heard from the produced audio.",
+	"Decide whether the audio is MISSING any part of the text.",
+	"Return one valid JSON object and nothing else.",
+	`The JSON object must have this exact shape: {"missing":true,"reason":"..."}`,
+	"missing is true ONLY when a word group, clause, or sentence of the original text does not appear in the transcript at all.",
+	"Differences that are NOT missing content: numbers spelled out as words, punctuation, capitalization, small mis-hearings of names or rare words, accents, minor word substitutions that keep the meaning.",
+	`In "reason", quote the missing part when missing is true, or briefly say the transcripts match when false.`,
+	"Do not add commentary or markdown.",
+}, " ")
+
+// VerifyTranscriptOn asks one SLM server whether a low-similarity transcript
+// actually lost content, or merely differs in benign ways. Worker path.
+func VerifyTranscriptOn(ctx context.Context, base, expected, transcript, model string) (missing bool, reason string, err error) {
+	user := "TEXT SENT TO TTS:\n" + expected + "\n\nTRANSCRIPT HEARD:\n" + transcript
+	raw, err := callSlmOn(ctx, base, verifyTranscriptPrompt, user, model)
+	if err != nil {
+		return false, "", err
+	}
+	obj, ok := parseJSONLoose(stripMarkdownFence(strings.TrimSpace(raw))).(map[string]any)
+	if !ok {
+		return false, "", fmt.Errorf("SLM returned no verdict")
+	}
+	m, _ := obj["missing"].(bool)
+	r, _ := obj["reason"].(string)
+	return m, strings.TrimSpace(r), nil
+}
+
 func ReviewLineGrammar(ctx context.Context, line, model string) (string, error) {
 	raw, err := callSlm(ctx, strings.Join([]string{
 		"You proofread a single line from an OCR-extracted book for grammar mistakes and typos.",

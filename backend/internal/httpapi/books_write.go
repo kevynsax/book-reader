@@ -288,6 +288,13 @@ func (s *Server) handleReprocess(w http.ResponseWriter, r *http.Request) {
 		book.LastPage = last
 	}
 
+	release, ok := s.W.TryLockBook(book.ID.Hex())
+	if !ok {
+		Error(w, http.StatusConflict, "Audio generation is in progress — stop it before reprocessing.")
+		return
+	}
+	defer release()
+
 	book.Status = model.StatusSplittingPages
 	book.ErrorMessage = nil
 	book.Progress = model.Progress{Current: 0, Total: 1, Message: "Restarting import…"}
@@ -325,6 +332,13 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusConflict, "Original PDF is no longer available")
 		return
 	}
+
+	release, ok := s.W.TryLockBook(book.ID.Hex())
+	if !ok {
+		Error(w, http.StatusConflict, "A run is already in progress for this book.")
+		return
+	}
+	defer release()
 
 	if len(book.OcrPages) > 0 {
 		book.Status = model.StatusOcrProcessing
@@ -466,13 +480,13 @@ func (s *Server) handleCoverUpload(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	book.CoverImagePath = &coverDest
-	if err := s.St.Books.Save(r.Context(), book); err != nil {
+	updatedAt, err := s.St.Books.UpdateByID(r.Context(), book.ID, bson.M{"$set": bson.M{"coverImagePath": coverDest}})
+	if err != nil {
 		Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.Hub.Emit("book:update", map[string]any{
-		"bookId": book.ID.Hex(), "updatedAt": book.UpdatedAt, "coverImagePath": coverDest,
+		"bookId": book.ID.Hex(), "updatedAt": updatedAt, "coverImagePath": coverDest,
 	})
 	Message(w, "Cover updated")
 }
@@ -499,14 +513,15 @@ func (s *Server) handleCoverFromPage(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	book.CoverImagePath = &coverDest
-	book.CoverPage = body.Page
-	if err := s.St.Books.Save(r.Context(), book); err != nil {
+	updatedAt, err := s.St.Books.UpdateByID(r.Context(), book.ID, bson.M{"$set": bson.M{
+		"coverImagePath": coverDest, "coverPage": body.Page,
+	}})
+	if err != nil {
 		Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.Hub.Emit("book:update", map[string]any{
-		"bookId": book.ID.Hex(), "updatedAt": book.UpdatedAt, "coverImagePath": coverDest,
+		"bookId": book.ID.Hex(), "updatedAt": updatedAt, "coverImagePath": coverDest,
 	})
 	Message(w, "Cover updated")
 }
@@ -585,6 +600,21 @@ func (s *Server) handleChaptersPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Rebuilding chapters from this handler's snapshot while a run is saving
+	// its own would erase the run's rendered segments; refuse instead.
+	release, ok := s.W.TryLockBook(book.ID.Hex())
+	if !ok {
+		Error(w, http.StatusConflict, "Audio generation is in progress — stop it before editing chapters.")
+		return
+	}
+	defer release()
+	fresh, err := s.St.Books.FindByID(r.Context(), r.PathValue("id"))
+	if err != nil || fresh == nil {
+		Error(w, http.StatusNotFound, "Not found")
+		return
+	}
+	book = fresh
+
 	toRegen := map[int]bool{}
 	for i, c := range body.Chapters {
 		changed := i >= len(book.Chapters) ||
@@ -654,7 +684,10 @@ func (s *Server) handleChaptersPatch(w http.ResponseWriter, r *http.Request) {
 	Message(w, "Chapters updated")
 }
 
-// PUT /:id/chapters — replace chapters (+ voices), then start audio gen.
+// PUT /:id/chapters — confirm chapters (+ voices), then start audio gen.
+// Chapters whose boundaries didn't move keep their split sentences and
+// rendered segments, same as PATCH — re-confirming must never discard
+// finished synthesis.
 func (s *Server) handleChaptersPut(w http.ResponseWriter, r *http.Request) {
 	book := s.findBook(w, r)
 	if book == nil {
@@ -669,6 +702,19 @@ func (s *Server) handleChaptersPut(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "chapters array is required")
 		return
 	}
+
+	release, ok := s.W.TryLockBook(book.ID.Hex())
+	if !ok {
+		Error(w, http.StatusConflict, "Audio generation is in progress — stop it before confirming chapters.")
+		return
+	}
+	defer release()
+	fresh, err := s.St.Books.FindByID(r.Context(), r.PathValue("id"))
+	if err != nil || fresh == nil {
+		Error(w, http.StatusNotFound, "Not found")
+		return
+	}
+	book = fresh
 
 	requested := body.Voices
 	if len(requested) == 0 && body.Voice != "" {
@@ -689,6 +735,24 @@ func (s *Server) handleChaptersPut(w http.ResponseWriter, r *http.Request) {
 
 	chapters := make([]model.Chapter, len(body.Chapters))
 	for i, c := range body.Chapters {
+		var existing *model.Chapter
+		if i < len(book.Chapters) {
+			existing = &book.Chapters[i]
+		}
+		unchanged := existing != nil &&
+			existing.StartPage == c.StartPage && existing.StartChar == c.StartChar &&
+			(i+1 < len(body.Chapters)) == (i+1 < len(book.Chapters))
+		if unchanged && i+1 < len(body.Chapters) {
+			unchanged = book.Chapters[i+1].StartPage == body.Chapters[i+1].StartPage &&
+				book.Chapters[i+1].StartChar == body.Chapters[i+1].StartChar
+		}
+		if unchanged {
+			kept := *existing
+			kept.Title = c.Title
+			kept.Tracks = reconcileTracks(existing, book.Voices)
+			chapters[i] = kept
+			continue
+		}
 		chapters[i] = model.Chapter{
 			ID: bsonNewObjectID(), Title: c.Title, StartPage: c.StartPage, StartChar: c.StartChar,
 			Sentences: []model.Sentence{}, Tracks: model.FreshTracks(book.Voices),
@@ -696,12 +760,15 @@ func (s *Server) handleChaptersPut(w http.ResponseWriter, r *http.Request) {
 	}
 	book.Chapters = chapters
 
-	if err := s.St.Books.Save(r.Context(), book); err != nil {
+	updatedAt, err := s.St.Books.UpdateByID(r.Context(), book.ID, bson.M{"$set": bson.M{
+		"chapters": book.Chapters, "voices": book.Voices,
+	}})
+	if err != nil {
 		Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.Hub.Emit("book:update", map[string]any{
-		"bookId": book.ID.Hex(), "updatedAt": book.UpdatedAt,
+		"bookId": book.ID.Hex(), "updatedAt": updatedAt,
 		"voices": book.Voices, "chapters": model.SerializeChaptersForClient(book.Chapters),
 	})
 	Message(w, "Chapters saved. Audio generation started.")
@@ -762,6 +829,19 @@ func (s *Server) handlePageText(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "text is required")
 		return
 	}
+
+	release, ok := s.W.TryLockBook(book.ID.Hex())
+	if !ok {
+		Error(w, http.StatusConflict, "Audio generation is in progress — stop it before editing page text.")
+		return
+	}
+	defer release()
+	fresh, err := s.St.Books.FindByID(r.Context(), r.PathValue("id"))
+	if err != nil || fresh == nil {
+		Error(w, http.StatusNotFound, "Not found")
+		return
+	}
+	book = fresh
 
 	pageIdx := -1
 	for i, p := range book.OcrPages {
@@ -896,17 +976,6 @@ func (s *Server) handleChapterRegenerate(w http.ResponseWriter, r *http.Request)
 		Error(w, http.StatusNotFound, "Chapter not found")
 		return
 	}
-	for ti := range book.Chapters[idx].Tracks {
-		book.Chapters[idx].Tracks[ti].AudioStatus = model.AudioGenerating
-	}
-	if err := s.St.Books.Save(r.Context(), book); err != nil {
-		Error(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	s.Hub.Emit("book:update", map[string]any{
-		"bookId": book.ID.Hex(), "updatedAt": book.UpdatedAt,
-		"chapters": model.SerializeChaptersForClient(book.Chapters),
-	})
 	Message(w, "Regeneration started")
 
 	bookID := book.ID.Hex()
@@ -976,6 +1045,19 @@ func (s *Server) handleAddVoices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	release, ok := s.W.TryLockBook(book.ID.Hex())
+	if !ok {
+		Error(w, http.StatusConflict, "Audio generation is in progress — wait for it to finish (or stop it) before adding voices.")
+		return
+	}
+	defer release()
+	fresh, err := s.St.Books.FindByID(r.Context(), r.PathValue("id"))
+	if err != nil || fresh == nil {
+		Error(w, http.StatusNotFound, "Not found")
+		return
+	}
+	book = fresh
+
 	for _, voice := range toAdd {
 		book.Voices = append(book.Voices, voice)
 		for ci := range book.Chapters {
@@ -1020,6 +1102,19 @@ func (s *Server) handleRemoveVoice(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusNotFound, "Voice not found")
 		return
 	}
+
+	release, ok := s.W.TryLockBook(book.ID.Hex())
+	if !ok {
+		Error(w, http.StatusConflict, "Audio generation is in progress — stop it before removing a voice.")
+		return
+	}
+	defer release()
+	fresh, err := s.St.Books.FindByID(r.Context(), r.PathValue("id"))
+	if err != nil || fresh == nil {
+		Error(w, http.StatusNotFound, "Not found")
+		return
+	}
+	book = fresh
 
 	audioDir := filepath.Join(book.FolderPath, "audio")
 	for idx := range book.Chapters {
@@ -1072,19 +1167,6 @@ func (s *Server) handleVoiceRegenerate(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusNotFound, "Voice not found")
 		return
 	}
-	for ci := range book.Chapters {
-		if track := book.TrackForVoice(&book.Chapters[ci], voice); track != nil {
-			track.AudioStatus = model.AudioGenerating
-		}
-	}
-	if err := s.St.Books.Save(r.Context(), book); err != nil {
-		Error(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	s.Hub.Emit("book:update", map[string]any{
-		"bookId": book.ID.Hex(), "updatedAt": book.UpdatedAt,
-		"chapters": model.SerializeChaptersForClient(book.Chapters),
-	})
 	Message(w, "Voice regeneration started")
 
 	bookID := book.ID.Hex()
@@ -1095,6 +1177,11 @@ func (s *Server) handleVoiceRegenerate(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+// chapterVoiceAction validates and dispatches; it deliberately writes nothing.
+// The route used to flip the track to 'generating' and Save its own full copy
+// of the book, which erased every segment an in-flight run had rendered since
+// this handler loaded it — the worker owns all state changes now and emits
+// 'generating' as soon as the run picks the chapter up.
 func (s *Server) chapterVoiceAction(w http.ResponseWriter, r *http.Request, message string, action func(bookID string, idx int, voice string)) {
 	book := s.findBook(w, r)
 	if book == nil {
@@ -1117,17 +1204,6 @@ func (s *Server) chapterVoiceAction(w http.ResponseWriter, r *http.Request, mess
 		Error(w, http.StatusNotFound, "Voice not found")
 		return
 	}
-	if track := book.TrackForVoice(&book.Chapters[idx], voice); track != nil {
-		track.AudioStatus = model.AudioGenerating
-	}
-	if err := s.St.Books.Save(r.Context(), book); err != nil {
-		Error(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	s.Hub.Emit("book:update", map[string]any{
-		"bookId": book.ID.Hex(), "updatedAt": book.UpdatedAt,
-		"chapters": model.SerializeChaptersForClient(book.Chapters),
-	})
 	Message(w, message)
 	action(book.ID.Hex(), idx, voice)
 }

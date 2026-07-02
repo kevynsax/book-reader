@@ -54,8 +54,9 @@ const (
 	TypeDetectLanguage = "detect-language"
 	TypeExtractToc     = "extract-toc"
 
-	TypeSplitInTwo = "split-in-two"
-	TypeSplitToMax = "split-to-max"
+	TypeSplitInTwo       = "split-in-two"
+	TypeSplitToMax       = "split-to-max"
+	TypeVerifyTranscript = "verify-transcript"
 
 	TypeTranscribe = "transcribe"
 
@@ -112,6 +113,21 @@ type SplitToMaxPayload struct {
 
 type SplitToMaxResult struct {
 	Parts []string `json:"parts"`
+}
+
+// VerifyTranscriptPayload asks the SLM to judge a low-similarity Whisper
+// transcript: is the audio actually missing a chunk of the text, or does the
+// transcript convey the same content with benign differences (spelled-out
+// numbers, mis-heard names, punctuation)?
+type VerifyTranscriptPayload struct {
+	Expected   string `json:"expected"`
+	Transcript string `json:"transcript"`
+	Model      string `json:"model"`
+}
+
+type VerifyTranscriptResult struct {
+	Missing bool   `json:"missing"`
+	Reason  string `json:"reason"`
 }
 
 type TranscribePayload struct {

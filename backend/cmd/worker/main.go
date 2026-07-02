@@ -441,6 +441,16 @@ func (w *worker) executeSLM(ctx context.Context, task queue.Task) (json.RawMessa
 			return nil, err
 		}
 		return json.Marshal(queue.SplitToMaxResult{Parts: parts})
+	case queue.TypeVerifyTranscript:
+		var p queue.VerifyTranscriptPayload
+		if err := json.Unmarshal(task.Payload, &p); err != nil {
+			return nil, err
+		}
+		missing, reason, err := ocr.VerifyTranscriptOn(ctx, w.url, p.Expected, p.Transcript, w.slmModel(p.Model))
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(queue.VerifyTranscriptResult{Missing: missing, Reason: reason})
 	}
 	return nil, fmt.Errorf("slm: unknown task type %q", task.Type)
 }

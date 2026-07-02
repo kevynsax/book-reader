@@ -32,13 +32,18 @@ type Worker struct {
 	// to stop. Generation is cooperative: the render loop checks the stop flag
 	// at chapter and segment boundaries and unwinds via ErrStopped, leaving
 	// already-rendered chapters intact while no new work is dispatched.
+	// locks serializes every load-mutate-save flow per book (see bookLock).
 	mu     sync.Mutex
 	active map[string]bool
 	stops  map[string]bool
+	locks  map[string]*sync.Mutex
 }
 
 func New(st *store.Store, hub ws.Emitter, q *queue.Client) *Worker {
-	return &Worker{St: st, Hub: hub, Q: q, active: map[string]bool{}, stops: map[string]bool{}}
+	return &Worker{
+		St: st, Hub: hub, Q: q,
+		active: map[string]bool{}, stops: map[string]bool{}, locks: map[string]*sync.Mutex{},
+	}
 }
 
 // run wraps one generation run over a shared *model.Book: the mutex is the
@@ -51,15 +56,16 @@ type run struct {
 	mu   sync.Mutex
 }
 
-// withSave locks, applies fn's mutations, persists the whole document, and
-// unlocks. Emits happen after, outside the lock.
+// withSave locks, applies fn's mutations, persists the run-owned fields
+// (chapters/ocrPages/status/progress/… — never voices or the deleted flag,
+// see SaveGeneration), and unlocks. Emits happen after, outside the lock.
 func (r *run) withSave(ctx context.Context, fn func()) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if fn != nil {
 		fn()
 	}
-	return r.w.St.Books.Save(ctx, r.book)
+	return r.w.St.Books.SaveGeneration(ctx, r.book)
 }
 
 // locked runs fn under the run mutex without saving (for reads/mutations

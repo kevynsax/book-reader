@@ -741,18 +741,6 @@ func pendingJobs(book *model.Book, voices []string) []job {
 	return jobs
 }
 
-func (w *Worker) markActive(bookID string) {
-	w.mu.Lock()
-	w.active[bookID] = true
-	w.mu.Unlock()
-}
-
-func (w *Worker) isActive(bookID string) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.active[bookID]
-}
-
 func (w *Worker) generateForVoices(ctx context.Context, book *model.Book, voices []string, manageBookStatus bool) error {
 	r := &run{w: w, book: book}
 	audioDir := filepath.Join(book.FolderPath, "audio")
@@ -770,10 +758,7 @@ func (w *Worker) generateForVoices(ctx context.Context, book *model.Book, voices
 	}
 
 	progress := &renderProgress{total: len(voices) * len(book.Chapters)}
-	bookID := book.ID.Hex()
-	w.markActive(bookID)
 	renderErr := w.renderWork(ctx, r, audioDir, progress, pendingJobs(book, voices))
-	w.releaseClaim(bookID)
 
 	if renderErr != nil {
 		if renderErr == ErrStopped {
@@ -846,9 +831,12 @@ func (w *Worker) generateForVoices(ctx context.Context, book *model.Book, voices
 // run is already in flight, the call is ignored so a Continue click can't
 // spawn a second concurrent render over the same tracks.
 func (w *Worker) GenerateBookAudio(ctx context.Context, bookID string) error {
-	if w.isActive(bookID) {
+	release, ok := w.TryRun(bookID)
+	if !ok {
+		log.Printf("generateBookAudio %s: a run is already in flight; ignoring", bookID)
 		return nil
 	}
+	defer release()
 	book, err := w.St.Books.FindByID(ctx, bookID)
 	if err != nil || book == nil {
 		return err
@@ -867,6 +855,12 @@ func (w *Worker) GenerateBookAudio(ctx context.Context, bookID string) error {
 }
 
 func (w *Worker) GenerateVoiceAudio(ctx context.Context, bookID string, voices []string) error {
+	release, ok := w.TryRun(bookID)
+	if !ok {
+		log.Printf("generateVoiceAudio %s: a run is already in flight; ignoring", bookID)
+		return nil
+	}
+	defer release()
 	book, err := w.St.Books.FindByID(ctx, bookID)
 	if err != nil || book == nil {
 		return err
@@ -881,6 +875,12 @@ func (w *Worker) GenerateVoiceAudio(ctx context.Context, bookID string, voices [
 // OCR/chapter-boundary edits): discard cached sentences + segment audio so
 // the latest text is re-read from scratch.
 func (w *Worker) RegenerateChapterAudio(ctx context.Context, bookID string, chapterIdx int) error {
+	release, ok := w.TryRun(bookID)
+	if !ok {
+		log.Printf("regenerateChapterAudio %s: a run is already in flight; ignoring", bookID)
+		return nil
+	}
+	defer release()
 	book, err := w.St.Books.FindByID(ctx, bookID)
 	if err != nil || book == nil {
 		return err
@@ -919,7 +919,13 @@ func (w *Worker) RegenerateChapterAudio(ctx context.Context, bookID string, chap
 			seed = append(seed, j)
 		}
 	}
-	return w.renderWork(ctx, r, audioDir, progress, seed)
+	if err := w.renderWork(ctx, r, audioDir, progress, seed); err != nil {
+		if err == ErrStopped {
+			return w.finalizeStop(ctx, r, false, false)
+		}
+		return err
+	}
+	return nil
 }
 
 // clearTrackAudio discards one voice's cached segments + audio files for a
@@ -939,6 +945,12 @@ func clearTrackAudio(book *model.Book, audioDir string, chapterIdx int, voice st
 
 // RegenerateVoiceAudio regenerates one voice across every chapter.
 func (w *Worker) RegenerateVoiceAudio(ctx context.Context, bookID, voice string) error {
+	release, ok := w.TryRun(bookID)
+	if !ok {
+		log.Printf("regenerateVoiceAudio %s: a run is already in flight; ignoring", bookID)
+		return nil
+	}
+	defer release()
 	book, err := w.St.Books.FindByID(ctx, bookID)
 	if err != nil || book == nil {
 		return err
@@ -970,6 +982,12 @@ func (w *Worker) RegenerateVoiceAudio(ctx context.Context, bookID, voice string)
 
 // RegenerateChapterVoiceAudio regenerates a single chapter for a single voice.
 func (w *Worker) RegenerateChapterVoiceAudio(ctx context.Context, bookID string, chapterIdx int, voice string) error {
+	release, ok := w.TryRun(bookID)
+	if !ok {
+		log.Printf("regenerateChapterVoiceAudio %s: a run is already in flight; ignoring", bookID)
+		return nil
+	}
+	defer release()
 	book, err := w.St.Books.FindByID(ctx, bookID)
 	if err != nil || book == nil {
 		return err
@@ -992,13 +1010,25 @@ func (w *Worker) RegenerateChapterVoiceAudio(ctx context.Context, bookID string,
 	w.emit(book, map[string]any{"chapterUpdate": chapterUpdate{Idx: chapterIdx, Voice: voice, AudioStatus: model.AudioPending}})
 
 	progress := &renderProgress{total: 1}
-	return w.renderWork(ctx, r, audioDir, progress, []job{{voice: voice, idx: chapterIdx}})
+	if err := w.renderWork(ctx, r, audioDir, progress, []job{{voice: voice, idx: chapterIdx}}); err != nil {
+		if err == ErrStopped {
+			return w.finalizeStop(ctx, r, false, false)
+		}
+		return err
+	}
+	return nil
 }
 
 // ContinueChapterVoiceAudio continues a single chapter/voice after an error
 // or interruption: keep every segment already on disk and synthesize only the
 // missing ones, then assemble.
 func (w *Worker) ContinueChapterVoiceAudio(ctx context.Context, bookID string, chapterIdx int, voice string) error {
+	release, ok := w.TryRun(bookID)
+	if !ok {
+		log.Printf("continueChapterVoiceAudio %s: a run is already in flight; ignoring", bookID)
+		return nil
+	}
+	defer release()
 	book, err := w.St.Books.FindByID(ctx, bookID)
 	if err != nil || book == nil {
 		return err
@@ -1024,7 +1054,13 @@ func (w *Worker) ContinueChapterVoiceAudio(ctx context.Context, bookID string, c
 	}
 
 	progress := &renderProgress{total: 1}
-	return w.renderWork(ctx, r, audioDir, progress, []job{{voice: voice, idx: chapterIdx}})
+	if err := w.renderWork(ctx, r, audioDir, progress, []job{{voice: voice, idx: chapterIdx}}); err != nil {
+		if err == ErrStopped {
+			return w.finalizeStop(ctx, r, false, false)
+		}
+		return err
+	}
+	return nil
 }
 
 // ReassembleBookAudio rebuilds chapter mp3s + read-along timelines from
@@ -1032,6 +1068,12 @@ func (w *Worker) ContinueChapterVoiceAudio(ctx context.Context, bookID string, c
 // fully-rendered tracks whose segment files are still on disk are
 // reassembled.
 func (w *Worker) ReassembleBookAudio(ctx context.Context, bookID string) error {
+	release, ok := w.TryRun(bookID)
+	if !ok {
+		log.Printf("reassembleBookAudio %s: a run is already in flight; ignoring", bookID)
+		return nil
+	}
+	defer release()
 	book, err := w.St.Books.FindByID(ctx, bookID)
 	if err != nil || book == nil {
 		return err

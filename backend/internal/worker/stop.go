@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"sync"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 
@@ -21,23 +22,61 @@ func (w *Worker) stopRequested(bookID string) bool {
 	return w.stops[bookID]
 }
 
-// tryClaim registers a generation run for the book; false when one is
-// already in flight (a Continue click can't spawn a second concurrent run).
-func (w *Worker) tryClaim(bookID string) bool {
+// bookLock returns the per-book mutex that serializes every load-mutate-save
+// flow. Two flows on the same book each hold their own in-memory copy; if
+// their saves interleave, whichever writes last silently erases the other's
+// finished segments — this is how a Continue click while a run was in flight
+// used to restart hours of rendering.
+func (w *Worker) bookLock(bookID string) *sync.Mutex {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.active[bookID] {
-		return false
+	lock, ok := w.locks[bookID]
+	if !ok {
+		lock = &sync.Mutex{}
+		w.locks[bookID] = lock
 	}
-	w.active[bookID] = true
-	return true
+	return lock
 }
 
-func (w *Worker) releaseClaim(bookID string) {
+// TryRun claims the book for a generation/import run. False when the book is
+// busy — the caller must SKIP, never interleave: the pending work is already
+// covered by the run that holds the claim (its worklist re-checks track
+// statuses), and a second run's saves would erase the first's progress.
+func (w *Worker) TryRun(bookID string) (release func(), ok bool) {
+	lock := w.bookLock(bookID)
+	if !lock.TryLock() {
+		return nil, false
+	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	delete(w.active, bookID)
-	delete(w.stops, bookID)
+	w.active[bookID] = true
+	w.mu.Unlock()
+	return func() {
+		w.mu.Lock()
+		delete(w.active, bookID)
+		delete(w.stops, bookID)
+		w.mu.Unlock()
+		lock.Unlock()
+	}, true
+}
+
+// TryLockBook briefly claims the book for a route-side rewrite (chapter
+// confirm, page-text edit, voice add) without marking a run active. False
+// while a generation run holds the book — those routes answer 409 instead of
+// corrupting the run's state.
+func (w *Worker) TryLockBook(bookID string) (release func(), ok bool) {
+	lock := w.bookLock(bookID)
+	if !lock.TryLock() {
+		return nil, false
+	}
+	return lock.Unlock, true
+}
+
+// LockBook waits for the book (used by short operations like sentence edits
+// that should queue behind an active run rather than fail or interleave).
+func (w *Worker) LockBook(bookID string) func() {
+	lock := w.bookLock(bookID)
+	lock.Lock()
+	return lock.Unlock
 }
 
 // StopBookAudio stops audio generation for a book. A live job in this process
@@ -54,6 +93,9 @@ func (w *Worker) StopBookAudio(ctx context.Context, bookID string) (bool, error)
 		return true, nil
 	}
 	w.mu.Unlock()
+
+	unlock := w.LockBook(bookID)
+	defer unlock()
 
 	book, err := w.St.Books.FindByID(ctx, bookID)
 	if err != nil {
@@ -133,8 +175,11 @@ func (w *Worker) RecoverInterruptedAudio(ctx context.Context) error {
 		return err
 	}
 	for _, book := range books {
+		unlock := w.LockBook(book.ID.Hex())
 		r := &run{w: w, book: book}
-		if err := w.finalizeStop(ctx, r, book.Status == model.StatusGeneratingAudio, false); err != nil {
+		err := w.finalizeStop(ctx, r, book.Status == model.StatusGeneratingAudio, false)
+		unlock()
+		if err != nil {
 			return err
 		}
 		name := book.Name

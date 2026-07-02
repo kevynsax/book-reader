@@ -219,6 +219,12 @@ func (w *Worker) setProgress(ctx context.Context, r *run, current, total int, me
 // ProcessBook runs the import pipeline: split PDF → cover → title → language
 // → OCR pool → chapter detection → awaiting review.
 func (w *Worker) ProcessBook(ctx context.Context, bookID string, resume bool) error {
+	release, ok := w.TryRun(bookID)
+	if !ok {
+		log.Printf("processBook %s: a run is already in flight; ignoring", bookID)
+		return nil
+	}
+	defer release()
 	book, err := w.St.Books.FindByID(ctx, bookID)
 	if err != nil || book == nil {
 		return err
@@ -463,6 +469,11 @@ func (w *Worker) DetectChapters(ctx context.Context, book *model.Book, completed
 // ReprocessPageOcr re-runs OCR for a single page, then marks the page's
 // chapter audio stale so it gets regenerated.
 func (w *Worker) ReprocessPageOcr(ctx context.Context, bookID string, pageNum int) error {
+	release, ok := w.TryRun(bookID)
+	if !ok {
+		return fmt.Errorf("A generation run is in progress for this book — stop it before reprocessing pages.")
+	}
+	defer release()
 	book, err := w.St.Books.FindByID(ctx, bookID)
 	if err != nil || book == nil {
 		return err

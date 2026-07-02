@@ -37,6 +37,7 @@ func (w *Worker) MigrateUnspeakableSentences(ctx context.Context) error {
 	fixedChapters := 0
 
 	for _, book := range books {
+		unlock := w.LockBook(book.ID.Hex())
 		r := &run{w: w, book: book}
 		audioDir := filepath.Join(book.FolderPath, "audio")
 		type rerenderTarget struct {
@@ -141,10 +142,12 @@ func (w *Worker) MigrateUnspeakableSentences(ctx context.Context) error {
 		}
 
 		if !bookTouched {
+			unlock()
 			continue
 		}
 
 		if err := r.withSave(ctx, nil); err != nil {
+			unlock()
 			return err
 		}
 		w.emit(book, map[string]any{"chapters": model.SerializeChaptersForClient(book.Chapters)})
@@ -165,6 +168,7 @@ func (w *Worker) MigrateUnspeakableSentences(ctx context.Context) error {
 				_ = w.finalizeTrack(ctx, r, idx, voice, audioDir, false)
 			}
 		}
+		unlock()
 	}
 
 	if fixedChapters > 0 {

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/kevynsax/book-reader/backend/internal/config"
 	"github.com/kevynsax/book-reader/backend/internal/model"
 	"github.com/kevynsax/book-reader/backend/internal/svc/tts"
@@ -71,13 +73,14 @@ func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	book.Name = strings.TrimSpace(body.Name)
-	if err := s.St.Books.Save(r.Context(), book); err != nil {
+	name := strings.TrimSpace(body.Name)
+	updatedAt, err := s.St.Books.UpdateByID(r.Context(), book.ID, bson.M{"$set": bson.M{"name": name}})
+	if err != nil {
 		Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.Hub.Emit("book:update", map[string]any{
-		"bookId": book.ID.Hex(), "updatedAt": book.UpdatedAt, "name": book.Name,
+		"bookId": book.ID.Hex(), "updatedAt": updatedAt, "name": name,
 	})
 	Message(w, "Renamed")
 }
@@ -91,8 +94,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if book == nil {
 		return
 	}
-	book.Deleted = true
-	if err := s.St.Books.Save(r.Context(), book); err != nil {
+	if _, err := s.St.Books.UpdateByID(r.Context(), book.ID, bson.M{"$set": bson.M{"deleted": true}}); err != nil {
 		Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -117,13 +119,20 @@ func (s *Server) handleDismissError(w http.ResponseWriter, r *http.Request) {
 	if book.Status == model.StatusError {
 		book.Status = model.StatusAwaitingChapterReview
 	}
-	if err := s.St.Books.Save(r.Context(), book); err != nil {
+	updatedAt, err := s.St.Books.UpdateByID(r.Context(), book.ID,
+		bson.M{
+			"$set":   bson.M{"status": book.Status, "ocrPages.$[p].status": model.OcrComplete},
+			"$unset": bson.M{"errorMessage": "", "ocrPages.$[p].error": ""},
+		},
+		bson.M{"p.status": string(model.OcrErr)},
+	)
+	if err != nil {
 		Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.Hub.Emit("book:update", map[string]any{
 		"bookId":       book.ID.Hex(),
-		"updatedAt":    book.UpdatedAt,
+		"updatedAt":    updatedAt,
 		"status":       book.Status,
 		"errorMessage": "",
 		"ocrPages":     book.OcrPages,

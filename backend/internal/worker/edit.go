@@ -119,8 +119,11 @@ func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, se
 }
 
 // EditSentence edits a sentence's text, then re-renders its segment for
-// every voice.
+// every voice. Queues behind any active generation run (LockBook) — an
+// interleaved save here would erase the run's freshly rendered segments.
 func (w *Worker) EditSentence(ctx context.Context, bookID string, chapterIdx int, sentenceID, text string) error {
+	unlock := w.LockBook(bookID)
+	defer unlock()
 	book, err := w.St.Books.FindByID(ctx, bookID)
 	if err != nil || book == nil {
 		return err
@@ -166,8 +169,10 @@ func (w *Worker) EditSentence(ctx context.Context, bookID string, chapterIdx int
 }
 
 // DeleteSentence deletes a sentence and reassembles each voice from the
-// remaining cached segments.
+// remaining cached segments. Queues behind any active generation run.
 func (w *Worker) DeleteSentence(ctx context.Context, bookID string, chapterIdx int, sentenceID string) error {
+	unlock := w.LockBook(bookID)
+	defer unlock()
 	book, err := w.St.Books.FindByID(ctx, bookID)
 	if err != nil || book == nil {
 		return err
@@ -243,8 +248,10 @@ func (w *Worker) DeleteSentence(ctx context.Context, bookID string, chapterIdx i
 }
 
 // RegenerateSegment re-renders one sentence's segment without changing its
-// text (e.g. it errored).
+// text (e.g. it errored). Queues behind any active generation run.
 func (w *Worker) RegenerateSegment(ctx context.Context, bookID string, chapterIdx int, sentenceID, voice string) error {
+	unlock := w.LockBook(bookID)
+	defer unlock()
 	book, err := w.St.Books.FindByID(ctx, bookID)
 	if err != nil || book == nil {
 		return err
