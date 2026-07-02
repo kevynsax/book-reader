@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +37,9 @@ type worker struct {
 	label    string
 	url      string
 	model    string // vlm only: the backend's own model name
+	// tts only: model ids from WORKER_SKIP_MODELS this worker must never
+	// advertise or consume (e.g. a model that doesn't run well on its server).
+	skipModels map[string]bool
 
 	busy    atomic.Bool
 	healthy atomic.Bool
@@ -162,11 +166,17 @@ func main() {
 	config.Load()
 
 	w := &worker{
-		role:     queue.Role(os.Getenv("WORKER_ROLE")),
-		serverID: os.Getenv("WORKER_SERVER_ID"),
-		label:    os.Getenv("WORKER_SERVER_LABEL"),
-		url:      os.Getenv("WORKER_SERVER_URL"),
-		model:    os.Getenv("WORKER_SERVER_MODEL"),
+		role:       queue.Role(os.Getenv("WORKER_ROLE")),
+		serverID:   os.Getenv("WORKER_SERVER_ID"),
+		label:      os.Getenv("WORKER_SERVER_LABEL"),
+		url:        os.Getenv("WORKER_SERVER_URL"),
+		model:      os.Getenv("WORKER_SERVER_MODEL"),
+		skipModels: map[string]bool{},
+	}
+	for _, m := range strings.Split(os.Getenv("WORKER_SKIP_MODELS"), ",") {
+		if t := strings.TrimSpace(m); t != "" {
+			w.skipModels[t] = true
+		}
 	}
 	valid := false
 	for _, r := range queue.Roles {
@@ -321,6 +331,9 @@ func (w *worker) probe() queue.Heartbeat {
 		hb.Healthy = health.Online
 		hb.State = health.State
 		for _, m := range tts.FetchCatalog(ctx, server) {
+			if w.skipModels[m.ID] {
+				continue
+			}
 			if m.Active && hb.ActiveModel == "" {
 				hb.ActiveModel = m.ID
 			}
