@@ -295,7 +295,7 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
           <button
             className="flex items-center gap-1 text-xs text-gray-400 hover:text-amber-400 disabled:opacity-40 disabled:hover:text-gray-400 transition-colors"
             disabled={generating}
-            onClick={() => dispatch(regenerateVoice({ bookId: book._id, voice }))}
+            onClick={() => dispatch(regenerateVoice({ bookId: book._id, voice })).unwrap().catch(e => alert(e.message))}
             title={t('Regenerate this voice for every chapter')}
           >
             <RegenIcon /> {t('Regenerate')}
@@ -321,7 +321,7 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
                 {s === 'error' && (
                   <button
                     className="text-[11px] font-medium text-amber-400 hover:text-amber-300 transition-colors shrink-0"
-                    onClick={() => dispatch(continueChapterVoice({ bookId: book._id, chapterIdx: i, voice }))}
+                    onClick={() => dispatch(continueChapterVoice({ bookId: book._id, chapterIdx: i, voice })).unwrap().catch(e => alert(e.message))}
                     title={t('Continue this chapter — keep finished sentences, render only what failed')}
                   >
                     {t('Continue')}
@@ -330,7 +330,7 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
                 <button
                   className="text-gray-600 hover:text-amber-400 disabled:opacity-30 disabled:hover:text-gray-600 transition-colors shrink-0"
                   disabled={s === 'generating'}
-                  onClick={() => dispatch(regenerateChapterVoice({ bookId: book._id, chapterIdx: i, voice }))}
+                  onClick={() => dispatch(regenerateChapterVoice({ bookId: book._id, chapterIdx: i, voice })).unwrap().catch(e => alert(e.message))}
                   title={t('Regenerate this chapter from scratch for this voice')}
                 >
                   <RegenIcon className="w-3 h-3" />

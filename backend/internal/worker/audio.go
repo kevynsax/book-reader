@@ -709,17 +709,50 @@ func (w *Worker) renderWork(ctx context.Context, r *run, audioDir string, progre
 			continue
 		}
 
-		// A split invalidated every other voice's copy of this chapter;
-		// re-queue them so the new sentence structure renders for all voices.
+		// A split invalidated every other voice's copy of this chapter. A
+		// voice that had already rendered it re-renders its few new pieces
+		// RIGHT NOW (front of the queue) so a finished chapter never sits
+		// stale for the rest of the run; a voice that hasn't reached this
+		// chapter yet keeps its voice-major turn (no early model hot-swap —
+		// it will pick up the new sentence structure when its turn comes).
+		hasRenderedWork := func(voice string) bool {
+			t := book.TrackForVoice(&book.Chapters[j.idx], voice)
+			if t == nil {
+				return false
+			}
+			for _, s := range t.Segments {
+				if s.AudioStatus == model.AudioComplete {
+					return true
+				}
+			}
+			return false
+		}
+		var front []job
+		promoted := map[string]bool{}
 		for _, other := range book.Voices {
 			if other == j.voice {
 				continue
 			}
-			ok := key(job{voice: other, idx: j.idx})
-			if !queued[ok] {
+			oj := job{voice: other, idx: j.idx}
+			ok := key(oj)
+			if hasRenderedWork(other) {
+				front = append(front, oj)
+				promoted[ok] = true
 				queued[ok] = true
-				queue = append(queue, job{voice: other, idx: j.idx})
+			} else if !queued[ok] {
+				queued[ok] = true
+				queue = append(queue, oj)
 			}
+		}
+		if len(front) > 0 {
+			next := make([]job, 0, len(front)+len(queue))
+			next = append(next, front...)
+			for _, q := range queue {
+				if !promoted[key(q)] {
+					next = append(next, q)
+				}
+			}
+			queue = next
 		}
 	}
 	return nil

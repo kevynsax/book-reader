@@ -316,6 +316,7 @@ func (s *Server) handleReprocess(w http.ResponseWriter, r *http.Request) {
 	})
 	Message(w, "Reprocessing started.")
 
+	release()
 	go func() {
 		if err := s.W.ProcessBook(context.Background(), bookID, false); err != nil {
 			log.Printf("processBook %s failed: %v", bookID, err)
@@ -362,6 +363,7 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	})
 	Message(w, "Resuming import.")
 
+	release()
 	go func() {
 		if err := s.W.ProcessBook(context.Background(), bookID, true); err != nil {
 			log.Printf("processBook (resume) %s failed: %v", bookID, err)
@@ -774,6 +776,7 @@ func (s *Server) handleChaptersPut(w http.ResponseWriter, r *http.Request) {
 	Message(w, "Chapters saved. Audio generation started.")
 
 	bookID := book.ID.Hex()
+	release()
 	go func() {
 		if err := s.W.GenerateBookAudio(context.Background(), bookID); err != nil {
 			log.Printf("generateBookAudio %s failed: %v", bookID, err)
@@ -976,6 +979,10 @@ func (s *Server) handleChapterRegenerate(w http.ResponseWriter, r *http.Request)
 		Error(w, http.StatusNotFound, "Chapter not found")
 		return
 	}
+	if s.W.IsBookBusy(book.ID.Hex()) {
+		Error(w, http.StatusConflict, "Audio generation is already running for this book — stop it before regenerating.")
+		return
+	}
 	Message(w, "Regeneration started")
 
 	bookID := book.ID.Hex()
@@ -1078,6 +1085,7 @@ func (s *Server) handleAddVoices(w http.ResponseWriter, r *http.Request) {
 	Message(w, fmt.Sprintf("%d voice(s) added. Generation started.", len(toAdd)))
 
 	bookID := book.ID.Hex()
+	release()
 	go func() {
 		if err := s.W.GenerateVoiceAudio(context.Background(), bookID, toAdd); err != nil {
 			log.Printf("generateVoiceAudio %s %s failed: %v", bookID, strings.Join(toAdd, ", "), err)
@@ -1167,6 +1175,10 @@ func (s *Server) handleVoiceRegenerate(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusNotFound, "Voice not found")
 		return
 	}
+	if s.W.IsBookBusy(book.ID.Hex()) {
+		Error(w, http.StatusConflict, "Audio generation is already running for this book — stop it before regenerating.")
+		return
+	}
 	Message(w, "Voice regeneration started")
 
 	bookID := book.ID.Hex()
@@ -1202,6 +1214,10 @@ func (s *Server) chapterVoiceAction(w http.ResponseWriter, r *http.Request, mess
 	}
 	if !found {
 		Error(w, http.StatusNotFound, "Voice not found")
+		return
+	}
+	if s.W.IsBookBusy(book.ID.Hex()) {
+		Error(w, http.StatusConflict, "Audio generation is already running for this book — it will pick up pending work, or stop it first.")
 		return
 	}
 	Message(w, message)

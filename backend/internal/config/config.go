@@ -60,7 +60,7 @@ var (
 	// How many times a mismatching segment is re-synthesized before the SLM
 	// is asked to split it.
 	TtsVerifyAttempts int
-	TtsVerifyMinChars  int
+	TtsVerifyMinChars int
 
 	TtsMaxSentenceChars int
 

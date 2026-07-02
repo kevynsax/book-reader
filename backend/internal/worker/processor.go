@@ -12,6 +12,8 @@ import (
 	"unicode"
 	"unicode/utf16"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/kevynsax/book-reader/backend/internal/config"
 	"github.com/kevynsax/book-reader/backend/internal/data/biblebooks"
 	"github.com/kevynsax/book-reader/backend/internal/lib/pool"
@@ -267,7 +269,8 @@ func (w *Worker) processBookInner(ctx context.Context, r *run, resume bool) erro
 		if err := pdf.CopyPageAsCover(coverSrcPath, coverDest); err != nil {
 			return err
 		}
-		if err := r.withSave(ctx, func() { book.CoverImagePath = &coverDest }); err != nil {
+		book.CoverImagePath = &coverDest
+		if _, err := w.St.Books.UpdateByID(ctx, book.ID, bson.M{"$set": bson.M{"coverImagePath": coverDest}}); err != nil {
 			return err
 		}
 		w.emit(book, map[string]any{"coverImagePath": coverDest})
@@ -279,7 +282,8 @@ func (w *Worker) processBookInner(ctx context.Context, r *run, resume bool) erro
 		}
 		if cover, err := os.ReadFile(*book.CoverImagePath); err == nil {
 			if title, err := w.Q.ExtractTitle(ctx, cover); err == nil && title != "" {
-				if err := r.withSave(ctx, func() { book.Name = title }); err != nil {
+				book.Name = title
+				if _, err := w.St.Books.UpdateByID(ctx, book.ID, bson.M{"$set": bson.M{"name": title}}); err != nil {
 					return err
 				}
 				w.emit(book, map[string]any{"name": title})

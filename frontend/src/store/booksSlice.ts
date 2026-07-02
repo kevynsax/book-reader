@@ -1,4 +1,5 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
+import axios from 'axios';
 import { Book, Chapter, OcrPage, Progress, VoiceTrack } from '../types';
 import { api } from '../api/booksApi';
 import { loadPersistedBooks } from './persist';
@@ -126,24 +127,33 @@ export const removeVoice = createAsyncThunk(
   }
 );
 
+async function postAction(url: string) {
+  try {
+    await api.post(url);
+  } catch (e) {
+    const detail = axios.isAxiosError(e) ? e.response?.data?.error : undefined;
+    throw new Error(detail ?? (e instanceof Error ? e.message : String(e)));
+  }
+}
+
 export const regenerateVoice = createAsyncThunk(
   'books/regenerateVoice',
   async ({ bookId, voice }: { bookId: string; voice: string }) => {
-    await api.post(`/api/books/${bookId}/voices/${encodeURIComponent(voice)}/regenerate`);
+    await postAction(`/api/books/${bookId}/voices/${encodeURIComponent(voice)}/regenerate`);
   }
 );
 
 export const regenerateChapterVoice = createAsyncThunk(
   'books/regenerateChapterVoice',
   async ({ bookId, chapterIdx, voice }: { bookId: string; chapterIdx: number; voice: string }) => {
-    await api.post(`/api/books/${bookId}/chapters/${chapterIdx}/voices/${encodeURIComponent(voice)}/regenerate`);
+    await postAction(`/api/books/${bookId}/chapters/${chapterIdx}/voices/${encodeURIComponent(voice)}/regenerate`);
   }
 );
 
 export const continueChapterVoice = createAsyncThunk(
   'books/continueChapterVoice',
   async ({ bookId, chapterIdx, voice }: { bookId: string; chapterIdx: number; voice: string }) => {
-    await api.post(`/api/books/${bookId}/chapters/${chapterIdx}/voices/${encodeURIComponent(voice)}/continue`);
+    await postAction(`/api/books/${bookId}/chapters/${chapterIdx}/voices/${encodeURIComponent(voice)}/continue`);
   }
 );
 

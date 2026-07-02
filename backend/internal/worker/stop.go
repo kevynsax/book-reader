@@ -50,12 +50,15 @@ func (w *Worker) TryRun(bookID string) (release func(), ok bool) {
 	w.mu.Lock()
 	w.active[bookID] = true
 	w.mu.Unlock()
+	var once sync.Once
 	return func() {
-		w.mu.Lock()
-		delete(w.active, bookID)
-		delete(w.stops, bookID)
-		w.mu.Unlock()
-		lock.Unlock()
+		once.Do(func() {
+			w.mu.Lock()
+			delete(w.active, bookID)
+			delete(w.stops, bookID)
+			w.mu.Unlock()
+			lock.Unlock()
+		})
 	}, true
 }
 
@@ -63,12 +66,15 @@ func (w *Worker) TryRun(bookID string) (release func(), ok bool) {
 // confirm, page-text edit, voice add) without marking a run active. False
 // while a generation run holds the book — those routes answer 409 instead of
 // corrupting the run's state.
+// The release func is idempotent so handlers can release explicitly before
+// spawning a follow-up run goroutine and still keep a defer as the safety net.
 func (w *Worker) TryLockBook(bookID string) (release func(), ok bool) {
 	lock := w.bookLock(bookID)
 	if !lock.TryLock() {
 		return nil, false
 	}
-	return lock.Unlock, true
+	var once sync.Once
+	return func() { once.Do(lock.Unlock) }, true
 }
 
 // LockBook waits for the book (used by short operations like sentence edits
@@ -77,6 +83,13 @@ func (w *Worker) LockBook(bookID string) func() {
 	lock := w.bookLock(bookID)
 	lock.Lock()
 	return lock.Unlock
+}
+
+// IsBookBusy reports whether a generation/import run currently holds the book.
+func (w *Worker) IsBookBusy(bookID string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.active[bookID]
 }
 
 // StopBookAudio stops audio generation for a book. A live job in this process

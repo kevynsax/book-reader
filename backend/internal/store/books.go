@@ -99,7 +99,6 @@ func (b *Books) SaveGeneration(ctx context.Context, book *model.Book) error {
 		"progress":   book.Progress,
 		"status":     book.Status,
 		"totalPages": book.TotalPages,
-		"name":       book.Name,
 		"updatedAt":  bson.NewDateTimeFromTime(book.UpdatedAt.Time),
 	}
 	unset := bson.M{}
@@ -110,9 +109,6 @@ func (b *Books) SaveGeneration(ctx context.Context, book *model.Book) error {
 	}
 	if book.Language != nil {
 		set["language"] = *book.Language
-	}
-	if book.CoverImagePath != nil {
-		set["coverImagePath"] = *book.CoverImagePath
 	}
 	update := bson.M{"$set": set}
 	if len(unset) > 0 {
