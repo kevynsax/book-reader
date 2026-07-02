@@ -5,7 +5,7 @@ version: '3.8'
 # Load balancing is emergent — whichever healthy worker is free claims the
 # next task; a dead worker's unacked task is redelivered by the broker.
 x-worker-base: &worker-base
-  build: ./backend-go
+  build: ./backend
   restart: unless-stopped
   command: worker
   extra_hosts:
@@ -109,13 +109,12 @@ services:
       WORKER_SERVER_URL: https://whisper-macbook.kevyn.com.br
 
   backend:
-    build: ./backend-go
+    build: ./backend
     restart: unless-stopped
     ports:
       - "3001:3001"
-    # Server lists (QWENVL_SERVERS for OCR, TTS_SERVERS for synthesis) come from
-    # backend/.env, so config is identical across environments. Keys in
-    # `environment` override the env_file.
+    # TTS_SERVERS (for the direct sample/voices endpoints) comes from
+    # backend/.env; keys in `environment` override the env_file.
     env_file:
       - ./backend/.env
     environment:
@@ -135,34 +134,6 @@ services:
       - mongodb
       - rabbitmq
 
-  # Retired Node backend, kept for rollback while the Go port soaks:
-  #   docker compose --profile node up -d backend-node   (stop `backend` first — same port)
-  backend-node:
-    profiles: ["node"]
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.dev   # installs poppler-utils; only rebuilt when this file changes
-    restart: unless-stopped
-    working_dir: /app
-    command: sh -c "npm install && npm run dev"
-    ports:
-      - "3001:3001"
-    environment:
-      PORT: 3001
-      MONGODB_URI: mongodb://mongodb:27017/book-reader
-      DATA_DIR: /app/data
-      TTS_VOICE: ${TTS_VOICE:-pt-BR-FranciscaNeural}
-      TTS_SPEED: ${TTS_SPEED:-1.0}
-      TTS_LANGUAGE: ${TTS_LANGUAGE:-en}
-      FRONTEND_ORIGIN: http://localhost:5173
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ./backend:/app
-      - backend_modules:/app/node_modules
-      - book-data:/app/data
-    depends_on:
-      - mongodb
 
   frontend:
     image: node:20-slim
@@ -181,5 +152,4 @@ volumes:
   mongo-data:
   rabbitmq-data:
   book-data:
-  backend_modules:
   frontend_modules:
