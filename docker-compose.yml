@@ -80,6 +80,7 @@ services:
       WORKER_SERVER_ID: slm
       WORKER_SERVER_LABEL: SLM
       WORKER_SERVER_URL: https://slm.kevyn.com.br
+      WORKER_SERVER_MODEL: gemma4:latest
 
   worker-slm-macbook:
     <<: *worker-base
@@ -89,6 +90,7 @@ services:
       WORKER_SERVER_ID: macbook
       WORKER_SERVER_LABEL: MacBook
       WORKER_SERVER_URL: https://ollama-macbook.kevyn.com.br
+      WORKER_SERVER_MODEL: gemma4:12b-mlx
 
   worker-whisper:
     <<: *worker-base

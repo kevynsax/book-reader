@@ -40,10 +40,15 @@ type worker struct {
 	busy    atomic.Bool
 	healthy atomic.Bool
 
-	mu       sync.Mutex
-	conn     *amqp.Connection
-	ch       *amqp.Channel
-	consumer string
+	mu   sync.Mutex
+	conn *amqp.Connection
+	ch   *amqp.Channel
+	// consumers maps queue name -> consumer tag. Non-tts roles consume one
+	// role queue; a tts worker consumes one queue per model its server
+	// advertises (tasks.tts.<model>) so it can never claim a synthesis task
+	// for a model it can't run. Qos(1) is channel-wide, so the worker still
+	// executes one task at a time across all its queues.
+	consumers map[string]string
 }
 
 func env(key, def string) string {
@@ -112,7 +117,7 @@ func (w *worker) run(amqpURL string, healthEvery time.Duration) error {
 	}
 	w.mu.Lock()
 	w.conn, w.ch = conn, ch
-	w.consumer = ""
+	w.consumers = map[string]string{}
 	w.mu.Unlock()
 
 	closed := make(chan *amqp.Error, 1)
@@ -139,7 +144,6 @@ func (w *worker) healthCycle() {
 
 	w.mu.Lock()
 	ch := w.ch
-	consuming := w.consumer != ""
 	w.mu.Unlock()
 	if ch == nil {
 		return
@@ -151,16 +155,46 @@ func (w *worker) healthCycle() {
 		Body:        body,
 	})
 
-	switch {
-	case hb.Healthy && !consuming:
-		if err := w.startConsumer(); err != nil {
-			log.Printf("worker: start consumer: %v", err)
+	// The queues this worker should be consuming right now: nothing while
+	// unhealthy; the role queue for vlm/slm/whisper; one queue per advertised
+	// model for tts (capability routing).
+	desired := map[string]bool{}
+	if hb.Healthy {
+		if w.role == queue.RoleTTS {
+			for _, m := range hb.Models {
+				desired[queue.TTSTaskQueue(m.ID)] = true
+			}
 		} else {
-			log.Printf("worker: %s healthy — consuming %s", w.url, queue.TaskQueueName(w.role))
+			desired[queue.TaskQueueName(w.role)] = true
 		}
-	case !hb.Healthy && consuming:
-		log.Printf("worker: %s unhealthy — pausing consumption", w.url)
-		w.stopConsumer()
+	}
+	w.reconcileConsumers(desired)
+}
+
+// reconcileConsumers starts consumers for newly-desired queues and cancels
+// ones no longer desired (server unhealthy, or a model left the catalog).
+func (w *worker) reconcileConsumers(desired map[string]bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.ch == nil {
+		return
+	}
+	for queueName, tag := range w.consumers {
+		if !desired[queueName] {
+			_ = w.ch.Cancel(tag, false)
+			delete(w.consumers, queueName)
+			log.Printf("worker: stopped consuming %s", queueName)
+		}
+	}
+	for queueName := range desired {
+		if _, ok := w.consumers[queueName]; ok {
+			continue
+		}
+		if err := w.startConsumerLocked(queueName); err != nil {
+			log.Printf("worker: start consumer %s: %v", queueName, err)
+		} else {
+			log.Printf("worker: %s healthy — consuming %s", w.url, queueName)
+		}
 	}
 }
 
@@ -221,18 +255,18 @@ func httpReachable(ctx context.Context, url string) bool {
 	return res.StatusCode < 500
 }
 
-func (w *worker) startConsumer() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.ch == nil || w.consumer != "" {
-		return nil
+// startConsumerLocked declares the queue and begins consuming it. Caller
+// holds w.mu.
+func (w *worker) startConsumerLocked(queueName string) error {
+	if err := queue.DeclareTaskQueue(w.ch, queueName); err != nil {
+		return err
 	}
 	tag := fmt.Sprintf("%s-%s-%d", w.role, w.serverID, time.Now().UnixNano())
-	deliveries, err := w.ch.Consume(queue.TaskQueueName(w.role), tag, false, false, false, false, nil)
+	deliveries, err := w.ch.Consume(queueName, tag, false, false, false, false, nil)
 	if err != nil {
 		return err
 	}
-	w.consumer = tag
+	w.consumers[queueName] = tag
 	go func() {
 		for d := range deliveries {
 			w.handle(d)
@@ -241,12 +275,17 @@ func (w *worker) startConsumer() error {
 	return nil
 }
 
-func (w *worker) stopConsumer() {
+// stopConsumers cancels every consumer (transport failure path — the server
+// can't take tasks right now; the next healthy cycle re-subscribes).
+func (w *worker) stopConsumers() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.ch != nil && w.consumer != "" {
-		_ = w.ch.Cancel(w.consumer, false)
-		w.consumer = ""
+	if w.ch == nil {
+		return
+	}
+	for queueName, tag := range w.consumers {
+		_ = w.ch.Cancel(tag, false)
+		delete(w.consumers, queueName)
 	}
 }
 
@@ -271,7 +310,7 @@ func (w *worker) handle(d amqp.Delivery) {
 	case err != nil && isInfra(err):
 		log.Printf("worker: %s %s infra failure after %s: %v (requeueing, pausing)", w.role, task.Type, time.Since(started).Round(time.Millisecond), err)
 		w.healthy.Store(false)
-		w.stopConsumer()
+		w.stopConsumers()
 		_ = d.Nack(false, true)
 		return
 	case err != nil:
@@ -364,6 +403,18 @@ func (w *worker) executeVLM(ctx context.Context, task queue.Task) (json.RawMessa
 	return nil, fmt.Errorf("vlm: unknown task type %q", task.Type)
 }
 
+// slmModel picks the model for an slm task: each worker knows which model its
+// own server carries (WORKER_SERVER_MODEL), so the same task works whichever
+// worker claims it — the MacBook runs gemma4:12b-mlx while the cluster SLM
+// runs gemma4:latest. The payload model is only a fallback for workers
+// without one configured.
+func (w *worker) slmModel(payloadModel string) string {
+	if w.model != "" {
+		return w.model
+	}
+	return payloadModel
+}
+
 func (w *worker) executeSLM(ctx context.Context, task queue.Task) (json.RawMessage, error) {
 	switch task.Type {
 	case queue.TypeSplitInTwo:
@@ -371,7 +422,7 @@ func (w *worker) executeSLM(ctx context.Context, task queue.Task) (json.RawMessa
 		if err := json.Unmarshal(task.Payload, &p); err != nil {
 			return nil, err
 		}
-		sug, err := ocr.SplitLineIntoSentencesOn(ctx, w.url, p.Line, p.Model)
+		sug, err := ocr.SplitLineIntoSentencesOn(ctx, w.url, p.Line, w.slmModel(p.Model))
 		if err != nil {
 			return nil, err
 		}
@@ -385,7 +436,7 @@ func (w *worker) executeSLM(ctx context.Context, task queue.Task) (json.RawMessa
 		if err := json.Unmarshal(task.Payload, &p); err != nil {
 			return nil, err
 		}
-		parts, err := ocr.SplitLineIntoPartsOn(ctx, w.url, p.Line, p.MaxChars, p.Model)
+		parts, err := ocr.SplitLineIntoPartsOn(ctx, w.url, p.Line, p.MaxChars, w.slmModel(p.Model))
 		if err != nil {
 			return nil, err
 		}

@@ -97,7 +97,20 @@ func (w *Worker) buildSentences(ctx context.Context, r *run, idx int) (bool, err
 	w.emit(book, map[string]any{"splitProgress": progressPayload{Current: 0, Total: len(units), Message: splitMsg}})
 	var sentences []model.Sentence
 	for i, unit := range units {
-		sentences = append(sentences, splitUnitForTts(ctx, w.Q, unit, language, 0, nil)...)
+		pieces := splitUnitForTts(ctx, w.Q, unit, language, 0, nil)
+		// Trace lineage: reviewed line i+1 is "N"; pieces the SLM cut from it
+		// up front are "N.1", "N.2", … marked pre-audio-generation.
+		base := fmt.Sprint(i + 1)
+		for j := range pieces {
+			trace := base
+			if len(pieces) > 1 {
+				trace = fmt.Sprintf("%s.%d", base, j+1)
+				when := model.SplitPreGeneration
+				pieces[j].SplitCreatedWhen = &when
+			}
+			pieces[j].TraceOrder = &trace
+		}
+		sentences = append(sentences, pieces...)
 		w.emit(book, map[string]any{"splitProgress": progressPayload{Current: i + 1, Total: len(units), Message: splitMsg}})
 	}
 	if len(sentences) == 0 {
@@ -131,6 +144,7 @@ func ensureSegments(track *model.VoiceTrack, chapter *model.Chapter) {
 			next[i] = model.Segment{
 				SentenceID: sen.ID, AudioPath: ex.AudioPath, DurationSecs: ex.DurationSecs,
 				AudioStatus: ex.AudioStatus, AudioError: ex.AudioError,
+				WhisperResults: ex.WhisperResults,
 			}
 		} else {
 			next[i] = model.Segment{SentenceID: sen.ID, AudioStatus: model.AudioPending}
@@ -278,6 +292,11 @@ type pendingSplit struct {
 	sentenceID string
 	extra      []tts.RenderedPiece
 	original   string
+	// Trace lineage: the sentence's pre-split hierarchical order ("423" or
+	// "423.1") and id, so the spliced pieces become "423.1", "423.2" (or
+	// "423.1.1", "423.1.2") with SplitOf pointing at the parent.
+	parentTrace string
+	parentID    bson.ObjectID
 }
 
 // renderSegment synthesizes one sentence through the task fabric (whichever
@@ -318,6 +337,7 @@ func (w *Worker) renderSegment(ctx context.Context, r *run, task segmentTask, sp
 			duration := pieces[0].DurationSecs
 			seg.AudioPath = &segPath
 			seg.DurationSecs = &duration
+			seg.WhisperResults = pieces[0].Transcripts
 			if len(pieces) > 1 {
 				// First piece reuses this sentence/segment; the rest get
 				// spliced in later.
@@ -326,11 +346,23 @@ func (w *Worker) renderSegment(ctx context.Context, r *run, task segmentTask, sp
 				if sen.Original != nil && strings.TrimSpace(*sen.Original) != "" {
 					original = strings.TrimSpace(*sen.Original)
 				}
+				parentTrace := fmt.Sprint(sen.Order + 1)
+				if sen.TraceOrder != nil {
+					parentTrace = *sen.TraceOrder
+				}
+				parentID := sen.ID
 				d0 := pieces[0].Display
+				when := model.SplitDuringGeneration
+				trace0 := parentTrace + ".1"
 				sen.Text = pieces[0].Text
 				sen.Display = &d0
 				sen.Original = &original
-				*splits = append(*splits, pendingSplit{sentenceID: sen.ID.Hex(), extra: pieces[1:], original: original})
+				sen.TraceOrder = &trace0
+				sen.SplitCreatedWhen = &when
+				*splits = append(*splits, pendingSplit{
+					sentenceID: sen.ID.Hex(), extra: pieces[1:], original: original,
+					parentTrace: parentTrace, parentID: parentID,
+				})
 			}
 			seg.AudioStatus = model.AudioComplete
 			seg.AudioError = nil
@@ -398,13 +430,24 @@ func (w *Worker) applyChapterSplits(ctx context.Context, r *run, idx int, voice,
 				display = *s.Display
 			}
 			d := display
-			rebuilt = append(rebuilt, model.Sentence{ID: s.ID, Text: s.Text, Display: &d, Original: s.Original})
+			rebuilt = append(rebuilt, model.Sentence{
+				ID: s.ID, Text: s.Text, Display: &d, Original: s.Original,
+				TraceOrder: s.TraceOrder, SplitOf: s.SplitOf, SplitCreatedWhen: s.SplitCreatedWhen,
+			})
 			if split := splitByID[s.ID.Hex()]; split != nil {
-				for _, piece := range split.extra {
+				for pi, piece := range split.extra {
 					id := bson.NewObjectID()
 					pd := piece.Display
 					po := split.original
-					rebuilt = append(rebuilt, model.Sentence{ID: id, Text: piece.Text, Display: &pd, Original: &po})
+					// Piece 1 is the parent record itself (already retagged
+					// ".1" in renderSegment); the extras continue ".2", ".3"…
+					trace := fmt.Sprintf("%s.%d", split.parentTrace, pi+2)
+					when := model.SplitDuringGeneration
+					parentID := split.parentID
+					rebuilt = append(rebuilt, model.Sentence{
+						ID: id, Text: piece.Text, Display: &pd, Original: &po,
+						TraceOrder: &trace, SplitOf: &parentID, SplitCreatedWhen: &when,
+					})
 					newAudioByNewID = append(newAudioByNewID, newAudio{id: id.Hex(), piece: piece})
 				}
 			}
@@ -454,6 +497,7 @@ func (w *Worker) applyChapterSplits(ctx context.Context, r *run, idx int, voice,
 					track.Segments[si].DurationSecs = &duration
 					track.Segments[si].AudioStatus = model.AudioComplete
 					track.Segments[si].AudioError = nil
+					track.Segments[si].WhisperResults = na.piece.Transcripts
 				}
 			}
 		}
@@ -565,7 +609,7 @@ func (w *Worker) renderChapter(ctx context.Context, r *run, voice string, idx in
 	// would otherwise hold every segment task until timeout. Model loading
 	// itself is each worker's own job (hot-swap on the first task).
 	ttsModel, _ := tts.ParseVoice(voice)
-	if !w.Q.Registry.HasHealthy(queue.RoleTTS) {
+	if !w.Q.Registry.HasModelWorker(ttsModel.ID) {
 		audioError := fmt.Sprintf("No TTS server is online for model %q — start the server and try again.", ttsModel.ID)
 		log.Printf("renderChapter %s ch%d (%s): %s", book.ID.Hex(), idx+1, voice, audioError)
 		if err := r.withSave(ctx, func() {

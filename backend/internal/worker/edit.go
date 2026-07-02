@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/kevynsax/book-reader/backend/internal/model"
-	"github.com/kevynsax/book-reader/backend/internal/queue"
 	"github.com/kevynsax/book-reader/backend/internal/svc/tts"
 )
 
@@ -69,7 +68,7 @@ func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, se
 		}})
 
 		ttsModel, _ := tts.ParseVoice(voice)
-		if !w.Q.Registry.HasHealthy(queue.RoleTTS) {
+		if !w.Q.Registry.HasModelWorker(ttsModel.ID) {
 			message := fmt.Sprintf("No TTS server is online for model %q.", ttsModel.ID)
 			if err := r.withSave(ctx, func() {
 				track.Segments[segIdx].AudioStatus = model.AudioError
@@ -89,7 +88,7 @@ func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, se
 
 		sentence := chapter.Sentences[senIdx]
 		segPath := segmentAudioPath(audioDir, chapterIdx, voice, sentence.Order)
-		durationSecs, renderErr := tts.SynthesizeSegment(ctx, w.Q, strings.TrimSpace(sentence.Text), segPath, voice, language)
+		durationSecs, transcripts, renderErr := tts.SynthesizeSegment(ctx, w.Q, strings.TrimSpace(sentence.Text), segPath, voice, language)
 		if err := r.withSave(ctx, func() {
 			seg := &track.Segments[segIdx]
 			if renderErr == nil {
@@ -97,6 +96,7 @@ func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, se
 				seg.DurationSecs = &durationSecs
 				seg.AudioStatus = model.AudioComplete
 				seg.AudioError = nil
+				seg.WhisperResults = transcripts
 			} else {
 				message := renderErr.Error()
 				log.Printf("rerenderSegment %s ch%d (%s): %v", book.ID.Hex(), chapterIdx+1, voice, renderErr)
@@ -208,7 +208,7 @@ func (w *Worker) DeleteSentence(ctx context.Context, bookID string, chapterIdx i
 		}
 		sort.SliceStable(kept, func(i, j int) bool { return kept[i].Order < kept[j].Order })
 		for order := range kept {
-			kept[order] = model.Sentence{ID: kept[order].ID, Order: order, Text: kept[order].Text, Display: kept[order].Display}
+			kept[order] = model.Sentence{ID: kept[order].ID, Order: order, Text: kept[order].Text, Display: kept[order].Display, Original: kept[order].Original, TraceOrder: kept[order].TraceOrder, SplitOf: kept[order].SplitOf, SplitCreatedWhen: kept[order].SplitCreatedWhen}
 		}
 		chapter.Sentences = kept
 

@@ -21,6 +21,12 @@ var Roles = []Role{RoleTTS, RoleVLM, RoleSLM, RoleWhisper}
 
 func TaskQueueName(role Role) string { return "tasks." + string(role) }
 
+// TTSTaskQueue routes synthesis by capability: one queue per model
+// ("tasks.tts.chatterbox", "tasks.tts.openaudio", …). A tts worker consumes
+// only the queues for models its server advertises, so a task for a model a
+// server can't run is never claimed by that server's worker.
+func TTSTaskQueue(model string) string { return "tasks.tts." + model }
+
 const (
 	DeadLetterQueue = "tasks.dead"
 	HeartbeatQueue  = "worker.heartbeat"

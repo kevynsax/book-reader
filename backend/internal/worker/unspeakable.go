@@ -110,7 +110,7 @@ func (w *Worker) MigrateUnspeakableSentences(ctx context.Context) error {
 			kept := make([]model.Sentence, 0, len(ordered)-len(garbageIDs))
 			for _, s := range ordered {
 				if !garbageIDs[s.ID.Hex()] {
-					kept = append(kept, model.Sentence{ID: s.ID, Text: s.Text, Display: s.Display})
+					kept = append(kept, model.Sentence{ID: s.ID, Text: s.Text, Display: s.Display, Original: s.Original, TraceOrder: s.TraceOrder, SplitOf: s.SplitOf, SplitCreatedWhen: s.SplitCreatedWhen})
 				}
 			}
 			for order := range kept {

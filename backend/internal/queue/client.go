@@ -22,21 +22,31 @@ var submitTimeouts = map[Role]time.Duration{
 	RoleSLM:     60 * time.Second,
 }
 
-// DeclareTopology sets up the role queues (quorum, delivery-limited,
-// dead-lettered), the dead-letter queue, and the heartbeat exchange. Safe to
-// call from both main and workers.
+// DeclareTaskQueue declares one quorum, delivery-limited, dead-lettered task
+// queue. Idempotent; used for the static role queues and the dynamic
+// per-model tts queues.
+func DeclareTaskQueue(ch *amqp.Channel, name string) error {
+	_, err := ch.QueueDeclare(name, true, false, false, false, amqp.Table{
+		"x-queue-type":              "quorum",
+		"x-delivery-limit":          int32(DeliveryLimit),
+		"x-dead-letter-exchange":    "",
+		"x-dead-letter-routing-key": DeadLetterQueue,
+	})
+	return err
+}
+
+// DeclareTopology sets up the static role queues (vlm/slm/whisper — tts
+// queues are per-model and declared on demand), the dead-letter queue, and
+// the heartbeat exchange. Safe to call from both main and workers.
 func DeclareTopology(ch *amqp.Channel) error {
 	if _, err := ch.QueueDeclare(DeadLetterQueue, true, false, false, false, nil); err != nil {
 		return err
 	}
 	for _, role := range Roles {
-		_, err := ch.QueueDeclare(TaskQueueName(role), true, false, false, false, amqp.Table{
-			"x-queue-type":              "quorum",
-			"x-delivery-limit":          int32(DeliveryLimit),
-			"x-dead-letter-exchange":    "",
-			"x-dead-letter-routing-key": DeadLetterQueue,
-		})
-		if err != nil {
+		if role == RoleTTS {
+			continue
+		}
+		if err := DeclareTaskQueue(ch, TaskQueueName(role)); err != nil {
 			return err
 		}
 	}
@@ -56,12 +66,13 @@ type Client struct {
 	url      string
 	Registry *Registry
 
-	mu      sync.Mutex
-	conn    *amqp.Connection
-	ch      *amqp.Channel
-	pending map[string]pendingReply
-	seq     uint64
-	closed  bool
+	mu       sync.Mutex
+	conn     *amqp.Connection
+	ch       *amqp.Channel
+	pending  map[string]pendingReply
+	declared map[string]bool
+	seq      uint64
+	closed   bool
 }
 
 func NewClient(url string) *Client {
@@ -168,6 +179,9 @@ func (c *Client) connect() error {
 
 	c.mu.Lock()
 	c.conn, c.ch = conn, ch
+	// A fresh broker (e.g. restarted with empty storage) has no dynamic
+	// queues; forget what we declared so they're re-created on next publish.
+	c.declared = map[string]bool{}
 	c.mu.Unlock()
 	log.Printf("queue: connected to %s", redactAmqpURL(c.url))
 	return nil
@@ -212,6 +226,30 @@ var ErrNotConnected = errors.New("task queue is not connected")
 // healthy worker, but this caller has moved on — same contract as today's
 // per-call timeout).
 func (c *Client) Submit(ctx context.Context, role Role, taskType string, payload any) (json.RawMessage, error) {
+	return c.submitTo(ctx, TaskQueueName(role), role, taskType, payload)
+}
+
+// ensureQueue declares a dynamic task queue once per client lifetime.
+func (c *Client) ensureQueue(ch *amqp.Channel, name string) error {
+	c.mu.Lock()
+	if c.declared == nil {
+		c.declared = map[string]bool{}
+	}
+	done := c.declared[name]
+	c.mu.Unlock()
+	if done {
+		return nil
+	}
+	if err := DeclareTaskQueue(ch, name); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.declared[name] = true
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Client) submitTo(ctx context.Context, queueName string, role Role, taskType string, payload any) (json.RawMessage, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -233,11 +271,20 @@ func (c *Client) Submit(ctx context.Context, role Role, taskType string, payload
 	c.pending[corrID] = waiter
 	c.mu.Unlock()
 
+	if queueName != TaskQueueName(role) {
+		if err := c.ensureQueue(ch, queueName); err != nil {
+			c.mu.Lock()
+			delete(c.pending, corrID)
+			c.mu.Unlock()
+			return nil, err
+		}
+	}
+
 	timeout := submitTimeouts[role]
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	err = ch.PublishWithContext(ctx, "", TaskQueueName(role), false, false, amqp.Publishing{
+	err = ch.PublishWithContext(ctx, "", queueName, false, false, amqp.Publishing{
 		ContentType:   "application/json",
 		CorrelationId: corrID,
 		ReplyTo:       "amq.rabbitmq.reply-to",
@@ -261,7 +308,10 @@ func (c *Client) Submit(ctx context.Context, role Role, taskType string, payload
 		c.mu.Lock()
 		delete(c.pending, corrID)
 		c.mu.Unlock()
-		return nil, fmt.Errorf("%s task %q timed out after %s (no healthy %s worker finished it)", role, taskType, timeout, role)
+		// Name the exact queue: "tasks.tts.openaudio" pins a timeout to the
+		// model no live worker could serve, instead of a vague role blame.
+		return nil, fmt.Errorf("%s task %q on %s timed out after %s (no worker answered — none subscribed to it, or it was dead-lettered after repeated failures)",
+			role, taskType, queueName, timeout)
 	}
 }
 
@@ -312,6 +362,16 @@ func (c *Client) Transcribe(ctx context.Context, audio []byte, language string) 
 	return r.Text, err
 }
 
+// Synthesize publishes to the model's own queue so only workers whose server
+// carries that model can claim it.
 func (c *Client) Synthesize(ctx context.Context, p SynthesizePayload) (SynthesizeResult, error) {
-	return submitAs[SynthesizeResult](c, ctx, RoleTTS, TypeSynthesize, p)
+	var out SynthesizeResult
+	raw, err := c.submitTo(ctx, TTSTaskQueue(p.Model), RoleTTS, TypeSynthesize, p)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return out, fmt.Errorf("tts synthesize: malformed result: %w", err)
+	}
+	return out, nil
 }

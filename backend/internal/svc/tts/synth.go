@@ -204,60 +204,88 @@ func SlmSplitToMax(ctx context.Context, q *queue.Client, display string, maxChar
 
 // RenderedPiece is one verified leaf of a sentence: the original display
 // text, the speech-ready text actually synthesized, and the audio confirmed
-// (within tolerance) to say it.
+// (within tolerance) to say it. Transcripts traces verification quality —
+// every transcript Whisper returned on the way to this audio, in attempt
+// order (a piece that inherited a split also carries its parent's failed
+// transcripts first).
 type RenderedPiece struct {
 	Display      string
 	Text         string
 	Buffer       []byte
 	DurationSecs float64
+	Transcripts  []string
 }
 
 // renderVerifiedPieces renders a chunk and confirms — via Whisper — that it
-// says what was asked. The speech-normalized `text` is synthesized and
-// compared; the original `display` is what gets split on a mismatch. Returns
-// the flat list of verified leaves (length 1 when it rendered cleanly, can't
-// be split, or hit the depth cap).
-func renderVerifiedPieces(ctx context.Context, display, text string, rc renderContext, depth int) ([]RenderedPiece, error) {
-	result, err := renderChunkToBuffer(ctx, text, rc)
-	if err != nil {
-		return nil, err
-	}
-	leaf := RenderedPiece{Display: display, Text: text, Buffer: result.buffer, DurationSecs: result.durationSecs}
+// says what was asked. A mismatch is re-synthesized up to TtsVerifyAttempts
+// times (TTS output is nondeterministic; a retry is far cheaper than a
+// split) and only then is the SLM asked to split the original `display`
+// text. Returns the flat list of verified leaves (length 1 when it rendered
+// cleanly, can't be split, or hit the depth cap — best attempt kept).
+func renderVerifiedPieces(ctx context.Context, display, text string, rc renderContext, depth int, parentTranscripts []string) ([]RenderedPiece, error) {
+	transcripts := append([]string(nil), parentTranscripts...)
 
-	if !config.TtsVerify || len(strings.TrimSpace(text)) < config.TtsVerifyMinChars {
-		return []RenderedPiece{leaf}, nil
-	}
+	var best RenderedPiece
+	bestSimilarity := -1.0
+	for attempt := 1; attempt <= config.TtsVerifyAttempts; attempt++ {
+		result, err := renderChunkToBuffer(ctx, text, rc)
+		if err != nil {
+			return nil, err
+		}
+		leaf := RenderedPiece{Display: display, Text: text, Buffer: result.buffer, DurationSecs: result.durationSecs}
 
-	transcript, err := rc.q.Transcribe(ctx, result.buffer, rc.language)
-	if err != nil {
-		// ASR unavailable (no whisper worker / timeout) — don't block on it.
-		log.Printf("tts verify: transcription unavailable: %v", err)
-		return []RenderedPiece{leaf}, nil
-	}
+		if !config.TtsVerify || len(strings.TrimSpace(text)) < config.TtsVerifyMinChars {
+			leaf.Transcripts = transcripts
+			return []RenderedPiece{leaf}, nil
+		}
 
-	similarity := verify.WordSimilarity(text, transcript)
-	if similarity >= config.TtsVerifyThreshold {
-		return []RenderedPiece{leaf}, nil
+		transcript, err := rc.q.Transcribe(ctx, result.buffer, rc.language)
+		if err != nil {
+			// ASR unavailable (no whisper worker / timeout) — don't block.
+			log.Printf("tts verify: transcription unavailable: %v", err)
+			leaf.Transcripts = transcripts
+			return []RenderedPiece{leaf}, nil
+		}
+		transcripts = append(transcripts, transcript)
+		leaf.Transcripts = transcripts
+
+		similarity := verify.WordSimilarity(text, transcript)
+		if similarity >= config.TtsVerifyThreshold {
+			return []RenderedPiece{leaf}, nil
+		}
+		if similarity > bestSimilarity {
+			bestSimilarity = similarity
+			best = leaf
+		}
+		log.Printf("tts verify: attempt %d/%d mismatch (sim=%.2f) for %q",
+			attempt, config.TtsVerifyAttempts, similarity, truncate(display, 60))
 	}
+	best.Transcripts = transcripts
 
 	if depth >= config.TtsVerifyMaxDepth {
-		log.Printf("tts verify: keeping best after %d splits (sim=%.2f) for %q", depth, similarity, truncate(display, 60))
-		return []RenderedPiece{leaf}, nil
+		log.Printf("tts verify: keeping best after %d splits (sim=%.2f) for %q", depth, bestSimilarity, truncate(display, 60))
+		return []RenderedPiece{best}, nil
 	}
 
 	parts := SlmSplitInTwo(ctx, rc.q, display)
 	if parts == nil {
-		log.Printf("tts verify: unsplittable mismatch (sim=%.2f) for %q", similarity, truncate(display, 60))
-		return []RenderedPiece{leaf}, nil
+		log.Printf("tts verify: unsplittable mismatch (sim=%.2f) for %q", bestSimilarity, truncate(display, 60))
+		return []RenderedPiece{best}, nil
 	}
 
 	var pieces []RenderedPiece
-	for _, part := range parts {
+	for i, part := range parts {
 		speakable := strings.TrimSpace(normalizer.NormalizeForSpeech(ctx, part, rc.language))
 		if speakable == "" {
 			speakable = part
 		}
-		sub, err := renderVerifiedPieces(ctx, part, speakable, rc, depth+1)
+		// The first piece inherits the parent's failed transcripts so the
+		// full story of why this sentence split stays on one record.
+		inherited := []string(nil)
+		if i == 0 {
+			inherited = transcripts
+		}
+		sub, err := renderVerifiedPieces(ctx, part, speakable, rc, depth+1, inherited)
 		if err != nil {
 			return nil, err
 		}
@@ -287,39 +315,41 @@ func RenderSegmentPieces(ctx context.Context, q *queue.Client, display, text, vo
 		d = speakable
 	}
 	return renderVerifiedPieces(ctx, d, speakable,
-		renderContext{q: q, model: model, voice: bareVoice, speed: config.TtsSpeed, language: language}, 0)
+		renderContext{q: q, model: model, voice: bareVoice, speed: config.TtsSpeed, language: language}, 0, nil)
 }
 
 // SynthesizeSegment renders one sentence to its own mp3 file, verifying it
 // against Whisper. On a mismatch the verified pieces are stitched back into a
 // single segment (used by the single-sentence edit/regenerate path). Returns
-// the duration.
-func SynthesizeSegment(ctx context.Context, q *queue.Client, text, outputPath, voice, language string) (float64, error) {
+// the duration plus every transcript observed while producing the audio.
+func SynthesizeSegment(ctx context.Context, q *queue.Client, text, outputPath, voice, language string) (float64, []string, error) {
 	pieces, err := RenderSegmentPieces(ctx, q, text, text, voice, language)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	buffers := make([][]byte, len(pieces))
+	var transcripts []string
 	for i, p := range pieces {
 		buffers[i] = p.Buffer
+		transcripts = append(transcripts, p.Transcripts...)
 	}
 	buffer, err := concatBuffers(buffers)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	durationSecs := pieces[0].DurationSecs
 	if len(pieces) > 1 {
 		if durationSecs, err = audioprobe.ProbeMp3Buffer(buffer); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if err := os.WriteFile(outputPath, buffer, 0o644); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	return durationSecs, nil
+	return durationSecs, transcripts, nil
 }
 
 // SynthesizeSample renders a voice preview for the first readable text.

@@ -57,6 +57,9 @@ var (
 	TtsVerify          bool
 	TtsVerifyThreshold float64
 	TtsVerifyMaxDepth  int
+	// How many times a mismatching segment is re-synthesized before the SLM
+	// is asked to split it.
+	TtsVerifyAttempts int
 	TtsVerifyMinChars  int
 
 	TtsMaxSentenceChars int
@@ -163,6 +166,7 @@ func initAll() {
 	TtsVerify = env("TTS_VERIFY", "1") != "0"
 	TtsVerifyThreshold = envFloat("TTS_VERIFY_THRESHOLD", 0.85)
 	TtsVerifyMaxDepth = envInt("TTS_VERIFY_MAX_DEPTH", 3)
+	TtsVerifyAttempts = max(1, envInt("TTS_VERIFY_ATTEMPTS", 3))
 	TtsVerifyMinChars = envInt("TTS_VERIFY_MIN_CHARS", 8)
 
 	TtsMaxSentenceChars = envInt("TTS_MAX_SENTENCE_CHARS", 220)

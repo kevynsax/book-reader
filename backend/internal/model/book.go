@@ -47,6 +47,10 @@ type Segment struct {
 	DurationSecs *float64      `bson:"durationSecs,omitempty" json:"durationSecs,omitempty"`
 	AudioStatus  AudioStatus   `bson:"audioStatus"            json:"audioStatus"`
 	AudioError   *string       `bson:"audioError,omitempty"   json:"audioError,omitempty"`
+	// WhisperResults traces verification: every transcript Whisper returned
+	// while producing this segment's audio, in attempt order (failed retries
+	// first, the accepted pass last). Empty when verification was skipped.
+	WhisperResults []string `bson:"whisperResults,omitempty" json:"whisperResults,omitempty"`
 }
 
 // VoiceTrack is a chapter's rendered audio for one voice (_id:false).
@@ -59,15 +63,35 @@ type VoiceTrack struct {
 	Segments          []Segment   `bson:"segments"                    json:"segments"`
 }
 
+// When a sentence was produced by an SLM split.
+const (
+	SplitPreGeneration    = "pre-audio-generation"
+	SplitDuringGeneration = "during-audio-generation"
+)
+
 // Sentence is an editable, speech-ready sentence — the source of truth for
 // chapter audio. `Text` is what's synthesized; `Display` is shown to the
 // reader; `Original` is the pre-SLM-split source sentence.
+//
+// Split lineage is traced with TraceOrder: the reviewed line 423 is "423";
+// pieces the SLM cut from it before generation are "423.1", "423.2"; a piece
+// re-split because Whisper kept disagreeing during generation becomes
+// "423.1.1", "423.1.2" — so split depth and origin are queryable per book.
 type Sentence struct {
 	ID       bson.ObjectID `bson:"_id"                json:"_id"`
 	Order    int           `bson:"order"              json:"order"`
 	Text     string        `bson:"text"               json:"text"`
 	Display  *string       `bson:"display,omitempty"  json:"display,omitempty"`
 	Original *string       `bson:"original,omitempty" json:"original,omitempty"`
+	// TraceOrder is the hierarchical position ("423", "423.1", "423.1.1").
+	TraceOrder *string `bson:"traceOrder,omitempty" json:"traceOrder,omitempty"`
+	// SplitOf links a during-generation piece to the sentence it was cut
+	// from; nil for reviewed lines and pre-generation pieces (their parent
+	// line never existed as a stored sentence).
+	SplitOf *bson.ObjectID `bson:"splitOf,omitempty" json:"splitOf,omitempty"`
+	// SplitCreatedWhen is SplitPreGeneration or SplitDuringGeneration; nil
+	// when the sentence was never produced by a split.
+	SplitCreatedWhen *string `bson:"splitCreatedWhen,omitempty" json:"splitCreatedWhen,omitempty"`
 }
 
 type Chapter struct {
