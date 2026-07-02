@@ -251,7 +251,7 @@ func renderVerifiedPieces(ctx context.Context, display, text string, rc renderCo
 		transcripts = append(transcripts, transcript)
 		leaf.Transcripts = transcripts
 
-		similarity := verify.WordSimilarity(text, transcript)
+		similarity := verify.WordSimilarityLang(text, transcript, rc.language)
 		if similarity >= config.TtsVerifyThreshold {
 			return []RenderedPiece{leaf}, nil
 		}

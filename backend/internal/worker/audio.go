@@ -759,10 +759,14 @@ func (w *Worker) renderWork(ctx context.Context, r *run, audioDir string, progre
 	}
 
 	idle := map[string]bool{}
+	catchups := 0
 	var firstErr error
 	done := func() bool { // mu held
 		if firstErr != nil {
 			return true
+		}
+		if catchups > 0 {
+			return false
 		}
 		for _, lane := range laneOrder {
 			if len(queues[lane]) > 0 || !idle[lane] {
@@ -795,6 +799,94 @@ func (w *Worker) renderWork(ctx context.Context, r *run, audioDir string, progre
 		}
 		queues[lane] = q
 		queued[k] = true
+	}
+
+	hasRenderedWork := func(j job) bool {
+		var has bool
+		r.locked(func() {
+			t := book.TrackForVoice(&book.Chapters[j.idx], j.voice)
+			if t == nil {
+				return
+			}
+			for _, s := range t.Segments {
+				if s.AudioStatus == model.AudioComplete {
+					has = true
+					return
+				}
+			}
+		})
+		return has
+	}
+
+	// A split invalidates every other voice's copy of its chapter. A voice
+	// that had already rendered it re-renders its few new pieces IMMEDIATELY
+	// in its own goroutine — not queued behind whatever chapter its lane is
+	// currently rendering — so a finished chapter goes back to playable within
+	// moments of being staled. A voice that hasn't reached the chapter yet
+	// keeps its voice-major turn (no early model hot-swap). A catch-up already
+	// in flight for the same (voice, chapter) is flagged to run once more, so
+	// a second split landing mid-render isn't lost.
+	var catchupWG sync.WaitGroup
+	catchupState := map[string]int{} // 1 = running, 2 = running + rerun requested
+	var afterRender func(j job, didSplit bool)
+	var runCatchup func(j job)
+	runCatchup = func(j job) { // mu held
+		k := key(j)
+		if catchupState[k] > 0 {
+			catchupState[k] = 2
+			return
+		}
+		renders[k]++
+		if renders[k] > maxChapterRenders {
+			log.Printf("renderWork %s: %s hit the re-render cap; leaving as-is", book.ID.Hex(), k)
+			return
+		}
+		catchupState[k] = 1
+		catchups++
+		catchupWG.Add(1)
+		go func() {
+			defer catchupWG.Done()
+			var didSplit bool
+			var err error
+			if w.stopRequested(book.ID.Hex()) {
+				err = ErrStopped
+			} else {
+				didSplit, err = w.renderChapter(ctx, r, j.voice, j.idx, audioDir, progress, chapterLocks[j.idx])
+			}
+
+			mu.Lock()
+			catchups--
+			rerun := catchupState[k] == 2
+			delete(catchupState, k)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+			} else {
+				afterRender(j, didSplit)
+				if rerun && firstErr == nil {
+					runCatchup(j)
+				}
+			}
+			cond.Broadcast()
+			mu.Unlock()
+		}()
+	}
+	afterRender = func(j job, didSplit bool) { // mu held
+		if !didSplit {
+			return
+		}
+		for _, other := range book.Voices {
+			if other == j.voice {
+				continue
+			}
+			oj := job{voice: other, idx: j.idx}
+			if hasRenderedWork(oj) {
+				runCatchup(oj)
+			} else {
+				push(oj, false)
+			}
+		}
 	}
 
 	var wg sync.WaitGroup
@@ -845,43 +937,15 @@ func (w *Worker) renderWork(ctx context.Context, r *run, audioDir string, progre
 					cond.Broadcast()
 					return
 				}
-				if !didSplit {
-					continue
+				afterRender(j, didSplit)
+				if didSplit {
+					cond.Broadcast()
 				}
-
-				// A split invalidated every other voice's copy of this
-				// chapter. A voice that had already rendered it re-renders
-				// its few new pieces RIGHT NOW (front of its lane) so a
-				// finished chapter never sits stale for the rest of the run;
-				// a voice that hasn't reached this chapter yet keeps its
-				// voice-major turn (no early model hot-swap).
-				hasRenderedWork := func(voice string) bool {
-					var has bool
-					r.locked(func() {
-						t := book.TrackForVoice(&book.Chapters[j.idx], voice)
-						if t == nil {
-							return
-						}
-						for _, s := range t.Segments {
-							if s.AudioStatus == model.AudioComplete {
-								has = true
-								return
-							}
-						}
-					})
-					return has
-				}
-				for _, other := range book.Voices {
-					if other == j.voice {
-						continue
-					}
-					push(job{voice: other, idx: j.idx}, hasRenderedWork(other))
-				}
-				cond.Broadcast()
 			}
 		}(lane)
 	}
 	wg.Wait()
+	catchupWG.Wait()
 	if firstErr != nil {
 		return firstErr
 	}
