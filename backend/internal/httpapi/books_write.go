@@ -550,6 +550,26 @@ type chapterBody struct {
 	StartChar int    `json:"startChar"`
 }
 
+// reconcileTracks keeps an unchanged chapter's tracks (segments included) for
+// voices still on the book, and adds fresh pending tracks for new voices.
+func reconcileTracks(chapter *model.Chapter, voices []string) []model.VoiceTrack {
+	tracks := make([]model.VoiceTrack, 0, len(voices))
+	for _, voice := range voices {
+		found := false
+		for _, t := range chapter.Tracks {
+			if t.Voice == voice {
+				tracks = append(tracks, t)
+				found = true
+				break
+			}
+		}
+		if !found {
+			tracks = append(tracks, model.VoiceTrack{Voice: voice, AudioStatus: model.AudioPending, Segments: []model.Segment{}})
+		}
+	}
+	return tracks
+}
+
 // PATCH /:id/chapters — update chapter boundaries, mark affected tracks
 // stale (no regeneration kicked off).
 func (s *Server) handleChaptersPatch(w http.ResponseWriter, r *http.Request) {
@@ -584,6 +604,19 @@ func (s *Server) handleChaptersPatch(w http.ResponseWriter, r *http.Request) {
 		if i < len(book.Chapters) {
 			existing = &book.Chapters[i]
 		}
+
+		// A chapter whose boundaries didn't change keeps its split sentences
+		// and rendered segments — the review save that precedes every
+		// Generate/Continue click must not discard hours of synthesis. Only a
+		// real startPage/startChar move invalidates the cached text.
+		if existing != nil && !toRegen[i] {
+			kept := *existing
+			kept.Title = c.Title
+			kept.Tracks = reconcileTracks(existing, book.Voices)
+			nextChapters[i] = kept
+			continue
+		}
+
 		tracks := make([]model.VoiceTrack, len(book.Voices))
 		for vi, voice := range book.Voices {
 			var prev *model.VoiceTrack
@@ -594,12 +627,8 @@ func (s *Server) handleChaptersPatch(w http.ResponseWriter, r *http.Request) {
 			if prev != nil {
 				track.AudioPath = prev.AudioPath
 				track.AudioDurationSecs = prev.AudioDurationSecs
-				if toRegen[i] {
-					if prev.AudioStatus == model.AudioComplete {
-						track.AudioStatus = model.AudioStale
-					}
-				} else {
-					track.AudioStatus = prev.AudioStatus
+				if prev.AudioStatus == model.AudioComplete {
+					track.AudioStatus = model.AudioStale
 				}
 			}
 			tracks[vi] = track
