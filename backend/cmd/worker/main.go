@@ -49,6 +49,22 @@ type worker struct {
 	// for a model it can't run. Qos(1) is channel-wide, so the worker still
 	// executes one task at a time across all its queues.
 	consumers map[string]string
+
+	// Soft model affinity: while this tts worker is "hot" on a model (a
+	// synthesize task for it ran recently), it consumes ONLY that model's
+	// queue. Render lanes for different models then split cleanly across
+	// servers instead of one multi-model server hot-swapping on every task.
+	// Goes cold after affinityWindow with no task, re-subscribing to all.
+	affModel string
+	affAt    time.Time
+}
+
+const affinityWindow = 30 * time.Second
+
+func (w *worker) touchAffinity(model string) {
+	w.mu.Lock()
+	w.affModel, w.affAt = model, time.Now()
+	w.mu.Unlock()
 }
 
 func env(key, def string) string {
@@ -157,12 +173,29 @@ func (w *worker) healthCycle() {
 
 	// The queues this worker should be consuming right now: nothing while
 	// unhealthy; the role queue for vlm/slm/whisper; one queue per advertised
-	// model for tts (capability routing).
+	// model for tts (capability routing) — narrowed to just the hot model
+	// while affinity holds.
 	desired := map[string]bool{}
 	if hb.Healthy {
 		if w.role == queue.RoleTTS {
+			w.mu.Lock()
+			hot := w.affModel
+			if hot != "" && time.Since(w.affAt) > affinityWindow {
+				hot, w.affModel = "", ""
+			}
+			w.mu.Unlock()
+			hotAdvertised := false
 			for _, m := range hb.Models {
-				desired[queue.TTSTaskQueue(m.ID)] = true
+				if m.ID == hot {
+					hotAdvertised = true
+				}
+			}
+			if hot != "" && hotAdvertised {
+				desired[queue.TTSTaskQueue(hot)] = true
+			} else {
+				for _, m := range hb.Models {
+					desired[queue.TTSTaskQueue(m.ID)] = true
+				}
 			}
 		} else {
 			desired[queue.TaskQueueName(w.role)] = true
@@ -482,10 +515,12 @@ func (w *worker) executeTTS(ctx context.Context, task queue.Task) (json.RawMessa
 	if !tts.EnsureModelLoaded(ctx, server, p.Model) {
 		return nil, fmt.Errorf("%w: %s on %s", errModelLoad, p.Model, w.url)
 	}
+	w.touchAffinity(p.Model)
 	audio, duration, err := tts.SynthesizeOn(ctx, w.url, p.Model, p.Input, p.Voice, p.Speed, p.Language, p.UsesLanguage)
 	if err != nil {
 		return nil, err
 	}
+	w.touchAffinity(p.Model)
 	return json.Marshal(queue.SynthesizeResult{Audio: audio, DurationSecs: duration})
 }
 

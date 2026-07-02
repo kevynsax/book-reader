@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 
@@ -115,6 +116,11 @@ func (w *Worker) buildSentences(ctx context.Context, r *run, idx int) (bool, err
 	}
 	if len(sentences) == 0 {
 		return false, nil
+	}
+	// A cancelled context (pre-splitter unwinding) degrades SLM splits into
+	// keep-whole passthroughs — never persist that as a finished split.
+	if ctx.Err() != nil {
+		return false, ctx.Err()
 	}
 
 	if err := r.withSave(ctx, func() {
@@ -526,7 +532,7 @@ func (w *Worker) prepareChapterTasks(ctx context.Context, r *run, voice string, 
 		return nil, nil
 	}
 
-	ok, err := w.buildSentences(ctx, r, idx)
+	ok, err := w.ensureSentences(ctx, r, idx)
 	if err != nil {
 		return nil, err
 	}
@@ -676,84 +682,170 @@ type job struct {
 // keeping all voices' splits consistent: whenever a chapter's render
 // restructures its sentences, every other voice's same chapter is re-queued.
 // Converges because each split strictly shrinks sentences.
+//
+// Jobs run in one LANE PER TTS MODEL, and lanes run concurrently: with
+// capability routing each model's tasks flow to its own servers, so an
+// openaudio voice on the MacBook and an orpheus voice on the GPU server
+// render at the same time instead of the second model's servers idling.
+// Within a lane jobs stay voice-major (models hot-swap at most per voice).
+// A per-chapter lock keeps two lanes off the same chapter — a concurrent
+// split would restructure sentences under the other lane's feet.
 func (w *Worker) renderWork(ctx context.Context, r *run, audioDir string, progress *renderProgress, seed []job) error {
 	book := r.book
 	key := func(j job) string { return j.voice + "|" + fmt.Sprint(j.idx) }
-	queue := append([]job(nil), seed...)
-	queued := map[string]bool{}
+	laneOf := func(voice string) string {
+		m, _ := tts.ParseVoice(voice)
+		return m.ID
+	}
+
+	var mu sync.Mutex
+	cond := sync.NewCond(&mu)
+	queues := map[string][]job{}   // lane -> pending jobs
+	queued := map[string]bool{}    // job key -> waiting in some lane
+	renders := map[string]int{}    // job key -> attempts (re-render cap)
+	chapterLocks := map[int]*sync.Mutex{}
+	for idx := range book.Chapters {
+		chapterLocks[idx] = &sync.Mutex{}
+	}
+	var laneOrder []string
 	for _, j := range seed {
+		lane := laneOf(j.voice)
+		if _, ok := queues[lane]; !ok {
+			laneOrder = append(laneOrder, lane)
+		}
+		queues[lane] = append(queues[lane], j)
 		queued[key(j)] = true
 	}
-	renders := map[string]int{}
 
-	for len(queue) > 0 {
-		if w.stopRequested(book.ID.Hex()) {
-			return ErrStopped
+	idle := map[string]bool{}
+	var firstErr error
+	done := func() bool { // mu held
+		if firstErr != nil {
+			return true
 		}
-		j := queue[0]
-		queue = queue[1:]
-		k := key(j)
-		delete(queued, k)
-
-		renders[k]++
-		if renders[k] > maxChapterRenders {
-			log.Printf("renderWork %s: %s hit the re-render cap; leaving as-is", book.ID.Hex(), k)
-			continue
-		}
-
-		didSplit, err := w.renderChapter(ctx, r, j.voice, j.idx, audioDir, progress)
-		if err != nil {
-			return err
-		}
-		if !didSplit {
-			continue
-		}
-
-		// A split invalidated every other voice's copy of this chapter. A
-		// voice that had already rendered it re-renders its few new pieces
-		// RIGHT NOW (front of the queue) so a finished chapter never sits
-		// stale for the rest of the run; a voice that hasn't reached this
-		// chapter yet keeps its voice-major turn (no early model hot-swap —
-		// it will pick up the new sentence structure when its turn comes).
-		hasRenderedWork := func(voice string) bool {
-			t := book.TrackForVoice(&book.Chapters[j.idx], voice)
-			if t == nil {
+		for _, lane := range laneOrder {
+			if len(queues[lane]) > 0 || !idle[lane] {
 				return false
 			}
-			for _, s := range t.Segments {
-				if s.AudioStatus == model.AudioComplete {
-					return true
+		}
+		return true
+	}
+	// push queues j into its lane; front promotes past everything pending.
+	push := func(j job, front bool) { // mu held
+		lane := laneOf(j.voice)
+		k := key(j)
+		if queued[k] && !front {
+			return
+		}
+		q := queues[lane]
+		if queued[k] {
+			kept := q[:0]
+			for _, e := range q {
+				if key(e) != k {
+					kept = append(kept, e)
 				}
 			}
-			return false
+			q = kept
 		}
-		var front []job
-		promoted := map[string]bool{}
-		for _, other := range book.Voices {
-			if other == j.voice {
-				continue
-			}
-			oj := job{voice: other, idx: j.idx}
-			ok := key(oj)
-			if hasRenderedWork(other) {
-				front = append(front, oj)
-				promoted[ok] = true
-				queued[ok] = true
-			} else if !queued[ok] {
-				queued[ok] = true
-				queue = append(queue, oj)
-			}
+		if front {
+			q = append([]job{j}, q...)
+		} else {
+			q = append(q, j)
 		}
-		if len(front) > 0 {
-			next := make([]job, 0, len(front)+len(queue))
-			next = append(next, front...)
-			for _, q := range queue {
-				if !promoted[key(q)] {
-					next = append(next, q)
+		queues[lane] = q
+		queued[k] = true
+	}
+
+	var wg sync.WaitGroup
+	for _, lane := range laneOrder {
+		wg.Add(1)
+		go func(lane string) {
+			defer wg.Done()
+			mu.Lock()
+			defer mu.Unlock()
+			for {
+				if firstErr != nil {
+					return
 				}
+				if len(queues[lane]) == 0 {
+					idle[lane] = true
+					if done() {
+						cond.Broadcast()
+						return
+					}
+					cond.Wait()
+					continue
+				}
+				idle[lane] = false
+				j := queues[lane][0]
+				queues[lane] = queues[lane][1:]
+				k := key(j)
+				delete(queued, k)
+				renders[k]++
+				if renders[k] > maxChapterRenders {
+					log.Printf("renderWork %s: %s hit the re-render cap; leaving as-is", book.ID.Hex(), k)
+					continue
+				}
+				mu.Unlock()
+
+				var didSplit bool
+				var err error
+				if w.stopRequested(book.ID.Hex()) {
+					err = ErrStopped
+				} else {
+					chLock := chapterLocks[j.idx]
+					chLock.Lock()
+					didSplit, err = w.renderChapter(ctx, r, j.voice, j.idx, audioDir, progress)
+					chLock.Unlock()
+				}
+
+				mu.Lock()
+				if err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+					cond.Broadcast()
+					return
+				}
+				if !didSplit {
+					continue
+				}
+
+				// A split invalidated every other voice's copy of this
+				// chapter. A voice that had already rendered it re-renders
+				// its few new pieces RIGHT NOW (front of its lane) so a
+				// finished chapter never sits stale for the rest of the run;
+				// a voice that hasn't reached this chapter yet keeps its
+				// voice-major turn (no early model hot-swap).
+				hasRenderedWork := func(voice string) bool {
+					var has bool
+					r.locked(func() {
+						t := book.TrackForVoice(&book.Chapters[j.idx], voice)
+						if t == nil {
+							return
+						}
+						for _, s := range t.Segments {
+							if s.AudioStatus == model.AudioComplete {
+								has = true
+								return
+							}
+						}
+					})
+					return has
+				}
+				for _, other := range book.Voices {
+					if other == j.voice {
+						continue
+					}
+					push(job{voice: other, idx: j.idx}, hasRenderedWork(other))
+				}
+				cond.Broadcast()
 			}
-			queue = next
-		}
+		}(lane)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
 	}
 	return nil
 }
@@ -791,7 +883,19 @@ func (w *Worker) generateForVoices(ctx context.Context, book *model.Book, voices
 	}
 
 	progress := &renderProgress{total: len(voices) * len(book.Chapters)}
+
+	// Split every chapter's sentences in the background (SLM work) while the
+	// TTS fleet renders — chapter boundaries stop costing a split pause.
+	splitCtx, cancelSplit := context.WithCancel(ctx)
+	splitterDone := make(chan struct{})
+	go func() {
+		defer close(splitterDone)
+		w.preSplitChapters(splitCtx, r)
+	}()
+
 	renderErr := w.renderWork(ctx, r, audioDir, progress, pendingJobs(book, voices))
+	cancelSplit()
+	<-splitterDone
 
 	if renderErr != nil {
 		if renderErr == ErrStopped {

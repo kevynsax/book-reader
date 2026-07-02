@@ -6,6 +6,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
 	"regexp"
 	"sync"
@@ -54,6 +55,64 @@ type run struct {
 	w    *Worker
 	book *model.Book
 	mu   sync.Mutex
+
+	// Per-chapter sentence-split gates: the background pre-splitter and the
+	// render lanes race on ensureSentences — whoever arrives first splits,
+	// everyone else waits on the chapter's gate.
+	splitMu   sync.Mutex
+	splitBusy map[int]chan struct{}
+}
+
+// ensureSentences builds a chapter's sentence list exactly once per run, no
+// matter how many callers (pre-splitter, render lanes) ask concurrently.
+func (w *Worker) ensureSentences(ctx context.Context, r *run, idx int) (bool, error) {
+	for {
+		r.splitMu.Lock()
+		var ready bool
+		r.locked(func() { ready = len(r.book.Chapters[idx].Sentences) > 0 })
+		if ready {
+			r.splitMu.Unlock()
+			return true, nil
+		}
+		if r.splitBusy == nil {
+			r.splitBusy = map[int]chan struct{}{}
+		}
+		if gate, busy := r.splitBusy[idx]; busy {
+			r.splitMu.Unlock()
+			select {
+			case <-gate:
+				continue // re-check: the splitter may have failed
+			case <-ctx.Done():
+				return false, ctx.Err()
+			}
+		}
+		gate := make(chan struct{})
+		r.splitBusy[idx] = gate
+		r.splitMu.Unlock()
+
+		ok, err := w.buildSentences(ctx, r, idx)
+
+		r.splitMu.Lock()
+		delete(r.splitBusy, idx)
+		close(gate)
+		r.splitMu.Unlock()
+		return ok, err
+	}
+}
+
+// preSplitChapters walks every chapter in order and splits its sentences
+// ahead of the renderer, so the TTS fleet never idles at a chapter boundary
+// waiting for the SLM. Best-effort: an error just leaves the chapter for the
+// render path to retry/report.
+func (w *Worker) preSplitChapters(ctx context.Context, r *run) {
+	for idx := range r.book.Chapters {
+		if ctx.Err() != nil || w.stopRequested(r.book.ID.Hex()) {
+			return
+		}
+		if _, err := w.ensureSentences(ctx, r, idx); err != nil && ctx.Err() == nil {
+			log.Printf("preSplit %s ch%d: %v", r.book.ID.Hex(), idx+1, err)
+		}
+	}
 }
 
 // withSave locks, applies fn's mutations, persists the run-owned fields
