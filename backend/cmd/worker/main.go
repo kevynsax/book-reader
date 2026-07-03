@@ -1,10 +1,11 @@
 // worker is a role executor: it owns exactly one AI server (TTS / QwenVL /
 // SLM / Whisper), heartbeats its health every cycle, and — while healthy —
-// consumes tasks for its role one at a time (prefetch=1, a serial AI server
-// is never over-committed). After finishing a task it immediately takes the
-// next; when the queue is idle it just keeps the health loop. There is no
-// fallback logic anywhere: an unacked task from a dead worker is redelivered
-// by the broker to another worker of the same role.
+// consumes tasks one at a time (prefetch=1, a serial AI server is never
+// over-committed). vlm/slm/whisper workers share a role queue, so an unacked
+// task from a dead worker is redelivered to another worker of the same role.
+// A tts worker consumes only its own private queue: main's dispatcher decides
+// which server renders each segment and only publishes to a server it has
+// seen healthy and free, so the worker needs no scheduling logic at all.
 package main
 
 import (
@@ -48,109 +49,10 @@ type worker struct {
 	conn *amqp.Connection
 	ch   *amqp.Channel
 	// consumers maps queue name -> consumer tag. Non-tts roles consume one
-	// role queue; a tts worker consumes one queue per model its server
-	// advertises (tasks.tts.<model>) so it can never claim a synthesis task
-	// for a model it can't run. Qos(1) is channel-wide, so the worker still
-	// executes one task at a time across all its queues.
+	// shared role queue; a tts worker consumes only its own private queue
+	// (tasks.tts.server.<id>) — main's dispatcher decides which server gets
+	// each render, so the worker itself carries no scheduling logic.
 	consumers map[string]string
-
-	// One model at a time: a tts worker consumes exactly one model's queue
-	// while that model has work, so its server keeps a single model in memory
-	// instead of hot-swap-thrashing when several models' lanes are active at
-	// once. focusModel is the queue being consumed; affModel/affAt track the
-	// last executed task so a lane's think-gaps (whisper + SLM between synths)
-	// don't drop the focus.
-	affModel   string
-	affAt      time.Time
-	focusModel string
-	focusSince time.Time
-}
-
-// affinityWindow must comfortably exceed the gap between two synthesize tasks
-// of an active lane — each segment goes synth → whisper transcribe → SLM
-// judge (→ retries) before the next synth task lands, easily 30s+. A window
-// shorter than that makes the worker go cold mid-lane and grab another
-// model's task, paying two hot-swaps per lapse.
-const (
-	affinityWindow = 120 * time.Second
-	// Fairness slice: when another model's queue has work waiting, the focus
-	// rotates after at most this long, so no lane ever waits past the tts RPC
-	// timeout (300s) minus one in-flight render. One swap per slice instead
-	// of one per task.
-	focusSlice = 150 * time.Second
-)
-
-// pickFocus decides which single model queue this tts worker should consume.
-// Focus sticks while its model has queued work or ran a task recently, and
-// rotates to the deepest waiting queue when it goes idle or exhausts its
-// fairness slice. Empty focus (nothing queued anywhere, nothing recent) means
-// consume all advertised queues — the first task then locks a new focus.
-func (w *worker) pickFocus(ch *amqp.Channel, advertised []string) string {
-	depths := map[string]int{}
-	for _, m := range advertised {
-		d, err := queue.TaskQueueDepth(ch, queue.TTSTaskQueue(m))
-		if err != nil {
-			return ""
-		}
-		depths[m] = d
-	}
-	deepest := func(skip string) string {
-		best, bestDepth := "", 0
-		for _, m := range advertised {
-			if m != skip && depths[m] > bestDepth {
-				best, bestDepth = m, depths[m]
-			}
-		}
-		return best
-	}
-
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	focus := w.focusModel
-	if focus != "" && !contains(advertised, focus) {
-		focus = ""
-	}
-	hot := w.affModel != "" && time.Since(w.affAt) <= affinityWindow && contains(advertised, w.affModel)
-
-	if focus == "" {
-		if next := deepest(""); next != "" {
-			focus = next
-		} else if hot {
-			focus = w.affModel
-		}
-	} else {
-		active := depths[focus] > 0 || (hot && w.affModel == focus)
-		waiting := deepest(focus)
-		switch {
-		case waiting != "" && (!active || time.Since(w.focusSince) > focusSlice):
-			focus = waiting
-		case !active && waiting == "":
-			focus = ""
-		}
-	}
-
-	if focus != w.focusModel {
-		w.focusModel, w.focusSince = focus, time.Now()
-		if focus != "" {
-			log.Printf("worker: focusing on model %s", focus)
-		}
-	}
-	return focus
-}
-
-func contains(list []string, v string) bool {
-	for _, item := range list {
-		if item == v {
-			return true
-		}
-	}
-	return false
-}
-
-func (w *worker) touchAffinity(model string) {
-	w.mu.Lock()
-	w.affModel, w.affAt = model, time.Now()
-	w.mu.Unlock()
 }
 
 func env(key, def string) string {
@@ -264,23 +166,12 @@ func (w *worker) healthCycle() {
 	})
 
 	// The queues this worker should be consuming right now: nothing while
-	// unhealthy; the role queue for vlm/slm/whisper; for tts, the single
-	// focused model queue (one model in server memory at a time), or all
-	// advertised queues while idle so the next task can lock a new focus.
+	// unhealthy; the shared role queue for vlm/slm/whisper; for tts, the
+	// worker's own private queue that main's dispatcher publishes to.
 	desired := map[string]bool{}
 	if hb.Healthy {
 		if w.role == queue.RoleTTS {
-			advertised := make([]string, 0, len(hb.Models))
-			for _, m := range hb.Models {
-				advertised = append(advertised, m.ID)
-			}
-			if focus := w.pickFocus(ch, advertised); focus != "" {
-				desired[queue.TTSTaskQueue(focus)] = true
-			} else {
-				for _, m := range advertised {
-					desired[queue.TTSTaskQueue(m)] = true
-				}
-			}
+			desired[queue.TTSServerQueue(w.serverID)] = true
 		} else {
 			desired[queue.TaskQueueName(w.role)] = true
 		}
@@ -602,12 +493,10 @@ func (w *worker) executeTTS(ctx context.Context, task queue.Task) (json.RawMessa
 	if !tts.EnsureModelLoaded(ctx, server, p.Model) {
 		return nil, fmt.Errorf("%w: %s on %s", errModelLoad, p.Model, w.url)
 	}
-	w.touchAffinity(p.Model)
 	audio, duration, err := tts.SynthesizeOn(ctx, w.url, p.Model, p.Input, p.Voice, p.Speed, p.Language, p.UsesLanguage)
 	if err != nil {
 		return nil, err
 	}
-	w.touchAffinity(p.Model)
 	return json.Marshal(queue.SynthesizeResult{Audio: audio, DurationSecs: duration})
 }
 

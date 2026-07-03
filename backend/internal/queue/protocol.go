@@ -1,9 +1,13 @@
 // Package queue is the RabbitMQ task fabric between the orchestrating main
 // process and the role workers (tts / vlm / slm / whisper). Main publishes
 // one task per AI call and waits for the reply; workers claim tasks only
-// while their AI server is healthy, one at a time. Balancing and fallback are
-// emergent: a busy or dead worker doesn't claim, and an unacked task is
-// redelivered by the broker to another worker of the same role.
+// while their AI server is healthy, one at a time. For vlm/slm/whisper,
+// balancing is emergent: a busy or dead worker doesn't claim, and an unacked
+// task is redelivered by the broker to another worker of the same role. TTS
+// is different: main's dispatcher (dispatch.go) assigns each synthesize task
+// to one specific free server via that server's own queue, so the whole fleet
+// works the book's voices in one global order instead of each server hopping
+// between models.
 package queue
 
 import "encoding/json"
@@ -21,11 +25,12 @@ var Roles = []Role{RoleTTS, RoleVLM, RoleSLM, RoleWhisper}
 
 func TaskQueueName(role Role) string { return "tasks." + string(role) }
 
-// TTSTaskQueue routes synthesis by capability: one queue per model
-// ("tasks.tts.chatterbox", "tasks.tts.openaudio", …). A tts worker consumes
-// only the queues for models its server advertises, so a task for a model a
-// server can't run is never claimed by that server's worker.
-func TTSTaskQueue(model string) string { return "tasks.tts." + model }
+// TTSServerQueue is one tts worker's private task queue
+// ("tasks.tts.server.macbook"). Main's dispatcher picks which server renders
+// each segment — capability matching and ordering live in the dispatcher, not
+// in shared queues — and publishes to that server's queue only while the
+// server is free, so a task never waits behind a busy server.
+func TTSServerQueue(serverID string) string { return "tasks.tts.server." + serverID }
 
 const (
 	DeadLetterQueue = "tasks.dead"

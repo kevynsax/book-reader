@@ -26,27 +26,13 @@ var submitTimeouts = map[Role]time.Duration{
 // queue. Idempotent; used for the static role queues and the dynamic
 // per-model tts queues.
 func DeclareTaskQueue(ch *amqp.Channel, name string) error {
-	_, err := declareTaskQueue(ch, name)
-	return err
-}
-
-func declareTaskQueue(ch *amqp.Channel, name string) (amqp.Queue, error) {
-	return ch.QueueDeclare(name, true, false, false, false, amqp.Table{
+	_, err := ch.QueueDeclare(name, true, false, false, false, amqp.Table{
 		"x-queue-type":              "quorum",
 		"x-delivery-limit":          int32(DeliveryLimit),
 		"x-dead-letter-exchange":    "",
 		"x-dead-letter-routing-key": DeadLetterQueue,
 	})
-}
-
-// TaskQueueDepth declares the queue idempotently and returns its ready
-// (undelivered) message count.
-func TaskQueueDepth(ch *amqp.Channel, name string) (int, error) {
-	q, err := declareTaskQueue(ch, name)
-	if err != nil {
-		return 0, err
-	}
-	return q.Messages, nil
+	return err
 }
 
 // DeclareTopology sets up the static role queues (vlm/slm/whisper — tts
@@ -87,11 +73,20 @@ type Client struct {
 	declared map[string]bool
 	seq      uint64
 	closed   bool
+
+	// TTS dispatcher state (dispatch.go): which servers hold one of our
+	// renders right now, and the renders waiting for a server, in global
+	// book order.
+	dmu       sync.Mutex
+	inflight  map[string]bool
+	waiters   []*ttsWaiter
+	waiterSeq uint64
 }
 
 func NewClient(url string) *Client {
-	c := &Client{url: url, Registry: NewRegistry(), pending: map[string]pendingReply{}}
+	c := &Client{url: url, Registry: NewRegistry(), pending: map[string]pendingReply{}, inflight: map[string]bool{}}
 	go c.maintain()
+	go c.dispatchLoop()
 	return c
 }
 
@@ -388,12 +383,21 @@ func (c *Client) Transcribe(ctx context.Context, audio []byte, language string) 
 	return r.Text, err
 }
 
-// Synthesize publishes to the model's own queue so only workers whose server
-// carries that model can claim it.
-func (c *Client) Synthesize(ctx context.Context, p SynthesizePayload) (SynthesizeResult, error) {
+// Synthesize publishes to one server's private queue — the server AcquireTTS
+// granted for this render. Servers scale down at any time, and a task in a
+// dead server's queue is never redelivered to a peer, so the call is guarded
+// by a liveness watch: once the server stops heartbeating it aborts early
+// (instead of waiting out the full RPC timeout) and the caller retries on
+// the next granted server.
+func (c *Client) Synthesize(ctx context.Context, p SynthesizePayload, serverID string) (SynthesizeResult, error) {
 	var out SynthesizeResult
-	raw, err := c.submitTo(ctx, TTSTaskQueue(p.Model), RoleTTS, TypeSynthesize, p)
+	wctx, stop := c.watchServer(ctx, serverID)
+	defer stop()
+	raw, err := c.submitTo(wctx, TTSServerQueue(serverID), RoleTTS, TypeSynthesize, p)
 	if err != nil {
+		if ctx.Err() == nil && wctx.Err() != nil {
+			return out, fmt.Errorf("tts server %q went offline mid-render", serverID)
+		}
 		return out, err
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {

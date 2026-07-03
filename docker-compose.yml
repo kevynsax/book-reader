@@ -1,9 +1,13 @@
 version: '3.8'
 
 # Role workers: one deployment per (role, AI server). Each polls its own
-# server's health every 5s and consumes tasks for its role one at a time.
-# Load balancing is emergent — whichever healthy worker is free claims the
-# next task; a dead worker's unacked task is redelivered by the broker.
+# server's health every 5s and consumes tasks one at a time.
+# vlm/slm/whisper share a role queue (whichever healthy worker is free claims
+# the next task; a dead worker's unacked task is redelivered by the broker).
+# tts workers each consume only their own queue: the backend's dispatcher
+# assigns every render to a specific free server, walking the book's voices
+# and chapters in one global order. Workers can scale up or down at any time
+# — the dispatcher follows the heartbeats.
 x-worker-base: &worker-base
   build: ./backend
   restart: unless-stopped

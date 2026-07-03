@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 
@@ -276,6 +276,8 @@ func (w *Worker) finalizeTrack(ctx context.Context, r *run, idx int, voice, audi
 
 // segmentTask is one sentence to synthesize: indices into the shared Book
 // (stable until the pool drains) plus the text/path/language to render it.
+// priority is the chapter's position in the run's global work order, handed
+// to the dispatcher so every server serves the earliest chapter it can.
 type segmentTask struct {
 	idx      int
 	voice    string
@@ -284,11 +286,13 @@ type segmentTask struct {
 	text     string
 	segPath  string
 	language string
+	priority int64
 }
 
-// renderSegment synthesizes one sentence through the task fabric (whichever
-// healthy tts worker claims it), then persists + emits the segment's outcome.
-func (w *Worker) renderSegment(ctx context.Context, r *run, task segmentTask) error {
+// renderSegment synthesizes one sentence on the tts server the dispatcher
+// grants, then persists + emits the segment's outcome. stopCtx cancels
+// renders parked in the dispatcher when the user stops the run.
+func (w *Worker) renderSegment(ctx, stopCtx context.Context, r *run, task segmentTask) error {
 	book := r.book
 	if w.stopRequested(book.ID.Hex()) {
 		return ErrStopped
@@ -307,7 +311,22 @@ func (w *Worker) renderSegment(ctx context.Context, r *run, task segmentTask) er
 		}
 	})
 
-	piece, err := tts.RenderSegment(ctx, w.Q, display, task.text, task.voice, task.language)
+	piece, err := tts.RenderSegment(stopCtx, w.Q, display, task.text, task.voice, task.language, task.priority)
+
+	if err != nil && stopCtx.Err() != nil {
+		// The stop cancelled this render mid-flight; put the segment back to
+		// pending so a resume simply re-renders it.
+		r.locked(func() {
+			chapter := &book.Chapters[task.idx]
+			seg := &chapter.Tracks[trackIndex(chapter, task.voice)].Segments[task.segIdx]
+			seg.AudioStatus = model.AudioPending
+			seg.AudioError = nil
+		})
+		if err := r.withSave(ctx, nil); err != nil {
+			return err
+		}
+		return ErrStopped
+	}
 
 	var writeErr error
 	if err == nil {
@@ -371,7 +390,7 @@ type renderProgress struct {
 // track generating, and returns the not-yet-complete segments as tasks.
 // Resumable — already complete segments (whose audio is still on disk) are
 // skipped.
-func (w *Worker) prepareChapterTasks(ctx context.Context, r *run, voice string, idx int, audioDir string, progress *renderProgress) ([]segmentTask, error) {
+func (w *Worker) prepareChapterTasks(ctx context.Context, r *run, voice string, idx int, priority int64, audioDir string, progress *renderProgress) ([]segmentTask, error) {
 	book := r.book
 	chapter := &book.Chapters[idx]
 	track := book.TrackForVoice(chapter, voice)
@@ -436,6 +455,7 @@ func (w *Worker) prepareChapterTasks(ctx context.Context, r *run, voice string, 
 			text:     strings.TrimSpace(sen.Text),
 			segPath:  segmentAudioPath(audioDir, idx, voice, sen.Order),
 			language: language,
+			priority: priority,
 		})
 	}
 	if reconciled {
@@ -446,10 +466,12 @@ func (w *Worker) prepareChapterTasks(ctx context.Context, r *run, voice string, 
 	return tasks, nil
 }
 
-// renderChapter renders one chapter for one voice, balancing its sentences
-// across all ready servers with at most TtsConcurrency in flight, then
-// assembles.
-func (w *Worker) renderChapter(ctx context.Context, r *run, voice string, idx int, audioDir string, progress *renderProgress) error {
+// renderChapter renders one chapter for one voice, fanning its sentences
+// across every server the dispatcher grants (at most TtsConcurrency segment
+// pipelines in flight), then assembles. pos is the job's position in the
+// run's global order; +1 keeps priority 0 free for user-initiated edits.
+func (w *Worker) renderChapter(ctx, stopCtx context.Context, r *run, j job, pos int, audioDir string, progress *renderProgress) error {
+	voice, idx := j.voice, j.idx
 	book := r.book
 	chapter := &book.Chapters[idx]
 	track := book.TrackForVoice(chapter, voice)
@@ -475,7 +497,7 @@ func (w *Worker) renderChapter(ctx context.Context, r *run, voice string, idx in
 		return nil
 	}
 
-	tasks, err := w.prepareChapterTasks(ctx, r, voice, idx, audioDir, progress)
+	tasks, err := w.prepareChapterTasks(ctx, r, voice, idx, int64(pos)+1, audioDir, progress)
 	if err != nil {
 		return err
 	}
@@ -509,7 +531,7 @@ func (w *Worker) renderChapter(ctx context.Context, r *run, voice string, idx in
 	emitChapterProgress()
 
 	err = pool.Run(tasks, config.TtsConcurrency, func(task segmentTask, _ int) error {
-		if err := w.renderSegment(ctx, r, task); err != nil {
+		if err := w.renderSegment(ctx, stopCtx, r, task); err != nil {
 			return err
 		}
 		emitChapterProgress()
@@ -527,62 +549,142 @@ type job struct {
 	idx   int
 }
 
-// renderWork renders a worklist of (voice, chapter) jobs to completion.
+const (
+	jobPending = iota
+	jobActive
+	jobDone
+)
+
+// renderWork renders a worklist of (voice, chapter) jobs to completion, in
+// worklist order: voices by insertion order, chapters in order.
 //
-// Jobs run in one LANE PER TTS MODEL, and lanes run concurrently: with
-// capability routing each model's tasks flow to its own servers, so an
-// openaudio voice on the MacBook and an orpheus voice on the GPU server
-// render at the same time instead of the second model's servers idling.
-// Within a lane jobs stay voice-major (models hot-swap at most per voice).
+// One chapter per model is in flight at a time, so every server able to run
+// the current voice's model converges on that chapter (the dispatcher fans
+// its segments across them) and the chapter becomes playable as soon as
+// possible. A later job opens early only when some healthy server can't help
+// with any chapter already in flight — that server works ahead alone on the
+// first job it can render instead of idling. A job whose model no live
+// server carries opens too: renderChapter fails it fast with a clear track
+// error.
 func (w *Worker) renderWork(ctx context.Context, r *run, audioDir string, progress *renderProgress, seed []job) error {
+	if len(seed) == 0 {
+		return nil
+	}
 	book := r.book
-	laneOf := func(voice string) string {
+
+	// stopCtx unblocks renders parked in the dispatcher when the user stops
+	// the run; saves keep using ctx so the unwind can still persist state.
+	stopCtx, cancelStop := context.WithCancel(ctx)
+	defer cancelStop()
+
+	modelOf := func(voice string) string {
 		m, _ := tts.ParseVoice(voice)
 		return m.ID
 	}
 
-	queues := map[string][]job{}
-	var laneOrder []string
-	for _, j := range seed {
-		lane := laneOf(j.voice)
-		if _, ok := queues[lane]; !ok {
-			laneOrder = append(laneOrder, lane)
-		}
-		queues[lane] = append(queues[lane], j)
+	status := make([]int, len(seed))
+	type result struct {
+		pos int
+		err error
+	}
+	results := make(chan result)
+	running := 0
+	var firstErr error
+
+	launch := func(pos int) {
+		status[pos] = jobActive
+		running++
+		go func() {
+			results <- result{pos, w.renderChapter(ctx, stopCtx, r, seed[pos], pos, audioDir, progress)}
+		}()
 	}
 
-	var mu sync.Mutex
-	var firstErr error
-	var wg sync.WaitGroup
-	for _, lane := range laneOrder {
-		wg.Add(1)
-		go func(jobs []job) {
-			defer wg.Done()
-			for _, j := range jobs {
-				mu.Lock()
-				stop := firstErr != nil
-				mu.Unlock()
-				if stop {
-					return
+	schedule := func() {
+		if firstErr != nil || w.stopRequested(book.ID.Hex()) {
+			return
+		}
+		workers := w.Q.Registry.Workers(queue.RoleTTS)
+		capableServers := func(m string) []string {
+			var out []string
+			for _, hb := range workers {
+				if !hb.Healthy {
+					continue
 				}
-				var err error
-				if w.stopRequested(book.ID.Hex()) {
-					err = ErrStopped
-				} else {
-					err = w.renderChapter(ctx, r, j.voice, j.idx, audioDir, progress)
-				}
-				if err != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = err
+				for _, adv := range hb.Models {
+					if adv.ID == m {
+						out = append(out, hb.ServerID)
+						break
 					}
-					mu.Unlock()
-					return
 				}
 			}
-		}(queues[lane])
+			return out
+		}
+
+		activeModels := map[string]bool{}
+		for pos, j := range seed {
+			if status[pos] == jobActive {
+				activeModels[modelOf(j.voice)] = true
+			}
+		}
+		claimed := map[string]bool{}
+		for pos, j := range seed {
+			if status[pos] == jobDone {
+				continue
+			}
+			m := modelOf(j.voice)
+			capable := capableServers(m)
+			if status[pos] == jobActive {
+				for _, s := range capable {
+					claimed[s] = true
+				}
+				continue
+			}
+			if activeModels[m] {
+				continue
+			}
+			idle := len(capable) == 0
+			for _, s := range capable {
+				if !claimed[s] {
+					idle = true
+					break
+				}
+			}
+			if idle {
+				activeModels[m] = true
+				for _, s := range capable {
+					claimed[s] = true
+				}
+				launch(pos)
+			}
+		}
 	}
-	wg.Wait()
+
+	// The ticker re-runs scheduling so a server that comes online mid-run
+	// picks up jobs that had no capable server, and turns a user stop into
+	// stopCtx cancellation for renders parked in the dispatcher.
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	schedule()
+	for running > 0 {
+		select {
+		case res := <-results:
+			running--
+			status[res.pos] = jobDone
+			if res.err != nil && firstErr == nil {
+				firstErr = res.err
+			}
+			schedule()
+		case <-ticker.C:
+			if w.stopRequested(book.ID.Hex()) {
+				cancelStop()
+			}
+			schedule()
+		}
+	}
+	if firstErr == nil && w.stopRequested(book.ID.Hex()) {
+		return ErrStopped
+	}
 	return firstErr
 }
 

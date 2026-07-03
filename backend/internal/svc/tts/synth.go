@@ -117,21 +117,30 @@ func synthesizeChunk(ctx context.Context, text, serverURL string, model Model, v
 }
 
 // renderContext threads the task fabric and voice parameters through the
-// verify/split recursion. Which TTS worker renders each chunk is the queue's
-// concern — whichever healthy one is free claims it.
+// verify/split recursion. priority is the segment's position in the book's
+// global work order — the dispatcher serves the earliest waiting render
+// first, so every server works the same voice/chapter order.
 type renderContext struct {
 	q        *queue.Client
 	model    Model
 	voice    string
 	speed    float64
 	language string
+	priority int64
 }
 
-// renderChunkToBuffer synthesizes one chunk via the tts task queue, retrying
-// transient failures so a single dropped request doesn't fail the chapter.
+// renderChunkToBuffer synthesizes one chunk on a dispatcher-granted server,
+// retrying transient failures so a single dropped request doesn't fail the
+// chapter. The server is held only for the RPC itself — verification
+// (whisper/SLM) happens between acquisitions so the server can render other
+// segments meanwhile.
 func renderChunkToBuffer(ctx context.Context, text string, rc renderContext) (chunkResult, error) {
 	var lastErr error
 	for attempt := 0; attempt <= chunkRetries; attempt++ {
+		serverID, release, err := rc.q.AcquireTTS(ctx, rc.priority, rc.model.ID)
+		if err != nil {
+			return chunkResult{}, err
+		}
 		res, err := rc.q.Synthesize(ctx, queue.SynthesizePayload{
 			Model:        rc.model.ID,
 			Input:        text,
@@ -139,7 +148,8 @@ func renderChunkToBuffer(ctx context.Context, text string, rc renderContext) (ch
 			Speed:        rc.speed,
 			Language:     rc.language,
 			UsesLanguage: rc.model.UsesLanguage,
-		})
+		}, serverID)
+		release()
 		if err == nil {
 			return chunkResult{buffer: res.Audio, durationSecs: res.DurationSecs}, nil
 		}
@@ -265,8 +275,9 @@ func truncate(s string, n int) string {
 }
 
 // RenderSegment verifies and renders one sentence, returning the audio with
-// its verification trace.
-func RenderSegment(ctx context.Context, q *queue.Client, display, text, voice, language string) (RenderedPiece, error) {
+// its verification trace. priority orders the render against every other
+// waiting segment (lower renders first).
+func RenderSegment(ctx context.Context, q *queue.Client, display, text, voice, language string, priority int64) (RenderedPiece, error) {
 	model, bareVoice := ParseVoice(voice)
 	speakable := strings.TrimSpace(text)
 	if speakable == "" {
@@ -277,7 +288,7 @@ func RenderSegment(ctx context.Context, q *queue.Client, display, text, voice, l
 		d = speakable
 	}
 	return renderVerified(ctx, d, speakable,
-		renderContext{q: q, model: model, voice: bareVoice, speed: config.TtsSpeed, language: language})
+		renderContext{q: q, model: model, voice: bareVoice, speed: config.TtsSpeed, language: language, priority: priority})
 }
 
 // SynthesizeSegment renders one sentence to its own mp3 file, verifying it
@@ -285,7 +296,9 @@ func RenderSegment(ctx context.Context, q *queue.Client, display, text, voice, l
 // Returns the duration, every transcript observed while producing the audio,
 // and whether the take still mismatches and needs user review.
 func SynthesizeSegment(ctx context.Context, q *queue.Client, text, outputPath, voice, language string) (float64, []string, bool, error) {
-	piece, err := RenderSegment(ctx, q, text, text, voice, language)
+	// Priority 0: single-sentence edits are user-initiated and jump ahead of
+	// any bulk run's segments.
+	piece, err := RenderSegment(ctx, q, text, text, voice, language, 0)
 	if err != nil {
 		return 0, nil, false, err
 	}

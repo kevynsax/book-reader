@@ -58,8 +58,8 @@ func (r *Registry) HasHealthy(role Role) bool {
 }
 
 // HasModelWorker reports whether any live healthy tts worker's server
-// advertises the model — synthesis tasks for it would otherwise sit
-// unclaimed until timeout.
+// advertises the model — the fail-fast check chapters run before queueing
+// renders the dispatcher could never place.
 func (r *Registry) HasModelWorker(model string) bool {
 	for _, hb := range r.Workers(RoleTTS) {
 		if !hb.Healthy {
