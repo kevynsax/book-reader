@@ -7,6 +7,7 @@ import { bookVoices, fmtRemaining, hasPlayableAudio, trackFor } from '../lib/for
 import AudioPlayer from '../components/AudioPlayer';
 import VoiceManager from '../components/VoiceManager';
 import SentenceEditor from '../components/SentenceEditor';
+import MismatchReview from '../components/MismatchReview';
 import { t } from '../i18n';
 
 const VOICE_KEY = (id: string) => `br_voice_${id}`;
@@ -99,6 +100,8 @@ export default function PlayerPage() {
             <span className="text-amber-400/80 shrink-0">{t('View progress →')}</span>
           </button>
         )}
+
+        <MismatchReview bookId={book._id} />
 
         <AudioPlayer
           bookId={book._id}

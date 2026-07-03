@@ -54,6 +54,7 @@ func (s *Server) registerBookWriteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/sentences/{sentenceId}", s.handleSentenceEdit)
 	mux.HandleFunc("DELETE /api/books/{id}/chapters/{idx}/sentences/{sentenceId}", s.handleSentenceDelete)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/regenerate", s.handleSentenceRegenerate)
+	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/insert-after", s.handleSentenceInsertAfter)
 }
 
 // parseSummaryPages accepts the summary pages as a JSON array, a
@@ -1311,14 +1312,40 @@ func (s *Server) handleSentenceRegenerate(w http.ResponseWriter, r *http.Request
 	}
 	var body struct {
 		Voice string `json:"voice"`
+		// SynthVoice renders with a different voice/model (still stored in
+		// Voice's track) — the escape hatch for a stubborn whisper mismatch.
+		SynthVoice string `json:"synthVoice"`
 	}
 	_ = decodeJSON(r, &body)
 	Message(w, "Re-rendering sentence.")
 	bookID := book.ID.Hex()
 	voice := body.Voice
+	synthVoice := body.SynthVoice
 	go func() {
-		if err := s.W.RegenerateSegment(context.Background(), bookID, idx, sentenceID, voice); err != nil {
+		if err := s.W.RegenerateSegment(context.Background(), bookID, idx, sentenceID, voice, synthVoice); err != nil {
 			log.Printf("regenerateSegment %s ch%d %s failed: %v", bookID, idx, sentenceID, err)
+		}
+	}()
+}
+
+func (s *Server) handleSentenceInsertAfter(w http.ResponseWriter, r *http.Request) {
+	book, idx, sentenceID, ok := s.sentenceRoutePrologue(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := decodeJSON(r, &body); err != nil || strings.TrimSpace(body.Text) == "" {
+		Error(w, http.StatusBadRequest, "text is required")
+		return
+	}
+	Message(w, "Sentence added. Rendering audio.")
+	bookID := book.ID.Hex()
+	text := strings.TrimSpace(body.Text)
+	go func() {
+		if err := s.W.InsertSentence(context.Background(), bookID, idx, sentenceID, text); err != nil {
+			log.Printf("insertSentence %s ch%d after %s failed: %v", bookID, idx, sentenceID, err)
 		}
 	}()
 }

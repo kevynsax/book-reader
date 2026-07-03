@@ -9,14 +9,19 @@ import (
 	"sort"
 	"strings"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/kevynsax/book-reader/backend/internal/model"
+	"github.com/kevynsax/book-reader/backend/internal/svc/normalizer"
 	"github.com/kevynsax/book-reader/backend/internal/svc/tts"
 )
 
 // rerenderSegment re-synthesizes one sentence's segment for the given voices,
-// then reassembles each affected chapter mp3. Shared by edit +
-// single-sentence regenerate.
-func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, sentenceID string, voices []string) error {
+// then reassembles each affected chapter mp3. Shared by edit, insert and
+// single-sentence regenerate. synthVoice, when set, is the voice actually
+// synthesized (e.g. a different model to get past a stubborn mismatch) while
+// the audio still lands in each target voice's track.
+func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, sentenceID string, voices []string, synthVoice string) error {
 	book := r.book
 	if chapterIdx < 0 || chapterIdx >= len(book.Chapters) {
 		return nil
@@ -67,7 +72,11 @@ func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, se
 			ChapterIdx: chapterIdx, Voice: voice, SentenceID: sentenceID, AudioStatus: model.AudioGenerating,
 		}})
 
-		ttsModel, _ := tts.ParseVoice(voice)
+		renderVoice := voice
+		if synthVoice != "" {
+			renderVoice = synthVoice
+		}
+		ttsModel, _ := tts.ParseVoice(renderVoice)
 		if !w.Q.Registry.HasModelWorker(ttsModel.ID) {
 			message := fmt.Sprintf("No TTS server is online for model %q.", ttsModel.ID)
 			if err := r.withSave(ctx, func() {
@@ -87,8 +96,8 @@ func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, se
 		}
 
 		sentence := chapter.Sentences[senIdx]
-		segPath := segmentAudioPath(audioDir, chapterIdx, voice, sentence.Order)
-		durationSecs, transcripts, renderErr := tts.SynthesizeSegment(ctx, w.Q, strings.TrimSpace(sentence.Text), segPath, voice, language)
+		segPath := segmentPathFor(track, segIdx, audioDir, chapterIdx, voice, sentence.Order)
+		durationSecs, transcripts, mismatch, renderErr := tts.SynthesizeSegment(ctx, w.Q, strings.TrimSpace(sentence.Text), segPath, renderVoice, language)
 		if err := r.withSave(ctx, func() {
 			seg := &track.Segments[segIdx]
 			if renderErr == nil {
@@ -97,11 +106,13 @@ func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, se
 				seg.AudioStatus = model.AudioComplete
 				seg.AudioError = nil
 				seg.WhisperResults = transcripts
+				seg.NeedsReview = mismatch
 			} else {
 				message := renderErr.Error()
 				log.Printf("rerenderSegment %s ch%d (%s): %v", book.ID.Hex(), chapterIdx+1, voice, renderErr)
 				seg.AudioStatus = model.AudioError
 				seg.AudioError = &message
+				seg.NeedsReview = false
 			}
 		}); err != nil {
 			return err
@@ -116,6 +127,24 @@ func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, se
 		}
 	}
 	return nil
+}
+
+// segmentPathFor picks where a segment's audio lives: its existing file when
+// it has one, the order-derived default otherwise — unless another segment in
+// the track already owns that file (an inserted sentence shifted the orders),
+// in which case the sentence id keys the name.
+func segmentPathFor(track *model.VoiceTrack, segIdx int, audioDir string, chapterIdx int, voice string, order int) string {
+	if track.Segments[segIdx].AudioPath != nil && *track.Segments[segIdx].AudioPath != "" {
+		return *track.Segments[segIdx].AudioPath
+	}
+	segPath := segmentAudioPath(audioDir, chapterIdx, voice, order)
+	for i := range track.Segments {
+		if i != segIdx && track.Segments[i].AudioPath != nil && *track.Segments[i].AudioPath == segPath {
+			return filepath.Join(SegmentDir(audioDir, chapterIdx, voice),
+				fmt.Sprintf("seg-%s.mp3", track.Segments[segIdx].SentenceID.Hex()))
+		}
+	}
+	return segPath
 }
 
 // EditSentence edits a sentence's text, then re-renders its segment for
@@ -165,7 +194,65 @@ func (w *Worker) EditSentence(ctx context.Context, bookID string, chapterIdx int
 		"chapterIdx": chapterIdx, "sentenceId": sentenceID, "text": trimmed,
 	}})
 
-	return w.rerenderSegment(ctx, r, chapterIdx, sentenceID, book.Voices)
+	return w.rerenderSegment(ctx, r, chapterIdx, sentenceID, book.Voices, "")
+}
+
+// InsertSentence creates a new sentence right after an existing one and
+// renders it for every voice — the manual alternative to the old automatic
+// SLM split. Queues behind any active generation run.
+func (w *Worker) InsertSentence(ctx context.Context, bookID string, chapterIdx int, afterSentenceID, text string) error {
+	unlock := w.LockBook(bookID)
+	defer unlock()
+	book, err := w.St.Books.FindByID(ctx, bookID)
+	if err != nil || book == nil {
+		return err
+	}
+	if chapterIdx < 0 || chapterIdx >= len(book.Chapters) {
+		return nil
+	}
+	r := &run{w: w, book: book}
+	chapter := &book.Chapters[chapterIdx]
+
+	afterIdx := -1
+	for i, s := range chapter.Sentences {
+		if s.ID.Hex() == afterSentenceID {
+			afterIdx = i
+			break
+		}
+	}
+	if afterIdx < 0 {
+		return nil
+	}
+
+	w.ensureBookLanguage(ctx, r)
+	language := chapterSpeechLanguage(book, chapterIdx)
+	trimmed := strings.TrimSpace(text)
+	norm := strings.TrimSpace(normalizer.NormalizeForSpeech(ctx, trimmed, language))
+	if norm == "" {
+		norm = trimmed
+	}
+
+	d := trimmed
+	newSen := model.Sentence{ID: bson.NewObjectID(), Text: norm, Display: &d}
+	if err := r.withSave(ctx, func() {
+		afterOrder := chapter.Sentences[afterIdx].Order
+		for i := range chapter.Sentences {
+			if chapter.Sentences[i].Order > afterOrder {
+				chapter.Sentences[i].Order++
+			}
+		}
+		newSen.Order = afterOrder + 1
+		chapter.Sentences = append(chapter.Sentences, newSen)
+		sort.SliceStable(chapter.Sentences, func(i, j int) bool { return chapter.Sentences[i].Order < chapter.Sentences[j].Order })
+		for ti := range chapter.Tracks {
+			ensureSegments(&chapter.Tracks[ti], chapter)
+		}
+	}); err != nil {
+		return err
+	}
+	w.emit(book, map[string]any{"chapters": model.SerializeChaptersForClient(book.Chapters)})
+
+	return w.rerenderSegment(ctx, r, chapterIdx, newSen.ID.Hex(), book.Voices, "")
 }
 
 // DeleteSentence deletes a sentence and reassembles each voice from the
@@ -248,8 +335,10 @@ func (w *Worker) DeleteSentence(ctx context.Context, bookID string, chapterIdx i
 }
 
 // RegenerateSegment re-renders one sentence's segment without changing its
-// text (e.g. it errored). Queues behind any active generation run.
-func (w *Worker) RegenerateSegment(ctx context.Context, bookID string, chapterIdx int, sentenceID, voice string) error {
+// text (e.g. it errored or mismatched). synthVoice, when set, synthesizes
+// with a different voice/model while keeping the audio in the target voice's
+// track. Queues behind any active generation run.
+func (w *Worker) RegenerateSegment(ctx context.Context, bookID string, chapterIdx int, sentenceID, voice, synthVoice string) error {
 	unlock := w.LockBook(bookID)
 	defer unlock()
 	book, err := w.St.Books.FindByID(ctx, bookID)
@@ -261,5 +350,5 @@ func (w *Worker) RegenerateSegment(ctx context.Context, bookID string, chapterId
 	if voice != "" {
 		voices = []string{voice}
 	}
-	return w.rerenderSegment(ctx, r, chapterIdx, sentenceID, voices)
+	return w.rerenderSegment(ctx, r, chapterIdx, sentenceID, voices, synthVoice)
 }

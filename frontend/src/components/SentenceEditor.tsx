@@ -234,6 +234,11 @@ export default function SentenceEditor({ bookId, chapterIdx, voice }: Props) {
               {s.audioStatus === 'error' && s.audioError && (
                 <p className="text-[11px] text-red-400/90 pl-10 mt-1 break-words">{s.audioError}</p>
               )}
+              {s.needsReview && editingId !== s._id && (
+                <p className="text-[11px] text-amber-400/90 pl-10 mt-1 break-words">
+                  {t('Whisper heard')}: {s.whisperResults?.[s.whisperResults.length - 1] ?? ''}
+                </p>
+              )}
             </div>
           );
         })}

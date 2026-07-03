@@ -25,6 +25,7 @@ func (s *Server) registerBookRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/books/{id}/cover", s.handleCoverImage)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{chapterIdx}/audio", s.handleChapterAudio)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{chapterIdx}/timeline", s.handleChapterTimeline)
+	mux.HandleFunc("GET /api/books/{id}/mismatches", s.handleMismatches)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{idx}/sentences", s.handleSentences)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/audio", s.handleSentenceAudio)
 }
@@ -279,12 +280,14 @@ func (s *Server) handleSentences(w http.ResponseWriter, r *http.Request) {
 	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Order < ordered[j].Order })
 
 	type wireSentence struct {
-		ID          string            `json:"_id"`
-		Order       int               `json:"order"`
-		Text        string            `json:"text"`
-		Original    *string           `json:"original,omitempty"`
-		AudioStatus model.AudioStatus `json:"audioStatus"`
-		AudioError  *string           `json:"audioError,omitempty"`
+		ID             string            `json:"_id"`
+		Order          int               `json:"order"`
+		Text           string            `json:"text"`
+		Original       *string           `json:"original,omitempty"`
+		AudioStatus    model.AudioStatus `json:"audioStatus"`
+		AudioError     *string           `json:"audioError,omitempty"`
+		NeedsReview    bool              `json:"needsReview,omitempty"`
+		WhisperResults []string          `json:"whisperResults,omitempty"`
 	}
 	sentences := make([]wireSentence, len(ordered))
 	for i, sen := range ordered {
@@ -295,12 +298,82 @@ func (s *Server) handleSentences(w http.ResponseWriter, r *http.Request) {
 		if seg := segBySentence[sen.ID.Hex()]; seg != nil {
 			out.AudioStatus = seg.AudioStatus
 			out.AudioError = seg.AudioError
+			out.NeedsReview = seg.NeedsReview
+			out.WhisperResults = seg.WhisperResults
 		}
 		sentences[i] = out
 	}
 	JSON(w, http.StatusOK, map[string]any{
 		"voice": voice, "editable": len(sentences) > 0, "sentences": sentences,
 	})
+}
+
+// handleMismatches lists every sentence whose kept audio still disagrees
+// with Whisper after all verify attempts, grouped per sentence with the
+// per-voice transcript trail — the source for the review section in the UI.
+func (s *Server) handleMismatches(w http.ResponseWriter, r *http.Request) {
+	book := s.findBook(w, r)
+	if book == nil {
+		return
+	}
+
+	type wireVoice struct {
+		Voice          string   `json:"voice"`
+		WhisperResults []string `json:"whisperResults,omitempty"`
+	}
+	type wireMismatch struct {
+		ChapterIdx   int         `json:"chapterIdx"`
+		ChapterTitle string      `json:"chapterTitle"`
+		SentenceID   string      `json:"sentenceId"`
+		Order        int         `json:"order"`
+		Text         string      `json:"text"`
+		Voices       []wireVoice `json:"voices"`
+	}
+
+	mismatches := []wireMismatch{}
+	for ci := range book.Chapters {
+		chapter := &book.Chapters[ci]
+		senByID := map[string]*model.Sentence{}
+		for si := range chapter.Sentences {
+			senByID[chapter.Sentences[si].ID.Hex()] = &chapter.Sentences[si]
+		}
+		bySentence := map[string]int{}
+		for ti := range chapter.Tracks {
+			track := &chapter.Tracks[ti]
+			for _, seg := range track.Segments {
+				if !seg.NeedsReview {
+					continue
+				}
+				sen := senByID[seg.SentenceID.Hex()]
+				if sen == nil {
+					continue
+				}
+				pos, ok := bySentence[seg.SentenceID.Hex()]
+				if !ok {
+					text := sen.Text
+					if sen.Display != nil && *sen.Display != "" {
+						text = *sen.Display
+					}
+					mismatches = append(mismatches, wireMismatch{
+						ChapterIdx: ci, ChapterTitle: chapter.Title,
+						SentenceID: sen.ID.Hex(), Order: sen.Order, Text: text,
+					})
+					pos = len(mismatches) - 1
+					bySentence[seg.SentenceID.Hex()] = pos
+				}
+				mismatches[pos].Voices = append(mismatches[pos].Voices, wireVoice{
+					Voice: track.Voice, WhisperResults: seg.WhisperResults,
+				})
+			}
+		}
+	}
+	sort.SliceStable(mismatches, func(i, j int) bool {
+		if mismatches[i].ChapterIdx != mismatches[j].ChapterIdx {
+			return mismatches[i].ChapterIdx < mismatches[j].ChapterIdx
+		}
+		return mismatches[i].Order < mismatches[j].Order
+	})
+	JSON(w, http.StatusOK, map[string]any{"mismatches": mismatches})
 }
 
 func (s *Server) handleSentenceAudio(w http.ResponseWriter, r *http.Request) {

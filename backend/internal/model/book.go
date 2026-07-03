@@ -51,6 +51,10 @@ type Segment struct {
 	// while producing this segment's audio, in attempt order (failed retries
 	// first, the accepted pass last). Empty when verification was skipped.
 	WhisperResults []string `bson:"whisperResults,omitempty" json:"whisperResults,omitempty"`
+	// NeedsReview marks a segment whose audio kept disagreeing with Whisper
+	// after all verify attempts — the best take is kept and the sentence is
+	// surfaced in the review list instead of being SLM-split.
+	NeedsReview bool `bson:"needsReview,omitempty" json:"needsReview,omitempty"`
 }
 
 // VoiceTrack is a chapter's rendered audio for one voice (_id:false).
