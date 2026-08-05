@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { AppDispatch, RootState } from '../store';
-import { confirmChapters, deleteBook, renameBook, generateBook, stopBook, regenerateVoice, regenerateChapterVoice, continueChapterVoice, resumeBook, dismissBookError } from '../store/booksSlice';
+import { confirmChapters, updateChapters, deleteBook, renameBook, generateBook, stopBook, regenerateVoice, regenerateChapterVoice, continueChapterVoice, resumeBook, dismissBookError } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus, TtsServer } from '../types';
 import { chapterStatus, bookVoices, trackFor, hasPlayableAudio } from '../lib/format';
@@ -396,6 +396,17 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
         {book.chapters.map((c, i) => {
           const s = statuses[i];
           const err = s === 'error' ? trackFor(c, voice)?.audioError : undefined;
+          // A chapter that produced no audio at all (e.g. no readable text) can
+          // simply be removed — its neighbours' boundaries don't move, so their
+          // rendered audio is preserved.
+          const noAudio = s === 'error' && !(trackFor(c, voice)?.segments ?? []).some(seg => seg.audioStatus === 'complete');
+          const deleteChapter = () => {
+            if (!confirm(t('Remove chapter "{title}" from the book? Its pages stay with the previous chapter.', { title: c.title || t('Chapter {n}', { n: i + 1 }) }))) return;
+            const chapters = book.chapters
+              .filter((_, j) => j !== i)
+              .map(ch => ({ title: ch.title, startPage: ch.startPage, startChar: ch.startChar }));
+            dispatch(updateChapters({ bookId: book._id, chapters })).unwrap().catch(e => alert(e.message));
+          };
           return (
             <div key={c._id} className="px-3 py-1.5">
               <div className="flex items-center gap-2">
@@ -407,6 +418,18 @@ function VoiceGenProgress({ book, voice }: { book: Book; voice: string }) {
                 <span className={`text-[11px] shrink-0 ${TRACK_TEXT[s] ?? 'text-gray-500'}`}>
                   {TRACK_LABEL[s] ?? s}
                 </span>
+                {noAudio && (
+                  <button
+                    className="text-gray-600 hover:text-red-400 transition-colors shrink-0"
+                    onClick={deleteChapter}
+                    title={t('Remove this chapter — no audio was produced for it')}
+                  >
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                )}
                 {s === 'error' && (
                   <button
                     className="text-[11px] font-medium text-amber-400 hover:text-amber-300 transition-colors shrink-0"
