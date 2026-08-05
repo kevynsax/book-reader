@@ -184,7 +184,7 @@ func (c *Client) dispatch() {
 			models[m.ID] = true
 			advertised[m.ID] = true
 		}
-		if !c.inflight[hb.ServerID] {
+		if _, busy := c.inflight[hb.ServerID]; !busy {
 			free = append(free, &server{id: hb.ServerID, activeModel: hb.ActiveModel, models: models})
 		}
 	}
@@ -219,7 +219,7 @@ func (c *Client) dispatch() {
 		case pick >= 0:
 			s := free[pick]
 			free = append(free[:pick], free[pick+1:]...)
-			c.inflight[s.id] = true
+			c.inflight[s.id] = w.model
 			w.grant <- ttsGrant{serverID: s.id}
 		case !advertised[w.model] && now.Sub(w.lastAdvertised) > noServerGrace:
 			w.grant <- ttsGrant{err: fmt.Errorf("no TTS server is online for model %q", w.model)}

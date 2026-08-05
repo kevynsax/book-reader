@@ -32,6 +32,8 @@ type ServerStatus struct {
 	State       *string `json:"state,omitempty"`
 	ActiveModel *string `json:"activeModel,omitempty"`
 	Backend     *string `json:"backend,omitempty"`
+	// Model of the render main's dispatcher currently holds on this server.
+	Rendering *string `json:"rendering,omitempty"`
 	// Present (possibly null) when the server is online, absent when offline —
 	// matching Node's undefined-vs-null distinction.
 	Error  any        `json:"error,omitempty"`

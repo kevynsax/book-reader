@@ -12,6 +12,7 @@ import TextReview, { TextReviewHandle } from '../components/OcrPageReview';
 import CoverPickerModal from '../components/CoverPickerModal';
 import VoiceManager from '../components/VoiceManager';
 import GenerateVoiceModal from '../components/GenerateVoiceModal';
+import ServerStatus from '../components/ServerStatus';
 import ConfirmDialog from '../components/ConfirmDialog';
 import ReimportModal from '../components/ReimportModal';
 import { t } from '../i18n';
@@ -616,6 +617,7 @@ export default function EditBookPage() {
                 )}
               </div>
             </div>
+            {isGenerating && <ServerStatus />}
             {/* While voices render concurrently each card shows its own live
                 bar — the single global bar would just flip between lanes. */}
             {book.progress.message && book.progress.total > 0 && !Object.keys(book.voiceProgress ?? {}).length && (

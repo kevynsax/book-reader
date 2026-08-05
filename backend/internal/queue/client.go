@@ -78,13 +78,24 @@ type Client struct {
 	// renders right now, and the renders waiting for a server, in global
 	// book order.
 	dmu       sync.Mutex
-	inflight  map[string]bool
+	inflight  map[string]string
 	waiters   []*ttsWaiter
 	waiterSeq uint64
 }
 
+// TTSInflight returns serverID → model for renders currently held on a server.
+func (c *Client) TTSInflight() map[string]string {
+	c.dmu.Lock()
+	defer c.dmu.Unlock()
+	out := make(map[string]string, len(c.inflight))
+	for id, model := range c.inflight {
+		out[id] = model
+	}
+	return out
+}
+
 func NewClient(url string) *Client {
-	c := &Client{url: url, Registry: NewRegistry(), pending: map[string]pendingReply{}, inflight: map[string]bool{}}
+	c := &Client{url: url, Registry: NewRegistry(), pending: map[string]pendingReply{}, inflight: map[string]string{}}
 	go c.maintain()
 	go c.dispatchLoop()
 	return c

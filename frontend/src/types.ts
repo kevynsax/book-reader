@@ -65,6 +65,7 @@ export interface TtsServer {
   state?: string;
   activeModel?: string;
   backend?: string;
+  rendering?: string;
   models: { id: string; label: string }[];
 }
 
