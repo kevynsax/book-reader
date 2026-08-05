@@ -439,6 +439,17 @@ func (w *Worker) processBookInner(ctx context.Context, r *run, resume bool) erro
 // detectChapters ships every summary-page image to the vlm workers for TOC
 // extraction (in parallel), then locates the merged entries in the OCR text.
 func (w *Worker) DetectChapters(ctx context.Context, book *model.Book, completedPages []ocr.PageText) ([]ocr.ChapterSuggestion, error) {
+	return w.detectChapters(ctx, book, completedPages, false)
+}
+
+// DetectChaptersPreferred routes the TOC reads over the summary queue, where
+// consumer priorities pick the preferred vlm server (spark > macbook >
+// kevyn-server) with the rest as fallbacks.
+func (w *Worker) DetectChaptersPreferred(ctx context.Context, book *model.Book, completedPages []ocr.PageText) ([]ocr.ChapterSuggestion, error) {
+	return w.detectChapters(ctx, book, completedPages, true)
+}
+
+func (w *Worker) detectChapters(ctx context.Context, book *model.Book, completedPages []ocr.PageText, preferred bool) ([]ocr.ChapterSuggestion, error) {
 	var images [][]byte
 	for _, p := range book.SummaryPages {
 		if image := readPage(book.FolderPath, p); image != nil {
@@ -450,7 +461,13 @@ func (w *Worker) DetectChapters(ctx context.Context, book *model.Book, completed
 	}
 	tocLists := make([][]queue.TocEntry, len(images))
 	err := pool.Run(images, len(images), func(image []byte, i int) error {
-		entries, err := w.Q.ExtractToc(ctx, image)
+		var entries []queue.TocEntry
+		var err error
+		if preferred {
+			entries, err = w.Q.ExtractTocPreferred(ctx, image)
+		} else {
+			entries, err = w.Q.ExtractToc(ctx, image)
+		}
 		if err != nil {
 			return err
 		}

@@ -36,6 +36,7 @@ func (s *Server) registerBookWriteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/books/{id}/cover", s.handleCoverUpload)
 	mux.HandleFunc("PUT /api/books/{id}/cover/page", s.handleCoverFromPage)
 	mux.HandleFunc("POST /api/books/{id}/summary/detect", s.handleSummaryDetect)
+	mux.HandleFunc("POST /api/books/{id}/summary/re-read", s.handleSummaryReRead)
 	mux.HandleFunc("PATCH /api/books/{id}/chapters", s.handleChaptersPatch)
 	mux.HandleFunc("PUT /api/books/{id}/chapters", s.handleChaptersPut)
 	mux.HandleFunc("POST /api/books/{id}/generate", s.handleGenerate)
@@ -531,6 +532,17 @@ func (s *Server) handleCoverFromPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSummaryDetect(w http.ResponseWriter, r *http.Request) {
+	s.summaryDetect(w, r, false)
+}
+
+// POST /:id/summary/re-read — the user-initiated re-read: same detection, but
+// the TOC reads go over the summary queue so the preferred vlm server
+// (spark > macbook > kevyn-server) answers first.
+func (s *Server) handleSummaryReRead(w http.ResponseWriter, r *http.Request) {
+	s.summaryDetect(w, r, true)
+}
+
+func (s *Server) summaryDetect(w http.ResponseWriter, r *http.Request, preferred bool) {
 	book := s.findBook(w, r)
 	if book == nil {
 		return
@@ -552,7 +564,11 @@ func (s *Server) handleSummaryDetect(w http.ResponseWriter, r *http.Request) {
 			completedPages = append(completedPages, ocr.PageText{Page: p.Page, Text: sanitize.PageText(p.Text)})
 		}
 	}
-	chapters, err := s.W.DetectChapters(r.Context(), book, completedPages)
+	detect := s.W.DetectChapters
+	if preferred {
+		detect = s.W.DetectChaptersPreferred
+	}
+	chapters, err := detect(r.Context(), book, completedPages)
 	if err != nil {
 		Error(w, http.StatusBadGateway, err.Error())
 		return

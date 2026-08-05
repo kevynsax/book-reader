@@ -37,6 +37,11 @@ const (
 	HeartbeatQueue  = "worker.heartbeat"
 	// A task is redelivered at most this many times before dead-lettering.
 	DeliveryLimit = 3
+	// SummaryVLMQueue carries user-initiated summary re-reads only. Every vlm
+	// worker consumes it with its WORKER_PRIORITY as consumer priority, so the
+	// task lands on the preferred server (spark > macbook > kevyn-server) and
+	// the others are fallbacks — without biasing the shared tasks.vlm queue.
+	SummaryVLMQueue = "tasks.vlm.summary"
 )
 
 // Task is the message main publishes to a role queue.

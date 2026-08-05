@@ -21,7 +21,10 @@ interface Props {
   onOpenPage?: (page: number) => void;
 }
 
-interface Row { title: string; startPage: number; label: string; }
+// charAt is the exact start offset when the user picked a word on the page (or
+// the offset imported from the book); editing the label or moving the page
+// invalidates it and the label becomes a search needle again.
+interface Row { title: string; startPage: number; label: string; charAt?: number }
 
 export interface ChapterReviewHandle {
   submit: () => Promise<void>;
@@ -63,20 +66,49 @@ function findFlexible(text: string, needle: string): { index: number; length: nu
   return null;
 }
 
-function highlight(excerpt: string, needle: string) {
-  if (!needle) return <span>{excerpt}</span>;
-  const m = findFlexible(excerpt, needle);
-  if (!m) return <span>{excerpt}</span>;
+// The full page text with every word clickable: clicking a word marks it as
+// where the chapter starts. Words before the start are dimmed (they belong to
+// the previous chapter), the start word is highlighted.
+function StartPicker({ text, startChar, onPick }: { text: string; startChar: number; onPick: (offset: number) => void }) {
+  if (!text) return <p className="text-xs text-gray-600 italic px-3 py-2">{t('No text on this page.')}</p>;
+  const tokens: { s: string; off: number; word: boolean }[] = [];
+  const re = /\S+/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    if (m.index > last) tokens.push({ s: text.slice(last, m.index), off: last, word: false });
+    tokens.push({ s: m[0], off: m.index, word: true });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) tokens.push({ s: text.slice(last), off: last, word: false });
   return (
-    <>
-      {excerpt.slice(0, m.index)}
-      <span className="font-semibold text-green-300 bg-green-950/60 rounded px-0.5">{excerpt.slice(m.index, m.index + m.length)}</span>
-      {excerpt.slice(m.index + m.length)}
-    </>
+    <p className="text-xs leading-6 whitespace-pre-wrap px-3 py-2 select-none">
+      {tokens.map((tk, i) => {
+        if (!tk.word) return tk.s;
+        const isStart = startChar >= tk.off && startChar < tk.off + tk.s.length;
+        const before = tk.off + tk.s.length <= startChar;
+        return (
+          <span
+            key={i}
+            className={`cursor-pointer rounded px-px transition-colors ${
+              isStart
+                ? 'bg-green-950/70 text-green-300 font-semibold ring-1 ring-green-700'
+                : before
+                  ? 'text-gray-600 hover:text-amber-300 hover:bg-gray-800'
+                  : 'text-gray-300 hover:text-amber-300 hover:bg-gray-800'
+            }`}
+            onClick={() => onPick(tk.off)}
+            title={t('Chapter starts at "{word}"', { word: tk.s })}
+          >
+            {tk.s}
+          </span>
+        );
+      })}
+    </p>
   );
 }
 
-const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterReview({ book, onConfirm, onOpenPage }, ref) {
+const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterReview({ book, onConfirm }, ref) {
   const dispatch = useDispatch<AppDispatch>();
 
   // The contents can span several pages; the preview opens on the first one.
@@ -89,6 +121,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
       title: c.title,
       startPage: c.startPage,
       label: wordAtOffset(pageText(c.startPage), c.startChar ?? 0),
+      charAt: c.startChar ?? 0,
     }))
   );
   const [error, setError] = useState<string | null>(null);
@@ -98,20 +131,33 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
   const [suggestions, setSuggestions] = useState<ChapterSuggestion[] | null>(null);
   const [previewPage, setPreviewPage] = useState(summaryPage);
   const [editingIdx,  setEditingIdx]  = useState<number | null>(null);
+
+  // Chapter editor modal (list + page preview + start picker).
+  const [showEditor,  setShowEditor]  = useState(false);
+  const [selectedIdx, setSelectedIdx] = useState(0);
+  const [editingRow,  setEditingRow]  = useState<number | null>(null);
+
   const suggestionsRef = useRef<ChapterSuggestion[] | null>(null);
+  const rowsRef = useRef<Row[]>(rows);
   const pageRepeatDelayRef = useRef<number | null>(null);
   const pageRepeatIntervalRef = useRef<number | null>(null);
 
   const previewTotal = book.totalPages || book.lastPage;
 
   useEffect(() => { suggestionsRef.current = suggestions; }, [suggestions]);
+  useEffect(() => { rowsRef.current = rows; }, [rows]);
 
   useEffect(() => {
-    if (!showSummary) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowSummary(false); };
+    if (!showSummary && !showEditor) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (showSummary) setShowSummary(false);
+        else closeEditor();
+      }
+    };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [showSummary]);
+  });
 
   const stopPageRepeat = () => {
     if (pageRepeatDelayRef.current !== null) {
@@ -126,11 +172,36 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
 
   useEffect(() => stopPageRepeat, []);
 
+  const startRepeat = (step: () => void) => {
+    stopPageRepeat();
+    step();
+    pageRepeatDelayRef.current = window.setTimeout(() => {
+      step();
+      pageRepeatIntervalRef.current = window.setInterval(step, 75);
+    }, 350);
+  };
+
+  const repeatHandlers = (step: () => void) => ({
+    onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      startRepeat(step);
+    },
+    onPointerUp: (e: React.PointerEvent<HTMLButtonElement>) => {
+      stopPageRepeat();
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    },
+    onPointerCancel: stopPageRepeat,
+    onBlur: stopPageRepeat,
+    onClick: (e: React.MouseEvent) => { if (e.detail === 0) step(); },
+  });
+
   const readSummary = async () => {
     setDetecting(true);
     setError(null);
     try {
-      const res = await api.post<{ chapters: ChapterSuggestion[] }>(`/api/books/${book._id}/summary/detect`);
+      const res = await api.post<{ chapters: ChapterSuggestion[] }>(`/api/books/${book._id}/summary/re-read`);
       setPreviewPage(summaryPage);
       setEditingIdx(null);
       setSuggestions(res.data.chapters);
@@ -183,15 +254,6 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
     setPreviewPage(Math.min(previewTotal, np));
   };
 
-  const startPageRepeat = (idx: number, delta: number) => {
-    stopPageRepeat();
-    stepSuggestionPage(idx, delta);
-    pageRepeatDelayRef.current = window.setTimeout(() => {
-      stepSuggestionPage(idx, delta);
-      pageRepeatIntervalRef.current = window.setInterval(() => stepSuggestionPage(idx, delta), 75);
-    }, 350);
-  };
-
   // Only import suggestions whose chosen page falls within the reading range —
   // titles read off the summary page that land outside it are dropped, not clamped in.
   const inReadingRange = (p: number) => p >= book.firstPage && p <= book.lastPage;
@@ -200,10 +262,10 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
     if (!suggestions) return;
     const next: Row[] = suggestions.filter(s => s.title.trim() && inReadingRange(pageOf(s))).map(s => {
       const startPage = clampPage(s.page);
-      // When the AI located the title we keep its exact offset as the search needle;
-      // an edited page invalidates that, so fall back to the title text.
+      // When the AI located the title we keep its exact offset; an edited page
+      // invalidated it already (found=false → offset 0).
       const label = s.found ? (wordAtOffset(pageText(startPage), s.startChar) || s.title.trim()) : s.title.trim();
-      return { title: s.title.trim(), startPage, label };
+      return { title: s.title.trim(), startPage, label, charAt: s.found ? s.startChar : undefined };
     });
     setRows(next);
     persist(next);
@@ -214,6 +276,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
     Math.min(book.lastPage, Math.max(book.firstPage, Math.round(p) || book.firstPage));
 
   const locate = (r: Row): { startChar: number; found: boolean } => {
+    if (r.charAt != null && Number.isFinite(r.charAt)) return { startChar: r.charAt, found: true };
     const needle = r.label.trim();
     if (!needle) return { startChar: 0, found: true };
     const m = findFlexible(pageText(r.startPage), needle);
@@ -236,10 +299,60 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
   const update = (idx: number, patch: Partial<Row>) =>
     setRows(prev => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
 
-  const blurSave = () => persist(rows);
-  const addChapter = () => setRows(prev => [...prev, { title: '', startPage: book.firstPage, label: '' }]);
-  const removeChapter = (idx: number) => {
-    const next = rows.filter((_, i) => i !== idx);
+  const blurSave = () => persist(rowsRef.current);
+
+  const addChapter = () => {
+    setRows(prev => {
+      const next = [...prev, { title: '', startPage: book.firstPage, label: '' }];
+      setSelectedIdx(next.length - 1);
+      setEditingRow(next.length - 1);
+      return next;
+    });
+    setShowEditor(true);
+    setPreviewPage(clampPage(book.firstPage));
+  };
+
+  const removeRow = (idx: number) => {
+    const next = rowsRef.current.filter((_, i) => i !== idx);
+    setRows(next);
+    setSelectedIdx(s => Math.max(0, Math.min(s > idx ? s - 1 : s, next.length - 1)));
+    persist(next);
+  };
+
+  const selectRow = (idx: number) => {
+    const r = rowsRef.current[idx];
+    setSelectedIdx(idx);
+    if (r && Number.isFinite(r.startPage)) setPreviewPage(Math.min(previewTotal, Math.max(1, r.startPage)));
+  };
+
+  const openEditor = (idx: number) => {
+    setShowEditor(true);
+    selectRow(idx);
+  };
+
+  const closeEditor = () => {
+    setShowEditor(false);
+    setEditingRow(null);
+    persist(rowsRef.current);
+  };
+
+  const stepRowPage = (idx: number, delta: number) => {
+    const current = rowsRef.current[idx];
+    if (!current || !Number.isFinite(current.startPage)) return;
+    const np = clampPage(current.startPage + delta);
+    const next = rowsRef.current.map((r, i) => (i === idx ? { ...r, startPage: np, charAt: undefined } : r));
+    rowsRef.current = next;
+    setRows(next);
+    setSelectedIdx(idx);
+    setPreviewPage(Math.min(previewTotal, np));
+  };
+
+  const pickStart = (idx: number, offset: number) => {
+    const r = rowsRef.current[idx];
+    if (!r) return;
+    const word = wordAtOffset(pageText(r.startPage), offset);
+    const next = rowsRef.current.map((row, i) => (i === idx ? { ...row, charAt: offset, label: word } : row));
+    rowsRef.current = next;
     setRows(next);
     persist(next);
   };
@@ -255,13 +368,17 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
 
   useImperativeHandle(ref, () => ({ submit: handleConfirm, save: () => persist(rows) }));
 
+  const selected = rows[selectedIdx];
+  const selectedText = selected && Number.isFinite(selected.startPage) ? pageText(selected.startPage) : '';
+  const selectedLoc = selected ? locate(selected) : { startChar: 0, found: true };
+
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h3 className="font-semibold text-gray-100">{t('Review chapters')}</h3>
           <p className="text-sm text-gray-500 mt-0.5">
-            {t('Set each chapter\'s name, the page it starts on, and the text that begins it (pages {from}–{to}).', { from: book.firstPage, to: book.lastPage })}
+            {t('Set each chapter\'s name, the page it starts on, and the exact word it begins at (pages {from}–{to}).', { from: book.firstPage, to: book.lastPage })}
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -312,114 +429,201 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
         <div className="p-3 bg-red-900/30 border border-red-800 rounded-lg text-sm text-red-300">{error}</div>
       )}
 
-      <div className="space-y-3 max-h-[50vh] overflow-y-auto pr-1">
+      {/* Compact list — click a chapter to edit it against the book page. */}
+      <div className="rounded-lg border border-gray-700 divide-y divide-gray-800/70 max-h-[40vh] overflow-y-auto">
         {rows.map((c, idx) => {
           const nextStart  = rows[idx + 1]?.startPage;
           const endPage    = nextStart || book.lastPage;
           const hasPage    = Number.isFinite(c.startPage);
           const outOfRange = hasPage && (c.startPage < book.firstPage || c.startPage > book.lastPage);
-          const { startChar, found } = locate(c);
-          const hasLabel   = c.label.trim().length > 0;
-          const pageTxt    = pageText(c.startPage);
-          const excerpt    = pageTxt ? pageTxt.slice(startChar, startChar + 300) : '';
+          const { found }  = locate(c);
+          const bad        = outOfRange || (c.label.trim().length > 0 && !found);
           return (
-            <div
+            <button
               key={idx}
-              className={`rounded-lg border p-4 space-y-3 ${
-                hasLabel && !found ? 'border-red-800 bg-red-950/20' : 'border-gray-700 bg-gray-800/40'
-              }`}
+              className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-gray-800/50 transition-colors"
+              onClick={() => openEditor(idx)}
+              title={t('Edit this chapter against the book page')}
             >
-              <div className="flex gap-2 items-start">
-                <div className="flex-1 space-y-2">
-                  <input
-                    className="input w-full"
-                    value={c.title}
-                    onChange={e => update(idx, { title: e.target.value })}
-                    onBlur={blurSave}
-                    placeholder={t('Chapter name…')}
-                  />
-
-                  <div className="flex items-center gap-2 text-sm">
-                    <label className="text-gray-400">{t('Starts on page')}</label>
-                    <input
-                      type="number"
-                      className="input w-24"
-                      min={book.firstPage}
-                      max={book.lastPage}
-                      value={hasPage ? c.startPage : ''}
-                      onChange={e => update(idx, { startPage: e.target.value === '' ? NaN : parseInt(e.target.value, 10) })}
-                      onBlur={() => { update(idx, { startPage: clampPage(c.startPage) }); blurSave(); }}
-                    />
-                    <span className="text-xs text-gray-500">
-                      {outOfRange ? t('out of range ({from}–{to})', { from: book.firstPage, to: book.lastPage }) : t('pages {from}–{to}', { from: hasPage ? c.startPage : '?', to: endPage })}
-                    </span>
-                  </div>
-
-                  <div className="relative">
-                    <input
-                      className="input w-full pr-6"
-                      value={c.label}
-                      onChange={e => update(idx, { label: e.target.value })}
-                      onBlur={blurSave}
-                      placeholder={t('Text that starts this chapter on the page (optional)…')}
-                    />
-                    {hasLabel && (
-                      <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-xs ${found ? 'text-green-400' : 'text-red-400'}`}>
-                        {found ? '✓' : '✗'}
-                      </span>
-                    )}
-                  </div>
-
-                  {hasLabel && !found && (
-                    <p className="text-xs text-red-400">{t('Not found on page {page} — edit the label or page.', { page: hasPage ? c.startPage : '?' })}</p>
-                  )}
-                </div>
-
-                <button
-                  className="text-gray-600 hover:text-red-400 transition-colors mt-1 shrink-0"
-                  onClick={() => removeChapter(idx)}
-                  aria-label={t('Remove chapter')}
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-
-              <div className="rounded-md bg-gray-900/60 border border-gray-800 p-2.5">
-                <div className="flex items-center gap-2 mb-1">
-                  <p className="text-[11px] uppercase tracking-wide text-gray-600 flex-1 min-w-0 truncate">
-                    {t('Page {page}', { page: hasPage ? c.startPage : '?' })}{hasLabel && found ? t(' · from "{label}"', { label: c.label.trim() }) : ''}
-                  </p>
-                  {onOpenPage && hasPage && !outOfRange && (
-                    <button
-                      className="shrink-0 text-gray-500 hover:text-amber-300 transition-colors"
-                      onClick={() => onOpenPage(c.startPage)}
-                      title={t('Open page {page} fullscreen', { page: c.startPage })}
-                      aria-label={t('Open page {page} fullscreen', { page: c.startPage })}
-                    >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                          d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" />
-                      </svg>
-                    </button>
-                  )}
-                </div>
-                {outOfRange ? (
-                  <p className="text-xs text-red-400">{t('Page out of range ({from}–{to}).', { from: book.firstPage, to: book.lastPage })}</p>
-                ) : excerpt ? (
-                  <p className="text-xs text-gray-400 line-clamp-3 whitespace-pre-wrap">{highlight(excerpt, hasLabel && found ? c.label.trim() : '')}</p>
-                ) : (
-                  <p className="text-xs text-gray-600 italic">{t('No text on this page.')}</p>
-                )}
-              </div>
-            </div>
+              <span className={`w-2 h-2 rounded-full shrink-0 ${bad ? 'bg-red-500' : 'bg-green-500'}`} />
+              <span className="text-gray-500 text-xs tabular-nums shrink-0 w-5">{idx + 1}.</span>
+              <span className="text-sm text-gray-200 truncate flex-1">
+                {c.title.trim() || <span className="text-gray-500 italic">{t('Untitled')}</span>}
+              </span>
+              {c.label.trim() && found && !outOfRange && (
+                <span className="text-[11px] text-gray-500 truncate max-w-[10rem] hidden sm:inline">
+                  {t('from "{label}"', { label: c.label.trim() })}
+                </span>
+              )}
+              <span className={`text-xs tabular-nums shrink-0 ${outOfRange ? 'text-red-400' : 'text-gray-500'}`}>
+                {outOfRange
+                  ? t('p.{page} out of range', { page: c.startPage })
+                  : t('p.{from}–{to}', { from: hasPage ? c.startPage : '?', to: endPage })}
+              </span>
+              <svg className="w-4 h-4 text-gray-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
           );
         })}
         {rows.length === 0 && (
-          <p className="text-sm text-gray-500">{t('No chapters yet. Click the')} <strong>+</strong> {t('button to create one.')}</p>
+          <p className="text-sm text-gray-500 px-4 py-6">{t('No chapters yet. Click the')} <strong>+</strong> {t('button to create one.')}</p>
         )}
       </div>
+
+      {/* Chapter editor: list + start picker on the left, book page on the right. */}
+      {showEditor && (
+        <div
+          className="fixed inset-0 z-50 bg-gray-950/80 backdrop-blur flex items-center justify-center p-4"
+          onClick={closeEditor}
+        >
+          <div
+            className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-[1120px] max-w-[97vw] h-[720px] max-h-[94vh] flex flex-col"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-800 shrink-0">
+              <h2 className="font-semibold text-gray-100">{t('Edit chapters')}</h2>
+              <span className="text-xs text-gray-500 hidden md:inline">{t('Pick each chapter\'s page, then click the word it starts at.')}</span>
+              <div className="flex-1" />
+              <button
+                className="w-8 h-8 rounded-lg flex items-center justify-center border border-amber-600/60 text-amber-400 hover:bg-amber-600/15 transition-colors"
+                onClick={addChapter}
+                title={t('Add chapter')}
+                aria-label={t('Add chapter')}
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
+                </svg>
+              </button>
+              <button
+                className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+                onClick={closeEditor}
+                title={t('Close (Esc)')}
+                aria-label={t('Close')}
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="flex-1 min-h-0 flex">
+              <div className="flex flex-col min-h-0 w-[32rem] max-w-full shrink-0 md:border-r border-gray-800">
+                {/* Chapter rows */}
+                <div className="max-h-[45%] overflow-y-auto divide-y divide-gray-800/70 border-b border-gray-800 shrink-0">
+                  {rows.map((c, i) => (
+                    <div
+                      key={i}
+                      className={`flex items-center gap-2 px-3 py-2 cursor-pointer ${i === selectedIdx ? 'bg-gray-800/70' : 'hover:bg-gray-800/40'}`}
+                      onClick={() => selectRow(i)}
+                    >
+                      <div className="flex-1 min-w-0">
+                        {editingRow === i ? (
+                          <input
+                            autoFocus
+                            className="input text-sm py-1"
+                            value={c.title}
+                            onChange={e => update(i, { title: e.target.value })}
+                            onBlur={() => { setEditingRow(null); blurSave(); }}
+                            onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') { setEditingRow(null); blurSave(); } }}
+                            placeholder={t('Chapter name…')}
+                          />
+                        ) : (
+                          <button
+                            className="w-full text-left text-sm line-clamp-2 leading-tight px-1 py-0.5 rounded hover:bg-gray-800/60 transition-colors text-gray-200"
+                            onClick={e => { e.stopPropagation(); selectRow(i); setEditingRow(i); }}
+                            title={c.title.trim() || t('Untitled — click to edit')}
+                          >
+                            {c.title.trim() || <span className="text-gray-500 italic">{t('Untitled')}</span>}
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex items-center shrink-0">
+                        <button
+                          className="w-6 h-7 rounded-l flex items-center justify-center text-gray-400 hover:text-gray-100 hover:bg-gray-800 transition-colors"
+                          {...repeatHandlers(() => stepRowPage(i, -1))}
+                          title={t('Page −1 and preview')}
+                          aria-label={t('Page back by one')}
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
+                          </svg>
+                        </button>
+                        <button
+                          className="w-12 h-7 text-sm text-center tabular-nums text-gray-200 hover:text-amber-300 hover:bg-gray-800 transition-colors"
+                          onClick={e => { e.stopPropagation(); selectRow(i); }}
+                          title={t('Go to this page in the preview')}
+                        >
+                          {Number.isFinite(c.startPage) ? c.startPage : '?'}
+                        </button>
+                        <button
+                          className="w-6 h-7 rounded-r flex items-center justify-center text-gray-400 hover:text-gray-100 hover:bg-gray-800 transition-colors"
+                          {...repeatHandlers(() => stepRowPage(i, 1))}
+                          title={t('Page +1 and preview')}
+                          aria-label={t('Page forward by one')}
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                          </svg>
+                        </button>
+                      </div>
+                      <button
+                        className="text-gray-600 hover:text-red-400 transition-colors shrink-0"
+                        onClick={e => { e.stopPropagation(); removeRow(i); }}
+                        aria-label={t('Remove chapter')}
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Start picker for the selected chapter */}
+                {selected && (
+                  <div className="flex-1 min-h-0 flex flex-col">
+                    <div className="px-3 py-2 border-b border-gray-800 shrink-0 flex items-center gap-2">
+                      <p className="text-[11px] uppercase tracking-wide text-gray-500 flex-1 min-w-0 truncate">
+                        {t('Where does "{title}" start on page {page}? Click the first word.', {
+                          title: selected.title.trim() || t('Chapter {n}', { n: selectedIdx + 1 }),
+                          page: Number.isFinite(selected.startPage) ? selected.startPage : '?',
+                        })}
+                      </p>
+                      {selected.label.trim() && (
+                        <span className={`text-xs shrink-0 ${selectedLoc.found ? 'text-green-400' : 'text-red-400'}`}>
+                          {selectedLoc.found ? t('from "{label}"', { label: selected.label.trim() }) : t('"{label}" not found', { label: selected.label.trim() })}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex-1 min-h-0 overflow-y-auto">
+                      <StartPicker
+                        text={selectedText}
+                        startChar={selectedLoc.startChar}
+                        onPick={off => pickStart(selectedIdx, off)}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Book page image, follows the selected chapter */}
+              <div className="hidden md:flex flex-1 min-w-0 min-h-0 p-3">
+                <PagePreview
+                  bookId={book._id}
+                  totalPages={previewTotal}
+                  page={previewPage}
+                  onPageChange={setPreviewPage}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-800 shrink-0">
+              <button className="btn-primary text-sm" onClick={closeEditor}>{t('Done')}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {suggestions !== null && (
         <div
@@ -531,19 +735,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                           <div className="flex items-center shrink-0">
                             <button
                               className="w-6 h-7 rounded-l flex items-center justify-center text-gray-400 hover:text-gray-100 hover:bg-gray-800 transition-colors"
-                              onPointerDown={e => {
-                                if (e.button !== 0) return;
-                                e.preventDefault();
-                                e.currentTarget.setPointerCapture(e.pointerId);
-                                startPageRepeat(i, -1);
-                              }}
-                              onPointerUp={e => {
-                                stopPageRepeat();
-                                if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-                              }}
-                              onPointerCancel={stopPageRepeat}
-                              onBlur={stopPageRepeat}
-                              onClick={e => { if (e.detail === 0) stepSuggestionPage(i, -1); }}
+                              {...repeatHandlers(() => stepSuggestionPage(i, -1))}
                               title={t('Page −1 and preview')}
                               aria-label={t('Page back by one')}
                             >
@@ -560,19 +752,7 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
                             </button>
                             <button
                               className="w-6 h-7 rounded-r flex items-center justify-center text-gray-400 hover:text-gray-100 hover:bg-gray-800 transition-colors"
-                              onPointerDown={e => {
-                                if (e.button !== 0) return;
-                                e.preventDefault();
-                                e.currentTarget.setPointerCapture(e.pointerId);
-                                startPageRepeat(i, 1);
-                              }}
-                              onPointerUp={e => {
-                                stopPageRepeat();
-                                if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-                              }}
-                              onPointerCancel={stopPageRepeat}
-                              onBlur={stopPageRepeat}
-                              onClick={e => { if (e.detail === 0) stepSuggestionPage(i, 1); }}
+                              {...repeatHandlers(() => stepSuggestionPage(i, 1))}
                               title={t('Page +1 and preview')}
                               aria-label={t('Page forward by one')}
                             >

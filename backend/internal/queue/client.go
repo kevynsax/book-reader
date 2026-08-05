@@ -442,6 +442,20 @@ func (c *Client) ExtractToc(ctx context.Context, image []byte) ([]TocEntry, erro
 	return r.Entries, err
 }
 
+// ExtractTocPreferred is ExtractToc over the summary queue, where consumer
+// priorities route the task to the preferred vlm server first.
+func (c *Client) ExtractTocPreferred(ctx context.Context, image []byte) ([]TocEntry, error) {
+	raw, err := c.submitTo(ctx, SummaryVLMQueue, RoleVLM, TypeExtractToc, ImagePayload{Image: image})
+	if err != nil {
+		return nil, err
+	}
+	var out TocResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("vlm extract-toc: malformed result: %w", err)
+	}
+	return out.Entries, nil
+}
+
 func (c *Client) SplitInTwo(ctx context.Context, line, model string) (SplitInTwoResult, error) {
 	return submitAs[SplitInTwoResult](c, ctx, RoleSLM, TypeSplitInTwo, SplitInTwoPayload{Line: line, Model: model})
 }

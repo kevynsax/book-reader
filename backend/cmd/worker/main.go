@@ -41,6 +41,11 @@ type worker struct {
 	// tts only: model ids from WORKER_SKIP_MODELS this worker must never
 	// advertise or consume (e.g. a model that doesn't run well on its server).
 	skipModels map[string]bool
+	// Consumer priority on the summary re-read queue only (WORKER_PRIORITY):
+	// when several vlm workers are free the broker hands a summary task to
+	// the highest (spark > macbook > kevyn-server), the rest being fallbacks.
+	// The shared tasks.vlm queue stays plain round-robin.
+	priority int
 
 	busy    atomic.Bool
 	healthy atomic.Bool
@@ -80,6 +85,7 @@ func main() {
 			w.skipModels[t] = true
 		}
 	}
+	w.priority, _ = strconv.Atoi(os.Getenv("WORKER_PRIORITY"))
 	valid := false
 	for _, r := range queue.Roles {
 		if w.role == r {
@@ -170,9 +176,13 @@ func (w *worker) healthCycle() {
 	// worker's own private queue that main's dispatcher publishes to.
 	desired := map[string]bool{}
 	if hb.Healthy {
-		if w.role == queue.RoleTTS {
+		switch w.role {
+		case queue.RoleTTS:
 			desired[queue.TTSServerQueue(w.serverID)] = true
-		} else {
+		case queue.RoleVLM:
+			desired[queue.TaskQueueName(w.role)] = true
+			desired[queue.SummaryVLMQueue] = true
+		default:
 			desired[queue.TaskQueueName(w.role)] = true
 		}
 	}
@@ -273,7 +283,11 @@ func (w *worker) startConsumerLocked(queueName string) error {
 		return err
 	}
 	tag := fmt.Sprintf("%s-%s-%d", w.role, w.serverID, time.Now().UnixNano())
-	deliveries, err := w.ch.Consume(queueName, tag, false, false, false, false, nil)
+	var args amqp.Table
+	if queueName == queue.SummaryVLMQueue && w.priority != 0 {
+		args = amqp.Table{"x-priority": w.priority}
+	}
+	deliveries, err := w.ch.Consume(queueName, tag, false, false, false, false, args)
 	if err != nil {
 		return err
 	}
