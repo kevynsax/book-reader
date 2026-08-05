@@ -13,6 +13,10 @@ import (
 // A short bracketed aside is kept whole and glued to the sentence it follows.
 const bracketKeepMax = 120
 
+// A sentence-ender only breaks the line once at least this many characters have
+// accumulated — "1." in a chapter title like "1. Canguru" is not a sentence.
+const minSentenceLen = 30
+
 var openers = map[rune]rune{'(': ')', '[': ']', '{': '}'}
 
 func isEnder(r rune) bool { return r == '.' || r == '!' || r == '?' || r == '…' }
@@ -96,6 +100,17 @@ func splitParagraph(text []rune) []string {
 		buf.Reset()
 	}
 
+	// pushBoundary ends the sentence at an ender — unless it is still shorter
+	// than minSentenceLen, in which case the ender stays inline and the
+	// sentence keeps accumulating.
+	pushBoundary := func() {
+		if len([]rune(strings.TrimSpace(buf.String()))) < minSentenceLen {
+			buf.WriteRune(' ')
+			return
+		}
+		push()
+	}
+
 	for i < len(text) {
 		ch := text[i]
 
@@ -148,13 +163,13 @@ func splitParagraph(text []rune) []string {
 					if _, ok := openers[text[k]]; ok {
 						if grp := captureBracket(text, k); grp != nil && len([]rune(grp.inner)) < bracketKeepMax {
 							buf.WriteString(" " + grp.full)
-							push()
+							pushBoundary()
 							i = grp.end
 							continue
 						}
 					}
 				}
-				push()
+				pushBoundary()
 				i = k
 				continue
 			}

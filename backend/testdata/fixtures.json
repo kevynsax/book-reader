@@ -1,4 +1,26 @@
 {
+  "isTitle": [
+    {
+      "text": "Chapter One",
+      "want": true
+    },
+    {
+      "text": "A somewhat longer line of text that runs on",
+      "want": false
+    },
+    {
+      "text": "One",
+      "want": true
+    },
+    {
+      "text": "",
+      "want": false
+    },
+    {
+      "text": "Five words exactly in here",
+      "want": true
+    }
+  ],
   "normalize": [
     {
       "lang": "en",
@@ -159,150 +181,6 @@
       "lang": "pt-br",
       "text": "Marcos 4.35 na língua pt-br.",
       "want": "marcos capítulo quatro versículo trinta e cinco na língua pt-br."
-    }
-  ],
-  "reflow": [
-    {
-      "text": "The quick brown fox. It jumped over the dog.\nAnd then it ran away!",
-      "want": "The quick brown fox.\nIt jumped over the dog.\nAnd then it ran away!"
-    },
-    {
-      "text": "A hard\nwrapped line that continues\non the next line. Second sentence here.",
-      "want": "A hard wrapped line that continues on the next line.\nSecond sentence here."
-    },
-    {
-      "text": "He said \"Hello.\" Then left.\n\nNew paragraph starts. (A short aside.) More text.",
-      "want": "He said \"Hello.\"\nThen left.\n\nNew paragraph starts. (A short aside.)\nMore text."
-    },
-    {
-      "text": "See ch. 38 for details. It continues.",
-      "want": "See ch. 38 for details.\nIt continues."
-    },
-    {
-      "text": "Wait... what happened? The OCR spaced dots . . . remain inline.",
-      "want": "Wait... what happened?\nThe OCR spaced dots . . . remain inline."
-    },
-    {
-      "text": "A sentence with (a bracketed aside that is quite short) inside it. Next one.",
-      "want": "A sentence with (a bracketed aside that is quite short) inside it.\nNext one."
-    },
-    {
-      "text": "Title Line\n\nBody text follows here. And more. And more still?",
-      "want": "Title Line\n\nBody text follows here.\nAnd more.\nAnd more still?"
-    },
-    {
-      "text": "Ele disse: \"Olá!\" E saiu. (Um aparte curto.) Fim da história…",
-      "want": "Ele disse: \"Olá!\"\nE saiu. (Um aparte curto.)\nFim da história…"
-    },
-    {
-      "text": "Verses vv. 6-9 stay glued. As do pp. 12-14 and vol. 3 references.",
-      "want": "Verses vv. 6-9 stay glued.\nAs do pp. 12-14 and vol. 3 references."
-    }
-  ],
-  "isTitle": [
-    {
-      "text": "Chapter One",
-      "want": true
-    },
-    {
-      "text": "A somewhat longer line of text that runs on",
-      "want": false
-    },
-    {
-      "text": "One",
-      "want": true
-    },
-    {
-      "text": "",
-      "want": false
-    },
-    {
-      "text": "Five words exactly in here",
-      "want": true
-    }
-  ],
-  "similarity": [
-    {
-      "a": "Hello world, this is a test.",
-      "b": "hello world this is a test",
-      "want": 1,
-      "words": [
-        "hello",
-        "world",
-        "this",
-        "is",
-        "a",
-        "test"
-      ]
-    },
-    {
-      "a": "Genesis chapter one verse one",
-      "b": "genesis chapter 1 verse 1",
-      "want": 0.6,
-      "words": [
-        "genesis",
-        "chapter",
-        "one",
-        "verse",
-        "one"
-      ]
-    },
-    {
-      "a": "completely different text here",
-      "b": "nothing alike whatsoever friend",
-      "want": 0,
-      "words": [
-        "completely",
-        "different",
-        "text",
-        "here"
-      ]
-    },
-    {
-      "a": "Coração de João",
-      "b": "coracao de joao",
-      "want": 1,
-      "words": [
-        "coracao",
-        "de",
-        "joao"
-      ]
-    },
-    {
-      "a": "",
-      "b": "",
-      "want": 1,
-      "words": []
-    },
-    {
-      "a": "something",
-      "b": "",
-      "want": 0,
-      "words": [
-        "something"
-      ]
-    }
-  ],
-  "sanitize": [
-    {
-      "text": "```json\n{\"language\":\"en\",\"content\":\"Hello world\"}\n```",
-      "want": "Hello world"
-    },
-    {
-      "text": "{\"language\":\"pt\",\"content\":\"Linha um\\nLinha dois\"}",
-      "want": "Linha um\nLinha dois"
-    },
-    {
-      "text": "Plain text stays as is.",
-      "want": "Plain text stays as is."
-    },
-    {
-      "text": "{\"content\": \"Broken json without close",
-      "want": "Broken json without close"
-    },
-    {
-      "text": "  {\"language\":\"en\",\"content\":\"trimmed\"}  ",
-      "want": "trimmed"
     }
   ],
   "numbers": [
@@ -605,6 +483,128 @@
       "lang": "pt",
       "n": 1000000000,
       "words": "1000000000"
+    }
+  ],
+  "reflow": [
+    {
+      "text": "The quick brown fox. It jumped over the dog.\nAnd then it ran away!",
+      "want": "The quick brown fox. It jumped over the dog.\nAnd then it ran away!"
+    },
+    {
+      "text": "A hard\nwrapped line that continues\non the next line. Second sentence here.",
+      "want": "A hard wrapped line that continues on the next line.\nSecond sentence here."
+    },
+    {
+      "text": "He said \"Hello.\" Then left.\n\nNew paragraph starts. (A short aside.) More text.",
+      "want": "He said \"Hello.\" Then left.\n\nNew paragraph starts. (A short aside.)\nMore text."
+    },
+    {
+      "text": "See ch. 38 for details. It continues.",
+      "want": "See ch. 38 for details. It continues."
+    },
+    {
+      "text": "Wait... what happened? The OCR spaced dots . . . remain inline.",
+      "want": "Wait... what happened? The OCR spaced dots . . . remain inline."
+    },
+    {
+      "text": "A sentence with (a bracketed aside that is quite short) inside it. Next one.",
+      "want": "A sentence with (a bracketed aside that is quite short) inside it.\nNext one."
+    },
+    {
+      "text": "Title Line\n\nBody text follows here. And more. And more still?",
+      "want": "Title Line\n\nBody text follows here. And more.\nAnd more still?"
+    },
+    {
+      "text": "Ele disse: \"Olá!\" E saiu. (Um aparte curto.) Fim da história…",
+      "want": "Ele disse: \"Olá!\" E saiu. (Um aparte curto.)\nFim da história…"
+    },
+    {
+      "text": "Verses vv. 6-9 stay glued. As do pp. 12-14 and vol. 3 references.",
+      "want": "Verses vv. 6-9 stay glued. As do pp. 12-14 and vol. 3 references."
+    }
+  ],
+  "sanitize": [
+    {
+      "text": "```json\n{\"language\":\"en\",\"content\":\"Hello world\"}\n```",
+      "want": "Hello world"
+    },
+    {
+      "text": "{\"language\":\"pt\",\"content\":\"Linha um\\nLinha dois\"}",
+      "want": "Linha um\nLinha dois"
+    },
+    {
+      "text": "Plain text stays as is.",
+      "want": "Plain text stays as is."
+    },
+    {
+      "text": "{\"content\": \"Broken json without close",
+      "want": "Broken json without close"
+    },
+    {
+      "text": "  {\"language\":\"en\",\"content\":\"trimmed\"}  ",
+      "want": "trimmed"
+    }
+  ],
+  "similarity": [
+    {
+      "a": "Hello world, this is a test.",
+      "b": "hello world this is a test",
+      "want": 1,
+      "words": [
+        "hello",
+        "world",
+        "this",
+        "is",
+        "a",
+        "test"
+      ]
+    },
+    {
+      "a": "Genesis chapter one verse one",
+      "b": "genesis chapter 1 verse 1",
+      "want": 0.6,
+      "words": [
+        "genesis",
+        "chapter",
+        "one",
+        "verse",
+        "one"
+      ]
+    },
+    {
+      "a": "completely different text here",
+      "b": "nothing alike whatsoever friend",
+      "want": 0,
+      "words": [
+        "completely",
+        "different",
+        "text",
+        "here"
+      ]
+    },
+    {
+      "a": "Coração de João",
+      "b": "coracao de joao",
+      "want": 1,
+      "words": [
+        "coracao",
+        "de",
+        "joao"
+      ]
+    },
+    {
+      "a": "",
+      "b": "",
+      "want": 1,
+      "words": []
+    },
+    {
+      "a": "something",
+      "b": "",
+      "want": 0,
+      "words": [
+        "something"
+      ]
     }
   ]
 }
