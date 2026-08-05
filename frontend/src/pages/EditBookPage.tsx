@@ -622,6 +622,18 @@ export default function EditBookPage() {
             {(book.status === 'complete' || book.status === 'generating_audio') && (
               <VoiceManager book={book} editable={book.status === 'complete'} allowModify />
             )}
+            {!isGenerating && (
+              <div className="pt-1">
+                <button
+                  className="btn-secondary text-xs"
+                  onClick={() => setShowReimport(true)}
+                  disabled={importBusy}
+                  title={t('Re-pick cover, summary, first and last pages and restart the import — uses the PDF already on the server')}
+                >
+                  {t('Restart import…')}
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
