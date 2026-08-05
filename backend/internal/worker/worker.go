@@ -61,6 +61,11 @@ type run struct {
 	// everyone else waits on the chapter's gate.
 	splitMu   sync.Mutex
 	splitBusy map[int]chan struct{}
+
+	// Chapter mp3 assemblies run in the background so the fleet moves on to
+	// the next chapter while ffmpeg concatenates; renderWork waits on this
+	// before the run's final bookkeeping.
+	finalizeWG sync.WaitGroup
 }
 
 // ensureSentences builds a chapter's sentence list exactly once per run, no

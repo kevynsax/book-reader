@@ -231,6 +231,14 @@ func (w *Worker) finalizeTrack(ctx context.Context, r *run, idx int, voice, audi
 	var durationSecs float64
 	var assembleErr error
 	if allComplete {
+		message := fmt.Sprintf("Merging %q audio…", chapter.Title)
+		w.emit(book, map[string]any{
+			"voiceProgress": map[string]any{
+				"voice": voice, "chapterIdx": idx,
+				"current": len(inputs), "total": len(inputs),
+				"message": message,
+			},
+		})
 		assembledPath = ChapterAudioPath(audioDir, idx, voice)
 		durationSecs, assembleErr = tts.AssembleChapter(inputs, assembledPath)
 	}
@@ -252,6 +260,9 @@ func (w *Worker) finalizeTrack(ctx context.Context, r *run, idx int, voice, audi
 			// A single-sentence re-render failed but the previously assembled
 			// chapter audio is still valid — keep it playable.
 			track.AudioStatus = model.AudioComplete
+		case len(track.Segments) == 0 && track.AudioStatus == model.AudioError:
+			// Preparation already flagged the chapter (e.g. no readable text);
+			// deriving from zero segments would erase that error as "pending".
 		default:
 			track.AudioStatus = model.DeriveTrackStatus(track.Segments)
 			track.AudioError = nil
@@ -541,7 +552,17 @@ func (w *Worker) renderChapter(ctx, stopCtx context.Context, r *run, j job, pos 
 		return err
 	}
 
-	return w.finalizeTrack(ctx, r, idx, voice, audioDir, false)
+	// Assemble in the background: the merge only touches this chapter's
+	// finished segments, so the fleet can start the model's next chapter
+	// instead of idling behind ffmpeg.
+	r.finalizeWG.Add(1)
+	go func() {
+		defer r.finalizeWG.Done()
+		if err := w.finalizeTrack(ctx, r, idx, voice, audioDir, false); err != nil {
+			log.Printf("finalizeTrack %s ch%d (%s): %v", book.ID.Hex(), idx+1, voice, err)
+		}
+	}()
+	return nil
 }
 
 type job struct {
@@ -682,6 +703,7 @@ func (w *Worker) renderWork(ctx context.Context, r *run, audioDir string, progre
 			schedule()
 		}
 	}
+	r.finalizeWG.Wait()
 	if firstErr == nil && w.stopRequested(book.ID.Hex()) {
 		return ErrStopped
 	}
