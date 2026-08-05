@@ -334,6 +334,45 @@ func (w *Worker) DeleteSentence(ctx context.Context, bookID string, chapterIdx i
 	return nil
 }
 
+// ApproveSentence clears the needs-review flag on a sentence's segments (all
+// voices, or just one when voice is set) — the user listened and the audio is
+// fine as-is.
+func (w *Worker) ApproveSentence(ctx context.Context, bookID string, chapterIdx int, sentenceID, voice string) error {
+	unlock := w.LockBook(bookID)
+	defer unlock()
+	book, err := w.St.Books.FindByID(ctx, bookID)
+	if err != nil || book == nil {
+		return err
+	}
+	if chapterIdx < 0 || chapterIdx >= len(book.Chapters) {
+		return nil
+	}
+	r := &run{w: w, book: book}
+	chapter := &book.Chapters[chapterIdx]
+	changed := false
+	if err := r.withSave(ctx, func() {
+		for ti := range chapter.Tracks {
+			track := &chapter.Tracks[ti]
+			if voice != "" && track.Voice != voice {
+				continue
+			}
+			for si := range track.Segments {
+				seg := &track.Segments[si]
+				if seg.SentenceID.Hex() == sentenceID && seg.NeedsReview {
+					seg.NeedsReview = false
+					changed = true
+				}
+			}
+		}
+	}); err != nil {
+		return err
+	}
+	if changed {
+		w.emit(book, map[string]any{"chapters": model.SerializeChaptersForClient(book.Chapters)})
+	}
+	return nil
+}
+
 // RegenerateSegment re-renders one sentence's segment without changing its
 // text (e.g. it errored or mismatched). synthVoice, when set, synthesizes
 // with a different voice/model while keeping the audio in the target voice's

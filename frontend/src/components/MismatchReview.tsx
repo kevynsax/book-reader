@@ -23,8 +23,10 @@ interface Props {
 }
 
 // Lists every sentence whose audio kept disagreeing with Whisper so the user
-// can fix it: edit the text, add a follow-up sentence beside it, or re-render
-// in place — optionally with another model.
+// can resolve it sentence by sentence: listen per voice, re-render just one
+// voice (optionally with another model), edit the text, add a follow-up
+// sentence, accept the audio as fine, or delete the sentence — never touching
+// the rest of the chapter.
 export default function MismatchReview({ bookId }: Props) {
   const [mismatches, setMismatches] = useState<Mismatch[]>([]);
   const [open, setOpen] = useState(false);
@@ -34,6 +36,7 @@ export default function MismatchReview({ bookId }: Props) {
   const [adding, setAdding] = useState(false);
   const [addDraft, setAddDraft] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [previewKey, setPreviewKey] = useState<string | null>(null);
 
   const [models, setModels] = useState<TtsModel[]>([]);
@@ -55,15 +58,19 @@ export default function MismatchReview({ bookId }: Props) {
       .catch(() => {});
   };
 
+  const reloadSoon = (ms = 1200) => {
+    clearTimeout(reloadTimer.current);
+    reloadTimer.current = setTimeout(load, ms);
+  };
+
   useEffect(load, [bookId]);
 
   useEffect(() => {
     return onBookUpdate(data => {
       if (data.bookId !== bookId) return;
       const seg = data.segmentUpdate as { audioStatus?: string } | undefined;
-      if (!seg || (seg.audioStatus !== 'complete' && seg.audioStatus !== 'error')) return;
-      clearTimeout(reloadTimer.current);
-      reloadTimer.current = setTimeout(load, 1200);
+      const structural = (data as { chapters?: unknown }).chapters;
+      if (structural || (seg && (seg.audioStatus === 'complete' || seg.audioStatus === 'error'))) reloadSoon();
     });
   }, [bookId]);
 
@@ -101,9 +108,15 @@ export default function MismatchReview({ bookId }: Props) {
     setExpandedId(next);
     setEditing(false);
     setAdding(false);
+    setConfirmDelete(false);
     setDraft(m.text);
     setAddDraft('');
     setOverrideModel('');
+  };
+
+  const dropLocal = (m: Mismatch) => {
+    setMismatches(list => list.filter(x => x.sentenceId !== m.sentenceId));
+    setExpandedId(null);
   };
 
   const saveEdit = async (m: Mismatch) => {
@@ -131,16 +144,46 @@ export default function MismatchReview({ bookId }: Props) {
     }).catch(() => {});
   };
 
-  const regenerate = async (m: Mismatch) => {
-    const synthVoice = overrideModel && overrideVoice ? `${overrideModel}:${overrideVoice}` : '';
+  const synthVoiceOverride = () =>
+    overrideModel && overrideVoice ? `${overrideModel}:${overrideVoice}` : '';
+
+  const regenerateVoice = async (m: Mismatch, voice: string) => {
+    setBusyId(m.sentenceId);
+    await fetch(`/api/books/${bookId}/chapters/${m.chapterIdx}/sentences/${m.sentenceId}/regenerate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voice, synthVoice: synthVoiceOverride() }),
+    }).catch(() => {});
+  };
+
+  const regenerateAll = async (m: Mismatch) => {
     setBusyId(m.sentenceId);
     for (const v of m.voices) {
       await fetch(`/api/books/${bookId}/chapters/${m.chapterIdx}/sentences/${m.sentenceId}/regenerate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice: v.voice, synthVoice }),
+        body: JSON.stringify({ voice: v.voice, synthVoice: synthVoiceOverride() }),
       }).catch(() => {});
     }
+  };
+
+  const approve = async (m: Mismatch) => {
+    dropLocal(m);
+    await fetch(`/api/books/${bookId}/chapters/${m.chapterIdx}/sentences/${m.sentenceId}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }).catch(() => {});
+    reloadSoon(1500);
+  };
+
+  const remove = async (m: Mismatch) => {
+    setConfirmDelete(false);
+    dropLocal(m);
+    await fetch(`/api/books/${bookId}/chapters/${m.chapterIdx}/sentences/${m.sentenceId}`, {
+      method: 'DELETE',
+    }).catch(() => {});
+    reloadSoon(1500);
   };
 
   const preview = (m: Mismatch, voice: string) => {
@@ -174,7 +217,7 @@ export default function MismatchReview({ bookId }: Props) {
       {open && (
         <>
           <p className="text-xs text-gray-500">
-            {t('The audio for these sentences kept disagreeing with what Whisper heard. Edit the text, add a sentence beside it, or re-render — optionally with another model.')}
+            {t('The audio for these sentences kept disagreeing with what Whisper heard. Listen per voice and fix only what needs fixing — the rest of the chapter is untouched.')}
           </p>
 
           <div className="divide-y divide-gray-800/60 max-h-[28rem] overflow-y-auto -mx-2">
@@ -206,6 +249,18 @@ export default function MismatchReview({ bookId }: Props) {
                                 : <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>}
                             </button>
                             <span className="text-gray-400 font-medium">{friendlyVoice(v.voice)}</span>
+                            <button
+                              className="p-0.5 text-gray-500 hover:text-amber-400 transition-colors"
+                              disabled={busy}
+                              onClick={() => regenerateVoice(m, v.voice)}
+                              title={t('Re-render only this voice')}
+                              aria-label={t('Re-render only this voice')}
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                              </svg>
+                            </button>
                           </div>
                           {(v.whisperResults ?? []).map((w, i) => (
                             <p key={i} className="text-gray-500 pl-5">
@@ -253,34 +308,63 @@ export default function MismatchReview({ bookId }: Props) {
                           </div>
                         </div>
                       ) : (
-                        <div className="flex flex-wrap items-center gap-2">
-                          <button className="btn-secondary text-xs py-1 px-3" disabled={busy} onClick={() => { setEditing(true); setDraft(m.text); }}>
-                            {t('Edit text')}
-                          </button>
-                          <button className="btn-secondary text-xs py-1 px-3" disabled={busy} onClick={() => setAdding(true)}>
-                            {t('Add sentence after')}
-                          </button>
-                          <button className="btn-primary text-xs py-1 px-3" disabled={busy || (!!overrideModel && !overrideVoice)} onClick={() => regenerate(m)}>
-                            {t('Re-render')}
-                          </button>
-                          <select
-                            className="input text-xs py-1 w-auto"
-                            value={overrideModel}
-                            onChange={e => setOverrideModel(e.target.value)}
-                            title={t('Render with another model')}
-                          >
-                            <option value="">{t('Same voice')}</option>
-                            {models.map(mo => <option key={mo.id} value={mo.id}>{mo.label}</option>)}
-                          </select>
-                          {overrideModel && (
+                        <div className="space-y-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button className="btn-primary text-xs py-1 px-3" disabled={busy || (!!overrideModel && !overrideVoice)} onClick={() => regenerateAll(m)}>
+                              {t('Re-render')}
+                            </button>
                             <select
                               className="input text-xs py-1 w-auto"
-                              value={overrideVoice}
-                              onChange={e => setOverrideVoice(e.target.value)}
+                              value={overrideModel}
+                              onChange={e => setOverrideModel(e.target.value)}
+                              title={t('Render with another model')}
                             >
-                              {overrideVoices.map(v => <option key={v} value={v}>{v}</option>)}
+                              <option value="">{t('Same voice')}</option>
+                              {models.map(mo => <option key={mo.id} value={mo.id}>{mo.label}</option>)}
                             </select>
-                          )}
+                            {overrideModel && (
+                              <select
+                                className="input text-xs py-1 w-auto"
+                                value={overrideVoice}
+                                onChange={e => setOverrideVoice(e.target.value)}
+                              >
+                                {overrideVoices.map(v => <option key={v} value={v}>{v}</option>)}
+                              </select>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              className="btn-secondary text-xs py-1 px-3 text-emerald-400 hover:text-emerald-300"
+                              disabled={busy}
+                              onClick={() => approve(m)}
+                              title={t('Keep the audio as-is and remove it from this list')}
+                            >
+                              {t('Sounds fine')}
+                            </button>
+                            <button className="btn-secondary text-xs py-1 px-3" disabled={busy} onClick={() => { setEditing(true); setDraft(m.text); }}>
+                              {t('Edit text')}
+                            </button>
+                            <button className="btn-secondary text-xs py-1 px-3" disabled={busy} onClick={() => setAdding(true)}>
+                              {t('Add sentence after')}
+                            </button>
+                            {confirmDelete ? (
+                              <span className="flex items-center gap-2">
+                                <button className="btn-secondary text-xs py-1 px-3 text-red-400 hover:text-red-300" disabled={busy} onClick={() => remove(m)}>
+                                  {t('Confirm delete')}
+                                </button>
+                                <button className="btn-secondary text-xs py-1 px-3" onClick={() => setConfirmDelete(false)}>{t('Cancel')}</button>
+                              </span>
+                            ) : (
+                              <button
+                                className="btn-secondary text-xs py-1 px-3 text-red-400/80 hover:text-red-300"
+                                disabled={busy}
+                                onClick={() => setConfirmDelete(true)}
+                                title={t('Remove this sentence and its audio from the book')}
+                              >
+                                {t('Delete sentence')}
+                              </button>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>

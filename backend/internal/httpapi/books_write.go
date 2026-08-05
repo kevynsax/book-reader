@@ -55,6 +55,7 @@ func (s *Server) registerBookWriteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/books/{id}/chapters/{idx}/sentences/{sentenceId}", s.handleSentenceDelete)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/regenerate", s.handleSentenceRegenerate)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/insert-after", s.handleSentenceInsertAfter)
+	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/approve", s.handleSentenceApprove)
 }
 
 // parseSummaryPages accepts the summary pages as a JSON array, a
@@ -1324,6 +1325,25 @@ func (s *Server) handleSentenceRegenerate(w http.ResponseWriter, r *http.Request
 	go func() {
 		if err := s.W.RegenerateSegment(context.Background(), bookID, idx, sentenceID, voice, synthVoice); err != nil {
 			log.Printf("regenerateSegment %s ch%d %s failed: %v", bookID, idx, sentenceID, err)
+		}
+	}()
+}
+
+func (s *Server) handleSentenceApprove(w http.ResponseWriter, r *http.Request) {
+	book, idx, sentenceID, ok := s.sentenceRoutePrologue(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Voice string `json:"voice"`
+	}
+	_ = decodeJSON(r, &body)
+	Message(w, "Marked as reviewed.")
+	bookID := book.ID.Hex()
+	voice := body.Voice
+	go func() {
+		if err := s.W.ApproveSentence(context.Background(), bookID, idx, sentenceID, voice); err != nil {
+			log.Printf("approveSentence %s ch%d %s failed: %v", bookID, idx, sentenceID, err)
 		}
 	}()
 }
