@@ -4,7 +4,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { AppDispatch, RootState } from '../store';
 import { confirmChapters, deleteBook, renameBook, generateBook, stopBook, regenerateVoice, regenerateChapterVoice, continueChapterVoice, resumeBook, dismissBookError } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
-import { Book, BookStatus } from '../types';
+import { Book, BookStatus, TtsServer } from '../types';
 import { chapterStatus, bookVoices, trackFor, hasPlayableAudio } from '../lib/format';
 import { useVoiceLabel } from '../hooks/useVoiceLabel';
 import ChapterReview, { ChapterReviewHandle } from '../components/ChapterReview';
@@ -260,6 +260,59 @@ const TRACK_TEXT: Record<string, string> = {
   pending:    'text-gray-500',
 };
 
+// Estimated seconds until every voice of the book finishes rendering: remaining
+// sentences (live voiceProgress for the active chapter, segment counts elsewhere,
+// the observed per-chapter average for chapters not yet split) divided by the
+// combined throughput of the online servers able to render the active models.
+function generationEta(book: Book, servers: TtsServer[]): number | null {
+  const voices = bookVoices(book).filter(v =>
+    book.chapters.some(c => { const tr = trackFor(c, v); return tr && tr.audioStatus !== 'complete'; }));
+  if (!voices.length) return null;
+  const models = new Set(voices.map(v => v.split(':')[0]));
+  const throughput = servers
+    .filter(s => s.online && s.avgRenderSecs && s.models.some(m => models.has(m.id)))
+    .reduce((sum, s) => sum + 1 / s.avgRenderSecs!, 0);
+  if (!throughput) return null;
+
+  let remaining = 0;
+  let unknown = 0;
+  const totals: number[] = [];
+  for (const v of voices) {
+    const live = book.voiceProgress?.[v];
+    book.chapters.forEach((c, i) => {
+      const tr = trackFor(c, v);
+      const total = tr?.segmentsTotal ?? tr?.segments?.length;
+      if (tr?.audioStatus === 'complete') {
+        if (total) totals.push(total);
+        return;
+      }
+      if (live && live.chapterIdx === i && live.total > 0) {
+        remaining += Math.max(0, live.total - live.current);
+        totals.push(live.total);
+        return;
+      }
+      if (total) {
+        const done = tr?.segmentsDone ?? tr?.segments?.filter(s => s.audioStatus === 'complete').length ?? 0;
+        remaining += Math.max(0, total - done);
+        totals.push(total);
+      } else {
+        unknown++;
+      }
+    });
+  }
+  if (unknown) {
+    if (!totals.length) return null;
+    remaining += unknown * (totals.reduce((a, b) => a + b, 0) / totals.length);
+  }
+  return remaining / throughput;
+}
+
+function fmtEta(secs: number): string {
+  const m = Math.max(1, Math.round(secs / 60));
+  if (m < 60) return t('~{n}m', { n: m });
+  return `~${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
 function RegenIcon({ className = 'w-3.5 h-3.5' }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -396,6 +449,7 @@ export default function EditBookPage() {
   const [resuming,         setResuming]         = useState(false);
   const [dismissing,       setDismissing]       = useState(false);
   const [stopping,         setStopping]         = useState(false);
+  const [ttsServers,       setTtsServers]       = useState<TtsServer[]>([]);
   const chapterReviewRef = useRef<ChapterReviewHandle>(null);
   const textReviewRef = useRef<TextReviewHandle>(null);
   const generatedRef = useRef(false);
@@ -599,7 +653,13 @@ export default function EditBookPage() {
         {hasChapters && (isGenerating || hasAudioError) && (
           <div className="card space-y-4">
             <div className="flex items-center justify-between gap-3">
-              <h3 className="font-semibold text-gray-100">{isGenerating ? t('Generating audio') : t('Generation results')}</h3>
+              <h3 className="font-semibold text-gray-100 flex items-baseline gap-2">
+                {isGenerating ? t('Generating audio') : t('Generation results')}
+                {isGenerating && (() => {
+                  const eta = generationEta(book, ttsServers);
+                  return eta != null && <span className="text-xs font-normal text-amber-400">{t('{eta} left', { eta: fmtEta(eta) })}</span>;
+                })()}
+              </h3>
               <div className="flex items-center gap-3">
                 <span className="text-xs text-gray-500 hidden sm:inline">
                   {t('green = ready · pulsing = rendering · red = failed')}
@@ -617,7 +677,7 @@ export default function EditBookPage() {
                 )}
               </div>
             </div>
-            {isGenerating && <ServerStatus />}
+            {isGenerating && <ServerStatus onServers={setTtsServers} />}
             {/* While voices render concurrently each card shows its own live
                 bar — the single global bar would just flip between lanes. */}
             {book.progress.message && book.progress.total > 0 && !Object.keys(book.voiceProgress ?? {}).length && (
