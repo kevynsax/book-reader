@@ -62,6 +62,8 @@ func (s *Server) handleServers(w http.ResponseWriter, _ *http.Request) {
 	workers := s.W.Q.Registry.Workers(queue.RoleTTS)
 	sort.SliceStable(workers, func(i, j int) bool { return workers[i].ServerID < workers[j].ServerID })
 	inflight := s.W.Q.TTSInflight()
+	renderStats := s.W.Q.TTSRenderStats()
+	currentRenders := s.W.Q.TTSCurrent()
 	statuses := make([]tts.ServerStatus, len(workers))
 	for i, hb := range workers {
 		status := tts.ServerStatus{
@@ -81,6 +83,19 @@ func (s *Server) handleServers(w http.ResponseWriter, _ *http.Request) {
 		}
 		if model, ok := inflight[hb.ServerID]; ok {
 			status.Rendering = &model
+		}
+		if cur, ok := currentRenders[hb.ServerID]; ok {
+			voice, text := cur.Voice, cur.Text
+			if r := []rune(text); len(r) > 80 {
+				text = string(r[:80]) + "…"
+			}
+			status.RenderingVoice = &voice
+			status.RenderingText = &text
+		}
+		if rs, ok := renderStats[hb.ServerID]; ok {
+			avg := rs.AvgSecs
+			status.Renders = rs.Count
+			status.AvgRenderSecs = &avg
 		}
 		if hb.Healthy {
 			status.Error = (*string)(nil)

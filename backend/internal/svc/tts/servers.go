@@ -32,8 +32,15 @@ type ServerStatus struct {
 	State       *string `json:"state,omitempty"`
 	ActiveModel *string `json:"activeModel,omitempty"`
 	Backend     *string `json:"backend,omitempty"`
-	// Model of the render main's dispatcher currently holds on this server.
-	Rendering *string `json:"rendering,omitempty"`
+	// Model of the render main's dispatcher currently holds on this server,
+	// plus the voice and sentence of the synthesize RPC in flight.
+	Rendering      *string `json:"rendering,omitempty"`
+	RenderingVoice *string `json:"renderingVoice,omitempty"`
+	RenderingText  *string `json:"renderingText,omitempty"`
+	// Synthesize history since boot: how many sentences and how long each took
+	// on average (RPC time, including forced model hot-swaps).
+	Renders       int64    `json:"renders,omitempty"`
+	AvgRenderSecs *float64 `json:"avgRenderSecs,omitempty"`
 	// Present (possibly null) when the server is online, absent when offline —
 	// matching Node's undefined-vs-null distinction.
 	Error  any        `json:"error,omitempty"`

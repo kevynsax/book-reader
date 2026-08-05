@@ -81,6 +81,75 @@ type Client struct {
 	inflight  map[string]string
 	waiters   []*ttsWaiter
 	waiterSeq uint64
+
+	rmu     sync.Mutex
+	renders map[string]*renderTally
+	current map[string]RenderInfo
+}
+
+// RenderInfo describes the synthesize RPC a server is executing right now.
+type RenderInfo struct {
+	Model string
+	Voice string
+	Text  string
+}
+
+func (c *Client) setCurrent(serverID string, info RenderInfo) {
+	c.rmu.Lock()
+	defer c.rmu.Unlock()
+	c.current[serverID] = info
+}
+
+func (c *Client) clearCurrent(serverID string) {
+	c.rmu.Lock()
+	defer c.rmu.Unlock()
+	delete(c.current, serverID)
+}
+
+// TTSCurrent returns serverID → the render in flight on it right now.
+func (c *Client) TTSCurrent() map[string]RenderInfo {
+	c.rmu.Lock()
+	defer c.rmu.Unlock()
+	out := make(map[string]RenderInfo, len(c.current))
+	for id, info := range c.current {
+		out[id] = info
+	}
+	return out
+}
+
+type renderTally struct {
+	count     int64
+	totalSecs float64
+}
+
+// RenderStats is one server's synthesize history since main booted.
+type RenderStats struct {
+	Count   int64
+	AvgSecs float64
+}
+
+func (c *Client) recordRender(serverID string, secs float64) {
+	c.rmu.Lock()
+	defer c.rmu.Unlock()
+	t := c.renders[serverID]
+	if t == nil {
+		t = &renderTally{}
+		c.renders[serverID] = t
+	}
+	t.count++
+	t.totalSecs += secs
+}
+
+// TTSRenderStats returns serverID → average synthesize seconds (RPC time,
+// including any model hot-swap the render forced).
+func (c *Client) TTSRenderStats() map[string]RenderStats {
+	c.rmu.Lock()
+	defer c.rmu.Unlock()
+	out := make(map[string]RenderStats, len(c.renders))
+	for id, t := range c.renders {
+		out[id] = RenderStats{Count: t.count, AvgSecs: t.totalSecs / float64(t.count)}
+	}
+	return out
 }
 
 // TTSInflight returns serverID → model for renders currently held on a server.
@@ -95,7 +164,7 @@ func (c *Client) TTSInflight() map[string]string {
 }
 
 func NewClient(url string) *Client {
-	c := &Client{url: url, Registry: NewRegistry(), pending: map[string]pendingReply{}, inflight: map[string]string{}}
+	c := &Client{url: url, Registry: NewRegistry(), pending: map[string]pendingReply{}, inflight: map[string]string{}, renders: map[string]*renderTally{}, current: map[string]RenderInfo{}}
 	go c.maintain()
 	go c.dispatchLoop()
 	return c
@@ -404,7 +473,13 @@ func (c *Client) Synthesize(ctx context.Context, p SynthesizePayload, serverID s
 	var out SynthesizeResult
 	wctx, stop := c.watchServer(ctx, serverID)
 	defer stop()
+	start := time.Now()
+	c.setCurrent(serverID, RenderInfo{Model: p.Model, Voice: p.Voice, Text: p.Input})
 	raw, err := c.submitTo(wctx, TTSServerQueue(serverID), RoleTTS, TypeSynthesize, p)
+	c.clearCurrent(serverID)
+	if err == nil {
+		c.recordRender(serverID, time.Since(start).Seconds())
+	}
 	if err != nil {
 		if ctx.Err() == nil && wctx.Err() != nil {
 			return out, fmt.Errorf("tts server %q went offline mid-render", serverID)

@@ -66,6 +66,10 @@ export interface TtsServer {
   activeModel?: string;
   backend?: string;
   rendering?: string;
+  renderingVoice?: string;
+  renderingText?: string;
+  renders?: number;
+  avgRenderSecs?: number;
   models: { id: string; label: string }[];
 }
 
