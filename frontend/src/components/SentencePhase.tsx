@@ -232,20 +232,6 @@ export function SentenceReviewSection({ book }: { book: Book }) {
             {t('Open a chapter to review its sentences with each voice\u2019s audio and what Whisper heard.')}
           </p>
         </div>
-        {book.status === 'awaiting_sentence_review' && (
-          <button
-            className="btn-secondary text-xs shrink-0"
-            disabled={goingBack}
-            onClick={async () => {
-              setGoingBack(true);
-              try { await dispatch(backToChapterReview(book._id)).unwrap(); }
-              catch (e) { alert(e instanceof Error ? e.message : String(e)); }
-              finally { setGoingBack(false); }
-            }}
-          >
-            {t('\u2190 Back to chapters & text')}
-          </button>
-        )}
         {book.status === 'complete' && missing > 0 && (
           <button
             className="btn-primary text-xs shrink-0"
@@ -282,6 +268,21 @@ export function SentenceReviewSection({ book }: { book: Book }) {
           </button>
         ))}
       </div>
+
+      {book.status === 'awaiting_sentence_review' && (
+        <button
+          className="btn-secondary w-full justify-center"
+          disabled={goingBack}
+          onClick={async () => {
+            setGoingBack(true);
+            try { await dispatch(backToChapterReview(book._id)).unwrap(); }
+            catch (e) { alert(e instanceof Error ? e.message : String(e)); }
+            finally { setGoingBack(false); }
+          }}
+        >
+          {goingBack ? t('Opening…') : t('Go back to review chapters and text')}
+        </button>
+      )}
     </div>
   );
 }

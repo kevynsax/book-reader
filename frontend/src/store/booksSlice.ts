@@ -72,6 +72,14 @@ export const backToChapterReview = createAsyncThunk(
   }
 );
 
+export const backToSentenceReview = createAsyncThunk(
+  'books/backToSentenceReview',
+  async (bookId: string) => {
+    await api.post(`/api/books/${bookId}/back-to-sentence-review`);
+    return bookId;
+  }
+);
+
 export const stopBook = createAsyncThunk(
   'books/stop',
   async (bookId: string) => {
@@ -213,6 +221,8 @@ const booksSlice = createSlice({
       if ('errorMessage' in patch) book.errorMessage = (patch.errorMessage as string) || undefined;
 
       if (patch.voices) book.voices = patch.voices as string[];
+
+      if ('chapterSnapshotAt' in patch) book.chapterSnapshotAt = (patch.chapterSnapshotAt as string) || undefined;
 
       if (patch.chapters) book.chapters = patch.chapters as Chapter[];
 

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { AppDispatch, RootState } from '../store';
-import { confirmChapters, updateChapters, deleteBook, renameBook, generateBook, generateSentences, stopBook, regenerateVoice, regenerateChapterVoice, continueChapterVoice, resumeBook, dismissBookError } from '../store/booksSlice';
+import { confirmChapters, updateChapters, deleteBook, renameBook, generateBook, generateSentences, backToSentenceReview, stopBook, regenerateVoice, regenerateChapterVoice, continueChapterVoice, resumeBook, dismissBookError } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus, TtsServer } from '../types';
 import { chapterStatus, bookVoices, trackFor, hasPlayableAudio } from '../lib/format';
@@ -483,6 +483,7 @@ export default function EditBookPage() {
   const [resuming,         setResuming]         = useState(false);
   const [dismissing,       setDismissing]       = useState(false);
   const [stopping,         setStopping]         = useState(false);
+  const [undoing,          setUndoing]          = useState(false);
   const [ttsServers,       setTtsServers]       = useState<TtsServer[]>([]);
   const chapterReviewRef = useRef<ChapterReviewHandle>(null);
   const textReviewRef = useRef<TextReviewHandle>(null);
@@ -539,6 +540,20 @@ export default function EditBookPage() {
     } finally { setGenerating(false); }
   };
 
+  // Only offered while a sentence-review snapshot is waiting: re-splitting or
+  // undoing spends it, so the button never claims an undo it can't deliver.
+  const handleUndoToSentences = async () => {
+    if (undoing) return;
+    setUndoing(true);
+    try {
+      await dispatch(backToSentenceReview(book._id)).unwrap();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUndoing(false);
+    }
+  };
+
   const handleStop = async () => {
     if (stopping) return;
     setStopping(true);
@@ -588,6 +603,7 @@ export default function EditBookPage() {
     || voiceRendering;
   const hasAudioError = book.chapters.some(c => chapterStatus(c) === 'error');
   const showStatus    = book.status !== 'complete' && book.status !== 'error' && !isGenerating;
+  const canUndoToSentences = book.status === 'awaiting_chapter_review' && !!book.chapterSnapshotAt;
   const showGenerate  = (book.status === 'awaiting_chapter_review' || book.status === 'complete' || book.status === 'error') && !isGenerating;
   const hasStaleAudio = book.chapters.some(c => chapterStatus(c) === 'stale');
   const canListenNow  = isGenerating && hasPlayableAudio(book);
@@ -819,17 +835,29 @@ export default function EditBookPage() {
                 </p>
               </div>
             )}
-            <button
-              className="btn-primary w-full justify-center"
-              disabled={generating}
-              onClick={() => book.status === 'complete' || book.status === 'error' ? runGenerate() : runGenerateSentences()}
-            >
-              {generating
-                ? t('Generating…')
-                : hasStaleAudio ? t('Continue')
-                : book.status === 'error' ? t('Retry')
-                : t('Generate sentences')}
-            </button>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button
+                className="btn-primary flex-1 justify-center"
+                disabled={generating || undoing}
+                onClick={() => book.status === 'complete' || book.status === 'error' ? runGenerate() : runGenerateSentences()}
+              >
+                {generating
+                  ? t('Generating…')
+                  : hasStaleAudio ? t('Continue')
+                  : book.status === 'error' ? t('Retry')
+                  : t('Generate sentences')}
+              </button>
+              {canUndoToSentences && (
+                <button
+                  className="btn-secondary flex-1 justify-center"
+                  disabled={generating || undoing}
+                  onClick={handleUndoToSentences}
+                  title={t('Drop the chapter and page edits made here and go back to the sentences already reviewed')}
+                >
+                  {undoing ? t('Undoing…') : t('Undo changes and review sentences')}
+                </button>
+              )}
+            </div>
           </div>
         )}
 

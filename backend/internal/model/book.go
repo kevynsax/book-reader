@@ -168,11 +168,17 @@ type Book struct {
 	// ResumeAudio marks a run a crash/restart cut short: boot recovery sets it
 	// and resumes the render as soon as the TTS fabric is back. Cleared when
 	// the resume starts or the user stops the book.
-	ResumeAudio bool     `bson:"resumeAudio,omitempty"    json:"resumeAudio,omitempty"`
-	Deleted     bool     `bson:"deleted"                  json:"deleted"`
-	CreatedAt   DateTime `bson:"createdAt"                json:"createdAt"`
-	UpdatedAt   DateTime `bson:"updatedAt"                json:"updatedAt"`
-	V           int32    `bson:"__v"                      json:"__v"`
+	ResumeAudio bool `bson:"resumeAudio,omitempty"    json:"resumeAudio,omitempty"`
+	// ChapterSnapshotAt marks that leaving sentence review stashed a copy of the
+	// chapters (in the chaptersnapshots collection, not here — a second copy of
+	// the chapters would push big books past the 16 MB document cap), so the UI
+	// knows the chapter/page edits made since can still be undone.
+	ChapterSnapshotAt *DateTime `bson:"chapterSnapshotAt,omitempty" json:"chapterSnapshotAt,omitempty"`
+
+	Deleted   bool     `bson:"deleted"                  json:"deleted"`
+	CreatedAt DateTime `bson:"createdAt"                json:"createdAt"`
+	UpdatedAt DateTime `bson:"updatedAt"                json:"updatedAt"`
+	V         int32    `bson:"__v"                      json:"__v"`
 }
 
 func (b *Book) TrackForVoice(chapter *Chapter, voice string) *VoiceTrack {

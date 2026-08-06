@@ -42,6 +42,7 @@ func (s *Server) registerBookWriteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/books/{id}/generate", s.handleGenerate)
 	mux.HandleFunc("POST /api/books/{id}/sentences/generate", s.handleGenerateSentences)
 	mux.HandleFunc("POST /api/books/{id}/back-to-chapter-review", s.handleBackToChapterReview)
+	mux.HandleFunc("POST /api/books/{id}/back-to-sentence-review", s.handleBackToSentenceReview)
 	mux.HandleFunc("POST /api/books/{id}/stop", s.handleStop)
 	mux.HandleFunc("PUT /api/books/{id}/pages/{page}/text", s.handlePageText)
 	mux.HandleFunc("POST /api/books/{id}/pages/{page}/reocr", s.handleReocr)
@@ -835,6 +836,18 @@ func (s *Server) handleGenerateSentences(w http.ResponseWriter, r *http.Request)
 		Error(w, http.StatusBadRequest, "No chapters to split")
 		return
 	}
+	// Re-splitting is the user committing to the chapter edits, so the undo
+	// snapshot taken on the way out of sentence review is spent.
+	if book.ChapterSnapshotAt != nil {
+		if err := s.St.Snapshots.Delete(r.Context(), book.ID); err != nil {
+			log.Printf("clear chapter snapshot %s: %v", book.ID.Hex(), err)
+		}
+		if _, err := s.St.Books.UpdateByID(r.Context(), book.ID, bson.M{
+			"$unset": bson.M{"chapterSnapshotAt": ""},
+		}); err != nil {
+			log.Printf("clear chapter snapshot %s: %v", book.ID.Hex(), err)
+		}
+	}
 	Message(w, "Sentence generation started")
 	bookID := book.ID.Hex()
 	go func() {
@@ -863,15 +876,73 @@ func (s *Server) handleBackToChapterReview(w http.ResponseWriter, r *http.Reques
 		Error(w, http.StatusConflict, "Book is not in sentence review")
 		return
 	}
-	updatedAt, err := s.St.Books.UpdateByID(r.Context(), book.ID, bson.M{"$set": bson.M{"status": model.StatusAwaitingChapterReview}})
+	// Snapshot the chapters (sentences and rendered segments included) so the
+	// user can drop whatever they do in chapter/text review and come straight
+	// back to the sentences they were reviewing.
+	now := model.Now()
+	if err := s.St.Snapshots.Put(r.Context(), book.ID, book.Chapters, now); err != nil {
+		Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	updatedAt, err := s.St.Books.UpdateByID(r.Context(), book.ID, bson.M{"$set": bson.M{
+		"status":            model.StatusAwaitingChapterReview,
+		"chapterSnapshotAt": now,
+	}})
 	if err != nil {
 		Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.Hub.Emit("book:update", map[string]any{
-		"bookId": book.ID.Hex(), "updatedAt": updatedAt, "status": model.StatusAwaitingChapterReview,
+		"bookId": book.ID.Hex(), "updatedAt": updatedAt,
+		"status": model.StatusAwaitingChapterReview, "chapterSnapshotAt": now,
 	})
 	Message(w, "Back to chapter review")
+}
+
+// POST /:id/back-to-sentence-review — undo: put back the chapters snapshotted
+// when the user left sentence review (so any boundary edit that dropped a
+// chapter's sentences is reverted) and return to the sentence phase.
+func (s *Server) handleBackToSentenceReview(w http.ResponseWriter, r *http.Request) {
+	book := s.findBook(w, r)
+	if book == nil {
+		return
+	}
+	release, ok := s.W.TryLockBook(book.ID.Hex())
+	if !ok {
+		Error(w, http.StatusConflict, "A run is in progress — stop it first.")
+		return
+	}
+	defer release()
+	chapters, err := s.St.Snapshots.Get(r.Context(), book.ID)
+	if err != nil {
+		Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(chapters) == 0 {
+		Error(w, http.StatusConflict, "Nothing to undo — no sentences were reviewed yet.")
+		return
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"status":   model.StatusAwaitingSentenceReview,
+			"chapters": chapters,
+		},
+		"$unset": bson.M{"chapterSnapshotAt": ""},
+	}
+	updatedAt, err := s.St.Books.UpdateByID(r.Context(), book.ID, update)
+	if err != nil {
+		Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.St.Snapshots.Delete(r.Context(), book.ID); err != nil {
+		log.Printf("clear chapter snapshot %s: %v", book.ID.Hex(), err)
+	}
+	s.Hub.Emit("book:update", map[string]any{
+		"bookId": book.ID.Hex(), "updatedAt": updatedAt,
+		"status": model.StatusAwaitingSentenceReview, "chapterSnapshotAt": nil,
+		"chapters": model.SerializeChaptersForClient(chapters),
+	})
+	Message(w, "Back to sentence review")
 }
 
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {

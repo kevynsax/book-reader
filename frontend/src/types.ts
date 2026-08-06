@@ -134,6 +134,10 @@ export interface Book {
   // can render concurrently (one lane per TTS model), each with its own bar.
   voiceProgress?: Record<string, VoiceProgress>;
   errorMessage?: string;
+  // Set while the user is back in chapter/text review with a sentence review
+  // to return to: the chapters were snapshotted on the way out, so the edits
+  // made here can be dropped.
+  chapterSnapshotAt?: string;
   createdAt: string;
   updatedAt: string;
   coverVersion?: number;

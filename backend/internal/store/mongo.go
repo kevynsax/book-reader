@@ -9,11 +9,12 @@ import (
 )
 
 type Store struct {
-	Client   *mongo.Client
-	DB       *mongo.Database
+	Client     *mongo.Client
+	DB         *mongo.Database
 	Books      *Books
 	Lexicons   *Lexicons
 	SplitCache *SplitCache
+	Snapshots  *ChapterSnapshots
 }
 
 // dbNameFromURI extracts the database path segment from a MongoDB URI,
@@ -45,10 +46,11 @@ func Connect(ctx context.Context, uri string) (*Store, error) {
 	}
 	db := client.Database(dbNameFromURI(uri))
 	return &Store{
-		Client:   client,
-		DB:       db,
+		Client:     client,
+		DB:         db,
 		Books:      &Books{col: db.Collection("books")},
 		Lexicons:   &Lexicons{col: db.Collection("lexicons")},
 		SplitCache: &SplitCache{col: db.Collection("splitcache")},
+		Snapshots:  &ChapterSnapshots{col: db.Collection("chaptersnapshots")},
 	}, nil
 }
