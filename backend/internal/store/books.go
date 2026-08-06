@@ -102,6 +102,11 @@ func (b *Books) SaveGeneration(ctx context.Context, book *model.Book) error {
 		"updatedAt":  bson.NewDateTimeFromTime(book.UpdatedAt.Time),
 	}
 	unset := bson.M{}
+	if book.ResumeAudio {
+		set["resumeAudio"] = true
+	} else {
+		unset["resumeAudio"] = ""
+	}
 	if book.ErrorMessage != nil {
 		set["errorMessage"] = *book.ErrorMessage
 	} else {
