@@ -217,6 +217,11 @@ export function SentenceReviewSection({ book }: { book: Book }) {
   const dispatch = useDispatch<AppDispatch>();
   const navigate = useNavigate();
   const [goingBack, setGoingBack] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const missing = book.chapters.reduce(
+    (n, c) => n + (c.tracks ?? []).filter(tr => tr.audioStatus !== 'complete').length,
+    0,
+  );
 
   return (
     <div className="card space-y-3">
@@ -241,7 +246,26 @@ export function SentenceReviewSection({ book }: { book: Book }) {
             {t('\u2190 Back to chapters & text')}
           </button>
         )}
+        {book.status === 'complete' && missing > 0 && (
+          <button
+            className="btn-primary text-xs shrink-0"
+            disabled={generating}
+            onClick={async () => {
+              setGenerating(true);
+              try { await dispatch(generateBook(book._id)).unwrap(); }
+              catch (e) { alert(e instanceof Error ? e.message : String(e)); }
+              finally { setGenerating(false); }
+            }}
+          >
+            {t('Generate missing audio')}
+          </button>
+        )}
       </div>
+      {book.status === 'complete' && missing > 0 && (
+        <p className="text-xs text-amber-500">
+          {t('{n} chapter tracks are still incomplete.', { n: missing })}
+        </p>
+      )}
 
       <div className="rounded-lg border border-gray-700 divide-y divide-gray-800/70">
         {book.chapters.map((c, i) => (
