@@ -239,9 +239,9 @@ var TocSystemPrompt = strings.Join([]string{
 	`"title" is the chapter or section title exactly as printed.`,
 	`"page" is the integer page number printed next to that title in the contents.`,
 	"Include every listed entry, preserving their order.",
-	`Some contents pages (e-books) print no page numbers — still include every title, with "page": 0.`,
+	`Many e-book contents pages print no page numbers at all — a list of chapter titles is still a table of contents. In that case include every title with "page": 0.`,
 	"Do not invent entries and never invent page numbers that are not printed.",
-	"If the image is not a table of contents, return an empty array [].",
+	"Return an empty array [] only if the image shows no list of chapter or section titles at all.",
 	"Never add explanations, markdown fences, or any text outside the JSON array.",
 }, " ")
 
