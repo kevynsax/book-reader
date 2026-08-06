@@ -70,6 +70,9 @@ var (
 	// Max segment pipelines in flight at once on the orchestrator; the actual
 	// synthesis parallelism is however many healthy tts workers exist.
 	TtsConcurrency int
+	// How many chapter lines are normalized/SLM-split at once — feeds all
+	// slm workers concurrently instead of one at a time.
+	SentenceSplitConcurrency int
 	// Max OCR page tasks in flight at once (bounds page images queued in the
 	// broker).
 	OcrConcurrency   int
@@ -179,6 +182,7 @@ func initAll() {
 	DefaultVoice = env("TTS_VOICE", "chatterbox:pt-BR-FranciscaNeural")
 	TtsSpeed = envFloat("TTS_SPEED", 1.0)
 	TtsConcurrency = envInt("TTS_CONCURRENCY", 5)
+	SentenceSplitConcurrency = max(1, envInt("SENTENCE_SPLIT_CONCURRENCY", 4))
 	OcrConcurrency = max(1, envInt("OCR_CONCURRENCY", 8))
 	AmqpURL = env("AMQP_URL", "amqp://guest:guest@localhost:5672/")
 	TtsVolumeGain = envFloat("TTS_VOLUME_GAIN", 1.15)

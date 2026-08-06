@@ -4,6 +4,7 @@ You are auditing the text-processing pipeline of a PDF→audiobook app. The evid
 - `chapters`: detected chapter titles + start pages.
 - `pages[]`: per page, `text` = the OCR output after sentence reflow (one sentence per line; lines shorter than 30 chars must not have been split off at a period — e.g. "1. Canguru" must stay glued to its sentence), and `readText` = the speech-normalized text actually sent to TTS.
 - `splits[]`: cached SLM splits of long lines (line → parts). Parts must jointly preserve the original wording and each be a natural speakable sub-sentence.
+- `chapterSentences[]`: the FINAL per-chapter sentence lists produced by the sentence phase — `display` is the human text, `text` is the speech-normalized string sent verbatim to TTS. This is the most important artifact: audit `text` for anything a listener should not hear (brackets, footnote marks, asterisks, page furniture, raw math, unnatural list numerals) and for meaning drift vs `display`.
 
 Audit each phase and report concrete findings:
 
@@ -18,3 +19,5 @@ Output a Markdown report:
 - A final "Improvements" section: concrete, implementable suggestions for the pipeline (e.g. regexes or normalization rules for the classes of junk you found), ranked by impact.
 
 Be strict: this text is read aloud verbatim, so every stray mark is heard by the listener.
+
+Print the full Markdown report as your response. Do not use any tools, do not write any files, do not ask for approval — your printed answer IS the report.

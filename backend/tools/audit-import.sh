@@ -27,11 +27,15 @@ const b = db.books.findOne({_id: ObjectId(\"'"$BOOK_ID"'\")});
 const pages = (b.ocrPages||[]).filter(p => p.page >= '"$FROM_PAGE"' && p.page <= '"$TO_PAGE"').map(p => ({page: p.page, language: p.language, status: p.status, text: p.text, readText: p.readText||null}));
 const lines = pages.flatMap(p => (p.text||\"\").split(\"\n\").map(l => l.trim()).filter(l => l));
 const splits = db.splitcache.find({line: {\$in: lines}}, {line:1, parts:1}).toArray().map(s => ({line: s.line, parts: s.parts}));
+const sentences = (b.chapters||[])
+  .map((c, i) => ({idx: i, title: c.title, startPage: c.startPage,
+    sentences: (c.sentences||[]).slice(0, 60).map(s => ({display: s.display||null, text: s.text}))}))
+  .filter(c => c.sentences.length && c.startPage >= '"$FROM_PAGE"' - 6 && c.startPage <= '"$TO_PAGE"');
 print(JSON.stringify({
   name: b.name, language: b.language||null, status: b.status,
   summaryPages: b.summaryPages, coverPage: b.coverPage, firstPage: b.firstPage, lastPage: b.lastPage,
-  chapters: (b.chapters||[]).map(c => ({title: c.title, startPage: c.startPage, startChar: c.startChar})),
-  pages, splits,
+  chapters: (b.chapters||[]).map(c => ({title: c.title, startPage: c.startPage, startChar: c.startChar, sentenceCount: (c.sentences||[]).length})),
+  pages, splits, chapterSentences: sentences,
 }));
 "' > "$OUT_DIR/evidence.json"
 
@@ -49,6 +53,7 @@ You are auditing the text-processing pipeline of a PDF→audiobook app. The evid
 - `chapters`: detected chapter titles + start pages.
 - `pages[]`: per page, `text` = the OCR output after sentence reflow (one sentence per line; lines shorter than 30 chars must not have been split off at a period — e.g. "1. Canguru" must stay glued to its sentence), and `readText` = the speech-normalized text actually sent to TTS.
 - `splits[]`: cached SLM splits of long lines (line → parts). Parts must jointly preserve the original wording and each be a natural speakable sub-sentence.
+- `chapterSentences[]`: the FINAL per-chapter sentence lists produced by the sentence phase — `display` is the human text, `text` is the speech-normalized string sent verbatim to TTS. This is the most important artifact: audit `text` for anything a listener should not hear (brackets, footnote marks, asterisks, page furniture, raw math, unnatural list numerals) and for meaning drift vs `display`.
 
 Audit each phase and report concrete findings:
 
@@ -63,9 +68,13 @@ Output a Markdown report:
 - A final "Improvements" section: concrete, implementable suggestions for the pipeline (e.g. regexes or normalization rules for the classes of junk you found), ranked by impact.
 
 Be strict: this text is read aloud verbatim, so every stray mark is heard by the listener.
+
+Print the full Markdown report as your response. Do not use any tools, do not write any files, do not ask for approval — your printed answer IS the report.
 PROMPT
 
 echo "Running Sonnet 5 audit agent…"
+# Warm-up call: the CLI's OAuth refresh is flaky on the first cold call.
+claude --model claude-sonnet-5 -p "ok" >/dev/null 2>&1 || true
 # Prompt goes via stdin — a multi-hundred-KB argv makes the CLI fail.
 { cat "$OUT_DIR/prompt.md"; echo; echo "--- EVIDENCE JSON ---"; cat "$OUT_DIR/evidence.json"; } \
   | claude --model claude-sonnet-5 -p > "$OUT_DIR/report.md"

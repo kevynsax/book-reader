@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -92,8 +93,13 @@ func (w *Worker) buildSentences(ctx context.Context, r *run, idx int) (bool, err
 	language := chapterSpeechLanguage(book, idx)
 	splitMsg := fmt.Sprintf("Splitting sentences in %q…", chapter.Title)
 	w.emit(book, map[string]any{"splitProgress": progressPayload{Current: 0, Total: len(units), Message: splitMsg}})
-	var sentences []model.Sentence
-	for i, unit := range units {
+	// Units fan out across a small pool so every SLM worker gets fed — the
+	// shared tasks.slm queue balances the concurrent splits across servers.
+	// Results collect per index and flatten in order, so sentence order and
+	// trace lineage are identical to the sequential path.
+	pieced := make([][]model.Sentence, len(units))
+	var splitDone atomic.Int64
+	_ = pool.Run(units, config.SentenceSplitConcurrency, func(unit string, i int) error {
 		pieces := w.splitUnitForTts(ctx, unit, language, 0, nil)
 		// Trace lineage: reviewed line i+1 is "N"; pieces the SLM cut from it
 		// up front are "N.1", "N.2", … marked pre-audio-generation.
@@ -107,8 +113,13 @@ func (w *Worker) buildSentences(ctx context.Context, r *run, idx int) (bool, err
 			}
 			pieces[j].TraceOrder = &trace
 		}
+		pieced[i] = pieces
+		w.emit(book, map[string]any{"splitProgress": progressPayload{Current: int(splitDone.Add(1)), Total: len(units), Message: splitMsg}})
+		return nil
+	})
+	var sentences []model.Sentence
+	for _, pieces := range pieced {
 		sentences = append(sentences, pieces...)
-		w.emit(book, map[string]any{"splitProgress": progressPayload{Current: i + 1, Total: len(units), Message: splitMsg}})
 	}
 	if len(sentences) == 0 {
 		return false, nil

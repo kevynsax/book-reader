@@ -478,6 +478,8 @@ var AcronymsFor = func(ctx context.Context, language string) []model.Acronym {
 
 // NormalizeForSpeech rewrites text into a more speakable form for TTS,
 // falling back to English tables for unknown languages.
+var footnoteMarkRe = regexp.MustCompile(`[ 	]*\[[ 	]*\d{1,3}[ 	]*\]`)
+
 func NormalizeForSpeech(ctx context.Context, text, language string) string {
 	if text == "" {
 		return text
@@ -485,6 +487,9 @@ func NormalizeForSpeech(ctx context.Context, text, language string) string {
 	lang := biblebooks.ResolveLang(language)
 	books := biblebooks.BibleBooks[lang]
 	conn := biblebooks.CONNECTIVES[lang]
+	// Footnote reference marks ([1] … [999]) are dropped before any number
+	// expansion — a listener should never hear them, bracketed or spelled out.
+	text = footnoteMarkRe.ReplaceAllString(text, "")
 	// Consume explicit abbreviations (pp./vv./ch.) before the generic
 	// book-range matcher, so "pp. 119-176" reads as pages, not the "pp"
 	// Philippians alias.

@@ -81,11 +81,11 @@ func parseOcrResult(raw string) Result {
 			res.Language = strings.ToLower(l)
 		}
 		if c, ok := parsed["content"].(string); ok {
-			res.Content = strings.TrimSpace(c)
+			res.Content = sanitize.StripJSONTail(strings.TrimSpace(c))
 		}
 		return res
 	}
-	return Result{Language: "unknown", Content: sanitize.PageText(text)}
+	return Result{Language: "unknown", Content: sanitize.StripJSONTail(sanitize.PageText(text))}
 }
 
 func parseTocEntries(raw string) []TocEntry {
