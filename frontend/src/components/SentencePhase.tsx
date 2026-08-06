@@ -12,8 +12,8 @@ import { t } from '../i18n';
 // audio is rendered.
 // ---------------------------------------------------------------------------
 
-function ChapterSentences({ bookId, chapterIdx, voices, voiceLabel }: {
-  bookId: string; chapterIdx: number; voices: string[]; voiceLabel: (v: string) => string;
+function ChapterSentences({ bookId, chapterIdx, voices, voiceLabel, renderMode }: {
+  bookId: string; chapterIdx: number; voices: string[]; voiceLabel: (v: string) => string; renderMode: 'now' | 'later';
 }) {
   const [sentences, setSentences] = useState<EditableSentence[] | null>(null);
   const [voiceStatus, setVoiceStatus] = useState<Record<string, Record<string, EditableSentence['audioStatus']>>>({});
@@ -93,7 +93,7 @@ function ChapterSentences({ bookId, chapterIdx, voices, voiceLabel }: {
                   className="btn-primary text-xs"
                   disabled={busy || !draft.trim()}
                   onClick={async () => {
-                    await call('PUT', `/api/books/${bookId}/chapters/${chapterIdx}/sentences/${s._id}`, { text: draft.trim() });
+                    await call('PUT', `/api/books/${bookId}/chapters/${chapterIdx}/sentences/${s._id}`, { text: draft.trim(), render: renderMode });
                     setEditingId(null);
                   }}
                 >
@@ -141,11 +141,15 @@ function ChapterSentences({ bookId, chapterIdx, voices, voiceLabel }: {
                       return (
                         <span
                           key={v}
-                          className="inline-flex items-center gap-1 rounded-full border border-gray-800 px-2 py-0.5 text-[11px] text-gray-600"
-                          title={st === 'error' ? t('Audio failed for {v}', { v: voiceLabel(v) }) : t('No audio yet for {v}', { v: voiceLabel(v) })}
+                          className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${
+                            st === 'stale' ? 'border-amber-800/70 text-amber-500/90' : 'border-gray-800 text-gray-600'
+                          }`}
+                          title={st === 'error' ? t('Audio failed for {v}', { v: voiceLabel(v) })
+                            : st === 'stale' ? t('Text changed — will re-render on the next generation')
+                            : t('No audio yet for {v}', { v: voiceLabel(v) })}
                         >
-                          <span className={`w-1.5 h-1.5 rounded-full ${st === 'generating' ? 'bg-amber-400 animate-pulse' : st === 'error' ? 'bg-red-500' : 'bg-gray-700'}`} />
-                          {voiceLabel(v)}
+                          <span className={`w-1.5 h-1.5 rounded-full ${st === 'generating' ? 'bg-amber-400 animate-pulse' : st === 'error' ? 'bg-red-500' : st === 'stale' ? 'bg-amber-500' : 'bg-gray-700'}`} />
+                          {voiceLabel(v)}{st === 'stale' ? ` · ${t('re-render')}` : ''}
                         </span>
                       );
                     })}
@@ -192,7 +196,7 @@ function ChapterSentences({ bookId, chapterIdx, voices, voiceLabel }: {
                   className="btn-primary text-xs"
                   disabled={busy || !addDraft.trim()}
                   onClick={async () => {
-                    await call('POST', `/api/books/${bookId}/chapters/${chapterIdx}/sentences/${s._id}/insert-after`, { text: addDraft.trim() });
+                    await call('POST', `/api/books/${bookId}/chapters/${chapterIdx}/sentences/${s._id}/insert-after`, { text: addDraft.trim(), render: renderMode });
                     setAddingAfter(null);
                   }}
                 >
@@ -213,6 +217,7 @@ export function SentenceReviewSection({ book }: { book: Book }) {
   const reviewVoiceLabel = useVoiceLabel(book.voices);
   const [open, setOpen] = useState<number | null>(0);
   const [goingBack, setGoingBack] = useState(false);
+  const [renderMode, setRenderMode] = useState<'now' | 'later'>('now');
 
   return (
     <div className="card space-y-3">
@@ -223,6 +228,23 @@ export function SentenceReviewSection({ book }: { book: Book }) {
             {t('These are the exact sentences the voices will read. Click one to edit it before generating audio.')}
           </p>
         </div>
+        <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center rounded-lg border border-gray-700 overflow-hidden text-xs">
+            <button
+              className={`px-2.5 py-1.5 transition-colors ${renderMode === 'now' ? 'bg-amber-600/20 text-amber-300' : 'text-gray-400 hover:text-gray-200'}`}
+              onClick={() => setRenderMode('now')}
+              title={t('Edited sentences re-render immediately, ahead of everything else in the queue')}
+            >
+              {t('⚡ Re-render now')}
+            </button>
+            <button
+              className={`px-2.5 py-1.5 border-l border-gray-700 transition-colors ${renderMode === 'later' ? 'bg-amber-600/20 text-amber-300' : 'text-gray-400 hover:text-gray-200'}`}
+              onClick={() => setRenderMode('later')}
+              title={t('Edits stack up and render together when you click Generate audio')}
+            >
+              {t('Stack for batch')}
+            </button>
+          </div>
         <button
           className="btn-secondary text-xs shrink-0"
           disabled={goingBack}
@@ -235,6 +257,7 @@ export function SentenceReviewSection({ book }: { book: Book }) {
         >
           {t('← Back to chapters & text')}
         </button>
+        </div>
       </div>
 
       <div className="rounded-lg border border-gray-700 divide-y divide-gray-800/70">
@@ -255,7 +278,7 @@ export function SentenceReviewSection({ book }: { book: Book }) {
             </button>
             {open === i && (
               <div className="border-t border-gray-800 max-h-96 overflow-y-auto bg-gray-900/40">
-                <ChapterSentences bookId={book._id} chapterIdx={i} voices={book.voices} voiceLabel={reviewVoiceLabel} />
+                <ChapterSentences bookId={book._id} chapterIdx={i} voices={book.voices} voiceLabel={reviewVoiceLabel} renderMode={renderMode} />
               </div>
             )}
           </div>
@@ -419,10 +442,23 @@ export function VoiceSection({ book }: { book: Book }) {
       {book.voices.length > 0 && (
         <div className="space-y-1.5">
           <p className="text-xs uppercase tracking-wide text-gray-500">{t('Current voices')}</p>
-          {book.voices.map(v => (
+          {book.voices.map(v => {
+            let done = 0, stale = 0, total = 0;
+            book.chapters.forEach(c => {
+              const tr = c.tracks?.find(x => x.voice === v);
+              if (!tr) return;
+              total++;
+              if (tr.audioStatus === 'complete') done++;
+              else if (tr.audioStatus === 'stale' || tr.audioStatus === 'error') stale++;
+            });
+            return (
             <div key={v} className="flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-800/40 px-3 py-1.5">
               <PlayButton composite={v} />
               <span className="text-sm text-gray-200 flex-1 truncate">{label(v)}</span>
+              <span className={`text-[11px] tabular-nums shrink-0 ${done === total && total > 0 ? 'text-green-400' : 'text-gray-500'}`}
+                title={t('{done} of {total} chapters rendered; {stale} need (re-)rendering', { done, total, stale })}>
+                {done}/{total}{stale > 0 ? ` · ${stale} ${t('to redo')}` : ''}
+              </span>
               <button
                 className="text-gray-600 hover:text-red-400 shrink-0"
                 onClick={() => {
@@ -437,7 +473,8 @@ export function VoiceSection({ book }: { book: Book }) {
                 </svg>
               </button>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -534,7 +571,11 @@ export function VoiceSection({ book }: { book: Book }) {
           </button>
         )}
         <button className="btn-primary text-sm disabled:opacity-40" disabled={busy || !hasVoices} onClick={generateAll}>
-          {staged.length > 0 ? t('Add {n} and generate audio', { n: staged.length }) : t('Generate audio')}
+          {staged.length > 0
+            ? t('Add {n} and generate audio', { n: staged.length })
+            : book.chapters.some(c => c.tracks?.some(tr => tr.audioStatus !== 'complete'))
+              ? t('Generate missing audio')
+              : t('Generate audio')}
         </button>
       </div>
     </div>
