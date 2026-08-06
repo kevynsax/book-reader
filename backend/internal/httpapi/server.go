@@ -217,11 +217,19 @@ func (s *Server) handleModelVoices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(online) == 0 {
-		JSON(w, http.StatusOK, map[string]any{"available": false, "voices": []string{}})
+		JSON(w, http.StatusOK, map[string]any{
+			"available": false,
+			"voices":    model.FallbackVoices,
+			"names":     tts.VoiceDisplayNames(modelID, model.FallbackVoices),
+		})
 		return
 	}
 	if model.Named {
-		JSON(w, http.StatusOK, map[string]any{"available": true, "voices": model.FallbackVoices})
+		JSON(w, http.StatusOK, map[string]any{
+			"available": true,
+			"voices":    model.FallbackVoices,
+			"names":     tts.VoiceDisplayNames(modelID, model.FallbackVoices),
+		})
 		return
 	}
 
@@ -248,17 +256,21 @@ func (s *Server) handleModelVoices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, srv := range ordered {
-		voices, names, ok := fetchVoices(r.Context(), srv.URL, modelID)
+		voices, _, ok := fetchVoices(r.Context(), srv.URL, modelID)
 		if ok && len(voices) > 0 {
-			resp := map[string]any{"available": true, "voices": voices}
-			if names != nil {
-				resp["names"] = names
-			}
-			JSON(w, http.StatusOK, resp)
+			JSON(w, http.StatusOK, map[string]any{
+				"available": true,
+				"voices":    voices,
+				"names":     tts.VoiceDisplayNames(modelID, voices),
+			})
 			return
 		}
 	}
-	JSON(w, http.StatusOK, map[string]any{"available": true, "voices": model.FallbackVoices})
+	JSON(w, http.StatusOK, map[string]any{
+		"available": true,
+		"voices":    model.FallbackVoices,
+		"names":     tts.VoiceDisplayNames(modelID, model.FallbackVoices),
+	})
 }
 
 func fetchVoices(ctx context.Context, serverURL, modelID string) ([]string, map[string]string, bool) {
