@@ -442,9 +442,18 @@ func (c *Client) ExtractTitle(ctx context.Context, image []byte) (string, error)
 	return out.Title, nil
 }
 
+// DetectLanguage is a single on-demand read like ExtractTitle — preferred
+// queue, so the highest-priority free vlm server answers.
 func (c *Client) DetectLanguage(ctx context.Context, image []byte) (string, error) {
-	r, err := submitAs[LanguageResult](c, ctx, RoleVLM, TypeDetectLanguage, ImagePayload{Image: image})
-	return r.Language, err
+	raw, err := c.submitTo(ctx, SummaryVLMQueue, RoleVLM, TypeDetectLanguage, ImagePayload{Image: image})
+	if err != nil {
+		return "", err
+	}
+	var out LanguageResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return "", fmt.Errorf("vlm detect-language: malformed result: %w", err)
+	}
+	return out.Language, nil
 }
 
 func (c *Client) ExtractToc(ctx context.Context, image []byte) ([]TocEntry, error) {
