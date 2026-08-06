@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { useWebSocket } from './hooks/useWebSocket';
 import LibraryPage from './pages/LibraryPage';
 import EditBookPage from './pages/EditBookPage';
+import SentenceReviewPage from './pages/SentenceReviewPage';
 import PlayerPage from './pages/PlayerPage';
 
 function AppInner() {
@@ -12,6 +13,7 @@ function AppInner() {
         <Route path="/" element={<LibraryPage />} />
         <Route path="/books/:id" element={<PlayerPage />} />
         <Route path="/books/:id/edit" element={<EditBookPage />} />
+        <Route path="/books/:id/sentences/:chapterIdx" element={<SentenceReviewPage />} />
       </Routes>
     </BrowserRouter>
   );

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
+import { useNavigate } from 'react-router-dom';
 import { AppDispatch } from '../store';
 import { backToChapterReview, addVoice, removeVoice, generateBook } from '../store/booksSlice';
 import { Book, EditableSentence, TtsModel } from '../types';
@@ -214,10 +215,8 @@ function ChapterSentences({ bookId, chapterIdx, voices, voiceLabel, renderMode }
 
 export function SentenceReviewSection({ book }: { book: Book }) {
   const dispatch = useDispatch<AppDispatch>();
-  const reviewVoiceLabel = useVoiceLabel(book.voices);
-  const [open, setOpen] = useState<number | null>(0);
+  const navigate = useNavigate();
   const [goingBack, setGoingBack] = useState(false);
-  const [renderMode, setRenderMode] = useState<'now' | 'later'>('now');
 
   return (
     <div className="card space-y-3">
@@ -225,26 +224,9 @@ export function SentenceReviewSection({ book }: { book: Book }) {
         <div>
           <h3 className="font-semibold text-gray-100">{t('Review sentences')}</h3>
           <p className="text-sm text-gray-500 mt-0.5">
-            {t('These are the exact sentences the voices will read. Click one to edit it before generating audio.')}
+            {t('Open a chapter to review its sentences with each voice\u2019s audio and what Whisper heard.')}
           </p>
         </div>
-        <div className="flex items-center gap-3 shrink-0">
-          <div className="flex items-center rounded-lg border border-gray-700 overflow-hidden text-xs">
-            <button
-              className={`px-2.5 py-1.5 transition-colors ${renderMode === 'now' ? 'bg-amber-600/20 text-amber-300' : 'text-gray-400 hover:text-gray-200'}`}
-              onClick={() => setRenderMode('now')}
-              title={t('Edited sentences re-render immediately, ahead of everything else in the queue')}
-            >
-              {t('⚡ Re-render now')}
-            </button>
-            <button
-              className={`px-2.5 py-1.5 border-l border-gray-700 transition-colors ${renderMode === 'later' ? 'bg-amber-600/20 text-amber-300' : 'text-gray-400 hover:text-gray-200'}`}
-              onClick={() => setRenderMode('later')}
-              title={t('Edits stack up and render together when you click Generate audio')}
-            >
-              {t('Stack for batch')}
-            </button>
-          </div>
         <button
           className="btn-secondary text-xs shrink-0"
           disabled={goingBack}
@@ -255,33 +237,23 @@ export function SentenceReviewSection({ book }: { book: Book }) {
             finally { setGoingBack(false); }
           }}
         >
-          {t('← Back to chapters & text')}
+          {t('\u2190 Back to chapters & text')}
         </button>
-        </div>
       </div>
 
       <div className="rounded-lg border border-gray-700 divide-y divide-gray-800/70">
         {book.chapters.map((c, i) => (
-          <div key={c._id}>
-            <button
-              className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-gray-800/50 transition-colors"
-              onClick={() => setOpen(open === i ? null : i)}
-            >
-              <span className="text-gray-500 text-xs tabular-nums shrink-0 w-5">{i + 1}.</span>
-              <span className="text-sm text-gray-200 truncate flex-1">{c.title || t('Chapter {n}', { n: i + 1 })}</span>
-              <svg
-                className={`w-4 h-4 text-gray-600 shrink-0 transition-transform ${open === i ? 'rotate-90' : ''}`}
-                fill="none" viewBox="0 0 24 24" stroke="currentColor"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-            {open === i && (
-              <div className="border-t border-gray-800 max-h-96 overflow-y-auto bg-gray-900/40">
-                <ChapterSentences bookId={book._id} chapterIdx={i} voices={book.voices} voiceLabel={reviewVoiceLabel} renderMode={renderMode} />
-              </div>
-            )}
-          </div>
+          <button
+            key={c._id}
+            className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-gray-800/50 transition-colors"
+            onClick={() => navigate(`/books/${book._id}/sentences/${i}`)}
+          >
+            <span className="text-gray-500 text-xs tabular-nums shrink-0 w-5">{i + 1}.</span>
+            <span className="text-sm text-gray-200 truncate flex-1">{c.title || t('Chapter {n}', { n: i + 1 })}</span>
+            <svg className="w-4 h-4 text-gray-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
         ))}
       </div>
     </div>
