@@ -271,16 +271,23 @@ function generationEta(book: Book, servers: TtsServer[]): number | null {
   const voices = bookVoices(book).filter(v =>
     book.chapters.some(c => { const tr = trackFor(c, v); return tr && tr.audioStatus !== 'complete'; }));
   if (!voices.length) return null;
-  const models = new Set(voices.map(v => v.split(':')[0]));
-  const throughput = servers
-    .filter(s => s.online && s.avgRenderSecs && s.models.some(m => models.has(m.id)))
-    .reduce((sum, s) => sum + 1 / s.avgRenderSecs!, 0);
-  if (!throughput) return null;
 
-  let remaining = 0;
-  let unknown = 0;
-  const totals: number[] = [];
+  // Voice lanes render in parallel: the ETA is the slowest lane, each computed
+  // with that model's own measured speed on the servers that carry it.
+  let eta = 0;
   for (const v of voices) {
+    const model = v.split(':')[0];
+    const throughput = servers
+      .filter(s => s.online && s.models.some(m => m.id === model))
+      .reduce((sum, s) => {
+        const avg = s.avgByModel?.[model] ?? s.avgRenderSecs;
+        return avg ? sum + 1 / avg : sum;
+      }, 0);
+    if (!throughput) return null;
+
+    let remaining = 0;
+    let unknown = 0;
+    const totals: number[] = [];
     const live = book.voiceProgress?.[v];
     book.chapters.forEach((c, i) => {
       const tr = trackFor(c, v);
@@ -302,12 +309,13 @@ function generationEta(book: Book, servers: TtsServer[]): number | null {
         unknown++;
       }
     });
+    if (unknown) {
+      if (!totals.length) return null;
+      remaining += unknown * (totals.reduce((a, b) => a + b, 0) / totals.length);
+    }
+    eta = Math.max(eta, remaining / throughput);
   }
-  if (unknown) {
-    if (!totals.length) return null;
-    remaining += unknown * (totals.reduce((a, b) => a + b, 0) / totals.length);
-  }
-  return remaining / throughput;
+  return eta;
 }
 
 function fmtEta(secs: number): string {

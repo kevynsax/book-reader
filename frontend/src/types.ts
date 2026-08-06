@@ -75,6 +75,7 @@ export interface TtsServer {
   renderingText?: string;
   renders?: number;
   avgRenderSecs?: number;
+  avgByModel?: Record<string, number>;
   models: { id: string; label: string }[];
 }
 

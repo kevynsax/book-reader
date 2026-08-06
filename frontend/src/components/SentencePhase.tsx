@@ -22,8 +22,11 @@ function ChapterSentences({ bookId, chapterIdx }: { bookId: string; chapterIdx: 
 
   const load = () => {
     fetch(`/api/books/${bookId}/chapters/${chapterIdx}/sentences`)
-      .then(r => (r.ok ? r.json() : []))
-      .then((data: unknown) => { if (Array.isArray(data)) setSentences(data as EditableSentence[]); })
+      .then(r => (r.ok ? r.json() : {}))
+      .then((data: { sentences?: EditableSentence[] } | EditableSentence[]) => {
+        const list = Array.isArray(data) ? data : data.sentences;
+        setSentences(Array.isArray(list) ? list : []);
+      })
       .catch(() => setSentences([]));
   };
   useEffect(load, [bookId, chapterIdx]);
