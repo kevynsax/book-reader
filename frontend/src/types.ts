@@ -52,6 +52,8 @@ export interface EditableSentence {
   audioError?: string;
   needsReview?: boolean;
   whisperResults?: string[];
+  synthVoice?: string;
+  voiceOverrides?: Record<string, string>;
 }
 
 // A selectable TTS engine/model returned by GET /api/models.

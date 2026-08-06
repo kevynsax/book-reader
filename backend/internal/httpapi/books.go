@@ -293,12 +293,20 @@ func (s *Server) handleSentences(w http.ResponseWriter, r *http.Request) {
 		AudioError     *string           `json:"audioError,omitempty"`
 		NeedsReview    bool              `json:"needsReview,omitempty"`
 		WhisperResults []string          `json:"whisperResults,omitempty"`
+		// Voice pinned for this sentence: per requested voice, plus the
+		// whole map so the UI can show an all-voices override too.
+		SynthVoice     string            `json:"synthVoice,omitempty"`
+		VoiceOverrides map[string]string `json:"voiceOverrides,omitempty"`
 	}
 	sentences := make([]wireSentence, len(ordered))
 	for i, sen := range ordered {
 		out := wireSentence{
 			ID: sen.ID.Hex(), Order: sen.Order, Page: pages[sen.ID.Hex()], Text: sen.Text,
 			Original: sen.Original, AudioStatus: model.AudioPending,
+			VoiceOverrides: sen.VoiceOverrides,
+		}
+		if synth := sen.SynthVoice(voice); synth != voice {
+			out.SynthVoice = synth
 		}
 		if seg := segBySentence[sen.ID.Hex()]; seg != nil {
 			out.AudioStatus = seg.AudioStatus

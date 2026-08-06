@@ -28,8 +28,19 @@ function loadNames(): Promise<NameTable> {
   return inflight;
 }
 
+// The whole table, for pickers that offer every voice the fleet can speak.
+export function useVoiceNames(): NameTable {
+  return useNameTable();
+}
+
 // Resolve a composite "engine:voice" to its human label.
 export function useVoiceLabel(_voices?: string[]): (composite: string) => string {
+  const names = useNameTable();
+  return (composite: string) =>
+    names[engineOf(composite)]?.[bareVoice(composite)] ?? friendlyVoice(composite);
+}
+
+function useNameTable(): NameTable {
   const [names, setNames] = useState<NameTable>(() => table ?? {});
 
   useEffect(() => {
@@ -48,6 +59,5 @@ export function useVoiceLabel(_voices?: string[]): (composite: string) => string
     return () => { cancelled = true; clearTimeout(timer); };
   }, []);
 
-  return (composite: string) =>
-    names[engineOf(composite)]?.[bareVoice(composite)] ?? friendlyVoice(composite);
+  return names;
 }

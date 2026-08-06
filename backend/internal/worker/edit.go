@@ -73,7 +73,7 @@ func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, se
 			ChapterIdx: chapterIdx, Voice: voice, SentenceID: sentenceID, AudioStatus: model.AudioGenerating,
 		}})
 
-		renderVoice := voice
+		renderVoice := chapter.Sentences[senIdx].SynthVoice(voice)
 		if synthVoice != "" {
 			renderVoice = synthVoice
 		}
@@ -404,6 +404,60 @@ func (w *Worker) RegenerateSegment(ctx context.Context, bookID string, chapterId
 			voices = []string{voice}
 		}
 		return w.rerenderSegment(ctx, r, chapterIdx, sentenceID, voices, synthVoice, merge)
+	})
+}
+
+// SetVoiceOverride pins (or clears, when synthVoice is empty) the voice that
+// speaks one sentence. voice is the book voice whose track it applies to, or
+// model.AllVoices for every track — a quote read by someone else. The touched
+// segments go stale; the caller re-renders them.
+func (w *Worker) SetVoiceOverride(ctx context.Context, bookID string, chapterIdx int, sentenceID, voice, synthVoice string) error {
+	return w.withBookRun(ctx, bookID, func(r *run) error {
+		book := r.book
+		if chapterIdx < 0 || chapterIdx >= len(book.Chapters) {
+			return nil
+		}
+		chapter := &book.Chapters[chapterIdx]
+		senIdx := -1
+		for i, s := range chapter.Sentences {
+			if s.ID.Hex() == sentenceID {
+				senIdx = i
+				break
+			}
+		}
+		if senIdx < 0 {
+			return nil
+		}
+		if err := r.withSave(ctx, func() {
+			sen := &chapter.Sentences[senIdx]
+			if synthVoice == "" {
+				delete(sen.VoiceOverrides, voice)
+				if len(sen.VoiceOverrides) == 0 {
+					sen.VoiceOverrides = nil
+				}
+			} else {
+				if sen.VoiceOverrides == nil {
+					sen.VoiceOverrides = map[string]string{}
+				}
+				sen.VoiceOverrides[voice] = synthVoice
+			}
+			for ti := range chapter.Tracks {
+				track := &chapter.Tracks[ti]
+				if voice != model.AllVoices && track.Voice != voice {
+					continue
+				}
+				for si := range track.Segments {
+					seg := &track.Segments[si]
+					if seg.SentenceID.Hex() == sentenceID && seg.AudioStatus == model.AudioComplete {
+						seg.AudioStatus = model.AudioStale
+					}
+				}
+			}
+		}); err != nil {
+			return err
+		}
+		w.emit(book, map[string]any{"chapters": model.SerializeChaptersForClient(book.Chapters)})
+		return nil
 	})
 }
 

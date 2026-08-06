@@ -100,6 +100,26 @@ type Sentence struct {
 	// SplitCreatedWhen is SplitPreGeneration or SplitDuringGeneration; nil
 	// when the sentence was never produced by a split.
 	SplitCreatedWhen *string `bson:"splitCreatedWhen,omitempty" json:"splitCreatedWhen,omitempty"`
+	// VoiceOverrides pins the voice that actually speaks this sentence, keyed
+	// by the book voice whose track the audio belongs to; the key AllVoices
+	// applies to every track. Two uses: a voice that keeps garbling one
+	// sentence borrows another, and a quote is read by a different voice.
+	VoiceOverrides map[string]string `bson:"voiceOverrides,omitempty" json:"voiceOverrides,omitempty"`
+}
+
+// AllVoices is the VoiceOverrides key that applies to every track.
+const AllVoices = "*"
+
+// SynthVoice is the voice to synthesize this sentence with for a track,
+// which is the track's own voice unless an override says otherwise.
+func (s Sentence) SynthVoice(voice string) string {
+	if v := s.VoiceOverrides[voice]; v != "" {
+		return v
+	}
+	if v := s.VoiceOverrides[AllVoices]; v != "" {
+		return v
+	}
+	return voice
 }
 
 type Chapter struct {

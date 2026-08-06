@@ -301,14 +301,17 @@ func (w *Worker) finalizeTrack(ctx context.Context, r *run, idx int, voice, audi
 // priority is the chapter's position in the run's global work order, handed
 // to the dispatcher so every server serves the earliest chapter it can.
 type segmentTask struct {
-	idx      int
-	voice    string
-	segIdx   int
-	senIdx   int
-	text     string
-	segPath  string
-	language string
-	priority int64
+	idx int
+	// voice owns the track the audio lands in; synthVoice is what actually
+	// speaks it (they differ when the sentence carries a voice override).
+	voice      string
+	synthVoice string
+	segIdx     int
+	senIdx     int
+	text       string
+	segPath    string
+	language   string
+	priority   int64
 }
 
 // renderSegment synthesizes one sentence on the tts server the dispatcher
@@ -333,7 +336,11 @@ func (w *Worker) renderSegment(ctx, stopCtx context.Context, r *run, task segmen
 		}
 	})
 
-	piece, err := tts.RenderSegment(stopCtx, w.Q, display, task.text, task.voice, task.language, task.priority)
+	synthVoice := task.synthVoice
+	if synthVoice == "" {
+		synthVoice = task.voice
+	}
+	piece, err := tts.RenderSegment(stopCtx, w.Q, display, task.text, synthVoice, task.language, task.priority)
 
 	if err != nil && stopCtx.Err() != nil {
 		// The stop cancelled this render mid-flight; put the segment back to
@@ -473,7 +480,7 @@ func (w *Worker) prepareChapterTasks(ctx context.Context, r *run, voice string, 
 		}
 		sen := chapter.Sentences[senIdx]
 		tasks = append(tasks, segmentTask{
-			idx: idx, voice: voice, segIdx: si, senIdx: senIdx,
+			idx: idx, voice: voice, synthVoice: sen.SynthVoice(voice), segIdx: si, senIdx: senIdx,
 			text:     strings.TrimSpace(sen.Text),
 			segPath:  segmentAudioPath(audioDir, idx, voice, sen.Order),
 			language: language,

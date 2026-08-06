@@ -59,6 +59,7 @@ func (s *Server) registerBookWriteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/regenerate", s.handleSentenceRegenerate)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/insert-after", s.handleSentenceInsertAfter)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/approve", s.handleSentenceApprove)
+	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/voice-override", s.handleSentenceVoiceOverride)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/finalize", s.handleChapterFinalize)
 }
 
@@ -1406,6 +1407,34 @@ func (s *Server) handleSentenceRegenerate(w http.ResponseWriter, r *http.Request
 			log.Printf("regenerateSegment %s ch%d %s failed: %v", bookID, idx, sentenceID, err)
 		}
 	}()
+}
+
+// PUT /:id/chapters/:idx/sentences/:sentenceId/voice-override — pin the voice
+// that speaks this sentence. voice is the book voice it applies to, or "*" for
+// every voice (quotes). An empty synthVoice clears the override.
+func (s *Server) handleSentenceVoiceOverride(w http.ResponseWriter, r *http.Request) {
+	book, idx, sentenceID, ok := s.sentenceRoutePrologue(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Voice      string `json:"voice"`
+		SynthVoice string `json:"synthVoice"`
+	}
+	_ = decodeJSON(r, &body)
+	voice := strings.TrimSpace(body.Voice)
+	if voice == "" {
+		voice = model.AllVoices
+	}
+	synthVoice := strings.TrimSpace(body.SynthVoice)
+	if synthVoice == voice {
+		synthVoice = ""
+	}
+	if err := s.W.SetVoiceOverride(r.Context(), book.ID.Hex(), idx, sentenceID, voice, synthVoice); err != nil {
+		Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	Message(w, "Voice updated.")
 }
 
 func (s *Server) handleSentenceApprove(w http.ResponseWriter, r *http.Request) {

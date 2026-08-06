@@ -3,9 +3,11 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store';
 import { EditableSentence } from '../types';
-import { useVoiceLabel } from '../hooks/useVoiceLabel';
+import { useVoiceLabel, useVoiceNames } from '../hooks/useVoiceLabel';
 import PagePreview from '../components/PagePreview';
 import { t } from '../i18n';
+
+const ALL_VOICES = '*';
 
 const dotClass = (st?: string) =>
   st === 'complete' ? 'bg-emerald-500'
@@ -25,6 +27,18 @@ export default function SentenceReviewPage() {
   const book = useSelector((s: RootState) => s.books.books.find(b => b._id === id));
   const voices = useMemo(() => book?.voices ?? [], [book?.voices]);
   const label = useVoiceLabel(voices);
+  const voiceNames = useVoiceNames();
+  const voiceOptions = useMemo(
+    () => Object.entries(voiceNames)
+      .map(([engine, byId]) => ({
+        engine,
+        voices: Object.entries(byId)
+          .map(([bare, name]) => ({ value: `${engine}:${bare}`, name }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      }))
+      .sort((a, b) => a.engine.localeCompare(b.engine)),
+    [voiceNames],
+  );
 
   const [sentences, setSentences] = useState<EditableSentence[] | null>(null);
   const [perVoice, setPerVoice] = useState<Record<string, Record<string, EditableSentence>>>({});
@@ -111,6 +125,38 @@ export default function SentenceReviewPage() {
     await call('POST', `/api/books/${id}/chapters/${idx}/sentences/${selected._id}/regenerate`,
       { voice, merge: false });
   };
+
+  // Pin the voice that speaks this one sentence — for `voice`, or for every
+  // voice when it is ALL_VOICES (a quote read by someone else) — then re-render
+  // the takes it affects so the change is audible right away.
+  const setOverride = async (voice: string, synthVoice: string) => {
+    if (!selected) return;
+    await applyText();
+    await call('PUT', `/api/books/${id}/chapters/${idx}/sentences/${selected._id}/voice-override`,
+      { voice, synthVoice });
+    setPendingMerge(true);
+    for (const v of voice === ALL_VOICES ? voices : [voice]) {
+      await call('POST', `/api/books/${id}/chapters/${idx}/sentences/${selected._id}/regenerate`,
+        { voice: v, merge: false });
+    }
+  };
+
+  const overrideSelect = (voice: string) => (
+    <select
+      className="input text-[11px] py-1 px-1.5 max-w-[11rem]"
+      value={selected?.voiceOverrides?.[voice] ?? ''}
+      disabled={busy}
+      onChange={e => setOverride(voice, e.target.value)}
+      title={t('Read this sentence with a different voice')}
+    >
+      <option value="">{voice === ALL_VOICES ? t('Each voice as usual') : t('Same voice')}</option>
+      {voiceOptions.map(g => (
+        <optgroup key={g.engine} label={g.engine}>
+          {g.voices.map(o => <option key={o.value} value={o.value}>{o.name}</option>)}
+        </optgroup>
+      ))}
+    </select>
+  );
 
   const save = async () => {
     setSaving(true);
@@ -247,6 +293,13 @@ export default function SentenceReviewPage() {
                   onBlur={applyText}
                 />
                 {dirty && <p className="text-[11px] text-amber-400">{t('Unsaved text — re-render a voice or save to apply.')}</p>}
+                <div className="flex items-center gap-2 flex-wrap pt-1">
+                  <span className="text-[11px] text-gray-500">{t('Read by:')}</span>
+                  {overrideSelect(ALL_VOICES)}
+                  {selected.voiceOverrides?.[ALL_VOICES] && (
+                    <span className="text-[11px] text-amber-400">{t('every voice overridden')}</span>
+                  )}
+                </div>
               </div>
 
               <div className="card space-y-2">
@@ -289,6 +342,12 @@ export default function SentenceReviewPage() {
                         >
                           {st === 'generating' ? t('Rendering…') : t('Re-render')}
                         </button>
+                      </div>
+                      <div className="flex items-center gap-2 mt-1 pl-6 flex-wrap">
+                        {overrideSelect(v)}
+                        {pv?.synthVoice && !selected.voiceOverrides?.[v] && (
+                          <span className="text-[11px] text-gray-500">{t('via {voice}', { voice: label(pv.synthVoice) })}</span>
+                        )}
                       </div>
                       {whisper && (
                         <p className="text-[11px] text-gray-500 mt-1 pl-6">
