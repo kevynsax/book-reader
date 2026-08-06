@@ -113,10 +113,22 @@ func (s *Server) handleServers(w http.ResponseWriter, _ *http.Request) {
 			status.RenderingVoice = &voice
 			status.RenderingText = &text
 		}
-		if rs, ok := renderStats[hb.ServerID]; ok {
-			avg := rs.AvgSecs
-			status.Renders = rs.Count
-			status.AvgRenderSecs = &avg
+		if byModel, ok := renderStats[hb.ServerID]; ok && len(byModel) > 0 {
+			status.AvgByModel = make(map[string]float64, len(byModel))
+			for m, rs := range byModel {
+				status.AvgByModel[m] = rs.AvgSecs
+			}
+			// The headline number is the model in progress (or the active one),
+			// not a blend across models.
+			pick := hb.ActiveModel
+			if m, busy := inflight[hb.ServerID]; busy {
+				pick = m
+			}
+			if rs, ok := byModel[pick]; ok {
+				avg := rs.AvgSecs
+				status.Renders = rs.Count
+				status.AvgRenderSecs = &avg
+			}
 		}
 		if hb.Healthy {
 			status.Error = (*string)(nil)

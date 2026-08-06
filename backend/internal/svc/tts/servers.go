@@ -44,10 +44,13 @@ type ServerStatus struct {
 	Rendering      *string `json:"rendering,omitempty"`
 	RenderingVoice *string `json:"renderingVoice,omitempty"`
 	RenderingText  *string `json:"renderingText,omitempty"`
-	// Synthesize history since boot: how many sentences and how long each took
-	// on average (RPC time, including forced model hot-swaps).
-	Renders       int64    `json:"renders,omitempty"`
-	AvgRenderSecs *float64 `json:"avgRenderSecs,omitempty"`
+	// Synthesize history since boot. Renders/AvgRenderSecs describe the model
+	// this server is currently rendering (or last rendered) — per model,
+	// because a kokoro sentence and a higgs sentence differ by an order of
+	// magnitude. AvgByModel carries every model's average for ETA math.
+	Renders       int64              `json:"renders,omitempty"`
+	AvgRenderSecs *float64           `json:"avgRenderSecs,omitempty"`
+	AvgByModel    map[string]float64 `json:"avgByModel,omitempty"`
 	// Present (possibly null) when the server is online, absent when offline —
 	// matching Node's undefined-vs-null distinction.
 	Error  any        `json:"error,omitempty"`

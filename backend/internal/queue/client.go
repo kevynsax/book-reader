@@ -83,7 +83,7 @@ type Client struct {
 	waiterSeq uint64
 
 	rmu     sync.Mutex
-	renders map[string]*renderTally
+	renders map[string]map[string]*renderTally // serverID -> model -> tally
 	current map[string]RenderInfo
 }
 
@@ -117,9 +117,35 @@ func (c *Client) TTSCurrent() map[string]RenderInfo {
 	return out
 }
 
+// renderWindow is how many recent renders the average covers — speed shifts
+// as chapters/text lengths change, so old samples age out.
+const renderWindow = 20
+
 type renderTally struct {
-	count     int64
-	totalSecs float64
+	samples [renderWindow]float64
+	idx     int
+	filled  int
+	count   int64
+}
+
+func (t *renderTally) add(secs float64) {
+	t.samples[t.idx] = secs
+	t.idx = (t.idx + 1) % renderWindow
+	if t.filled < renderWindow {
+		t.filled++
+	}
+	t.count++
+}
+
+func (t *renderTally) avg() float64 {
+	if t.filled == 0 {
+		return 0
+	}
+	sum := 0.0
+	for _, v := range t.samples[:t.filled] {
+		sum += v
+	}
+	return sum / float64(t.filled)
 }
 
 // RenderStats is one server's synthesize history since main booted.
@@ -128,26 +154,36 @@ type RenderStats struct {
 	AvgSecs float64
 }
 
-func (c *Client) recordRender(serverID string, secs float64) {
+func (c *Client) recordRender(serverID, model string, secs float64) {
 	c.rmu.Lock()
 	defer c.rmu.Unlock()
-	t := c.renders[serverID]
+	byModel := c.renders[serverID]
+	if byModel == nil {
+		byModel = map[string]*renderTally{}
+		c.renders[serverID] = byModel
+	}
+	t := byModel[model]
 	if t == nil {
 		t = &renderTally{}
-		c.renders[serverID] = t
+		byModel[model] = t
 	}
-	t.count++
-	t.totalSecs += secs
+	t.add(secs)
 }
 
-// TTSRenderStats returns serverID → average synthesize seconds (RPC time,
-// including any model hot-swap the render forced).
-func (c *Client) TTSRenderStats() map[string]RenderStats {
+// TTSRenderStats returns serverID → model → average synthesize seconds (RPC
+// time, including any hot-swap the render forced). Kept per model because the
+// same server renders a kokoro sentence in under a second and a higgs one in
+// tens of seconds — a blended average predicts nothing.
+func (c *Client) TTSRenderStats() map[string]map[string]RenderStats {
 	c.rmu.Lock()
 	defer c.rmu.Unlock()
-	out := make(map[string]RenderStats, len(c.renders))
-	for id, t := range c.renders {
-		out[id] = RenderStats{Count: t.count, AvgSecs: t.totalSecs / float64(t.count)}
+	out := make(map[string]map[string]RenderStats, len(c.renders))
+	for id, byModel := range c.renders {
+		m := make(map[string]RenderStats, len(byModel))
+		for model, t := range byModel {
+			m[model] = RenderStats{Count: t.count, AvgSecs: t.avg()}
+		}
+		out[id] = m
 	}
 	return out
 }
@@ -164,7 +200,7 @@ func (c *Client) TTSInflight() map[string]string {
 }
 
 func NewClient(url string) *Client {
-	c := &Client{url: url, Registry: NewRegistry(), pending: map[string]pendingReply{}, inflight: map[string]string{}, renders: map[string]*renderTally{}, current: map[string]RenderInfo{}}
+	c := &Client{url: url, Registry: NewRegistry(), pending: map[string]pendingReply{}, inflight: map[string]string{}, renders: map[string]map[string]*renderTally{}, current: map[string]RenderInfo{}}
 	go c.maintain()
 	go c.dispatchLoop()
 	return c
@@ -511,7 +547,7 @@ func (c *Client) Synthesize(ctx context.Context, p SynthesizePayload, serverID s
 	raw, err := c.submitTo(wctx, TTSServerQueue(serverID), RoleTTS, TypeSynthesize, p)
 	c.clearCurrent(serverID)
 	if err == nil {
-		c.recordRender(serverID, time.Since(start).Seconds())
+		c.recordRender(serverID, p.Model, time.Since(start).Seconds())
 	}
 	if err != nil {
 		if ctx.Err() == nil && wctx.Err() != nil {
