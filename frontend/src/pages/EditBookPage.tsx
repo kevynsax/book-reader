@@ -637,7 +637,14 @@ export default function EditBookPage() {
           </div>
         </div>
 
-        {showStatus && <StatusIndicator book={book} />}
+        {showStatus && (
+          <>
+            <StatusIndicator book={book} />
+            {(book.status === 'ocr_processing' || book.status === 'detecting_chapters' || book.status === 'reading_title') && (
+              <div className="card"><ServerStatus roles={['vlm', 'slm']} /></div>
+            )}
+          </>
+        )}
 
         {book.status === 'error' && (
           <div className="card border-red-800 bg-red-950/20">
@@ -712,7 +719,7 @@ export default function EditBookPage() {
                 )}
               </div>
             </div>
-            {isGenerating && <ServerStatus onServers={setTtsServers} />}
+            {isGenerating && <ServerStatus roles={['tts', 'slm', 'whisper']} onServers={setTtsServers} />}
             {/* While voices render concurrently each card shows its own live
                 bar — the single global bar would just flip between lanes. */}
             {book.progress.message && book.progress.total > 0 && !Object.keys(book.voiceProgress ?? {}).length && (

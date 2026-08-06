@@ -25,10 +25,16 @@ type ModelRef struct {
 }
 
 type ServerStatus struct {
-	ID          string  `json:"id"`
-	Label       string  `json:"label"`
-	URL         string  `json:"url"`
-	Online      bool    `json:"online"`
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	URL   string `json:"url"`
+	// Worker role ("tts", "vlm", "slm", "whisper") — /api/servers reports the
+	// whole fleet so the UI can show who is working during every phase.
+	Role string `json:"role,omitempty"`
+	// Whether the worker is executing a task right now (non-tts roles; tts
+	// busyness is conveyed by Rendering).
+	Busy   bool `json:"busy,omitempty"`
+	Online bool `json:"online"`
 	State       *string `json:"state,omitempty"`
 	ActiveModel *string `json:"activeModel,omitempty"`
 	Backend     *string `json:"backend,omitempty"`

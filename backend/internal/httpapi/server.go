@@ -59,8 +59,14 @@ func cors(next http.Handler) http.Handler {
 // where generation will run. Sourced from the worker registry: each tts-role
 // worker heartbeats its server's health/catalog, so main never probes.
 func (s *Server) handleServers(w http.ResponseWriter, _ *http.Request) {
-	workers := s.W.Q.Registry.Workers(queue.RoleTTS)
-	sort.SliceStable(workers, func(i, j int) bool { return workers[i].ServerID < workers[j].ServerID })
+	workers := s.W.Q.Registry.Workers("")
+	roleOrder := map[queue.Role]int{queue.RoleTTS: 0, queue.RoleVLM: 1, queue.RoleSLM: 2, queue.RoleWhisper: 3}
+	sort.SliceStable(workers, func(i, j int) bool {
+		if roleOrder[workers[i].Role] != roleOrder[workers[j].Role] {
+			return roleOrder[workers[i].Role] < roleOrder[workers[j].Role]
+		}
+		return workers[i].ServerID < workers[j].ServerID
+	})
 	inflight := s.W.Q.TTSInflight()
 	renderStats := s.W.Q.TTSRenderStats()
 	currentRenders := s.W.Q.TTSCurrent()
@@ -70,8 +76,14 @@ func (s *Server) handleServers(w http.ResponseWriter, _ *http.Request) {
 			ID:     hb.ServerID,
 			Label:  hb.Label,
 			URL:    hb.URL,
+			Role:   string(hb.Role),
+			Busy:   hb.Busy,
 			Online: hb.Healthy,
 			Models: []tts.ModelRef{},
+		}
+		if hb.Role != queue.RoleTTS {
+			statuses[i] = status
+			continue
 		}
 		if hb.State != "" {
 			state := hb.State
