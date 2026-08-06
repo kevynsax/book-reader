@@ -15,7 +15,11 @@ const BUSY_VERB: Record<string, () => string> = {
   whisper: () => t('verifying audio'),
 };
 
-const ROLE_TAG: Record<string, string> = { vlm: 'VLM', slm: 'SLM', whisper: 'Whisper' };
+const ROLE_TAG: Record<string, () => string> = {
+  vlm: () => t('Page reader'),
+  slm: () => t('Text splitter'),
+  whisper: () => t('Audio checker'),
+};
 
 // "renderizando Mateus: 'E, antes, a disciplina teologica…'" when the render's
 // voice/sentence are known, falling back to the model name. The voice label
@@ -98,7 +102,7 @@ export default function ServerStatus({
               />
               {!isTts && (
                 <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 shrink-0">
-                  {ROLE_TAG[role]}
+                  {ROLE_TAG[role]?.() ?? role}
                 </span>
               )}
               <span className="shrink-0">{s.label}</span>
