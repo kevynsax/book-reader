@@ -427,9 +427,19 @@ func (c *Client) OcrPage(ctx context.Context, image []byte) (OcrPageResult, erro
 	return submitAs[OcrPageResult](c, ctx, RoleVLM, TypeOcrPage, OcrPagePayload{Image: image})
 }
 
+// ExtractTitle is a single on-demand read (not part of the queued page sweep),
+// so it goes over the preferred queue like the summary re-read: the highest-
+// priority free vlm server (spark > macbook > kevyn-server) answers.
 func (c *Client) ExtractTitle(ctx context.Context, image []byte) (string, error) {
-	r, err := submitAs[TitleResult](c, ctx, RoleVLM, TypeExtractTitle, ImagePayload{Image: image})
-	return r.Title, err
+	raw, err := c.submitTo(ctx, SummaryVLMQueue, RoleVLM, TypeExtractTitle, ImagePayload{Image: image})
+	if err != nil {
+		return "", err
+	}
+	var out TitleResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return "", fmt.Errorf("vlm extract-title: malformed result: %w", err)
+	}
+	return out.Title, nil
 }
 
 func (c *Client) DetectLanguage(ctx context.Context, image []byte) (string, error) {

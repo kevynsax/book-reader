@@ -13,7 +13,7 @@ Read this whole document before writing any code.
 - **Backend:** Go. Two binaries max: `server` (HTTP + WebSocket + orchestration) and `worker` (AI-service adapters). Prefer a single `worker` binary that runs **all roles as goroutines in one process** — one goroutine (or small pool) per connected AI server. Each AI server (a VLM instance, an SLM instance, a TTS instance, a Whisper instance) is serial and handles one task at a time, so there is no need for separate deployments per role. One worker process, N consumer goroutines, each with prefetch=1 against its queue.
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS v4 (zero-config, `@import "tailwindcss"` + a small layer of component classes). Redux Toolkit for the book store. No component library.
 - **Queue:** RabbitMQ. Quorum queues, delivery limit 3, dead-letter queue, direct reply-to RPC.
-- **Database:** **PostgreSQL** (v1 used MongoDB — do NOT use Mongo). Use JSONB where a document shape genuinely fits (e.g. whisper transcripts array), but model books / chapters / sentences / tracks / segments / ocr_pages as proper relational tables with foreign keys, so partial updates are cheap and race-free. Use `sqlc` or plain `database/sql` + migrations (goose/golang-migrate). No ORM magic.
+- **Database:** **MongoDB** (official Go driver v2). Collections: `books`, `lexicons` (+ `runs` for history, §6.1). A book embeds its chapters → sentences/tracks → segments and its ocrPages, matching the natural document shape. Discipline is mandatory: **all writes are targeted `$set`/`$push` updates with array filters — never whole-document replaces from concurrent paths** (v1's layered write strategy: full save only for flows owning the whole doc; generation runs update only their own fields; everything else field-scoped with a stamped `updatedAt`). Create the indexes you query on (`deleted`, `updatedAt`, `status`).
 - **Media tooling:** poppler (`pdftoppm`, `pdfinfo`) for rasterization, `ffmpeg`/`ffprobe` for audio assembly.
 - **Files on disk:** `<DATA_DIR>/books/<bookId>/` holding `original.pdf`, `parts/page-*.jpg`, `cover.jpg`, `audio/chapter-%03d__<safeVoice>.mp3`, per-segment dirs `audio/chapter-%03d__<safeVoice>/seg-*.mp3`, timeline JSON next to each chapter mp3.
 
@@ -53,7 +53,7 @@ Statuses: `uploading → splitting_pages → extracting_cover → reading_title 
 7. Extract ToC entries from every summary page in parallel; dedupe; resolve each chapter title to a page + exact character offset by accent-folded flexible search over the OCR text (try the printed page, then ceil(page/2) for 2-up scans, then all pages).
 8. Land in `awaiting_chapter_review` with chapter suggestions.
 
-Also: resume import (keeps completed OCR pages), full reprocess with new page roles (wipes chapters/pages — require explicit confirmation in the UI since this is destructive), re-OCR a single page, dismiss error (clears error state, flips failed pages to complete), per-page manual text editing (marks overlapping rendered audio stale).
+**Stop/continue applies to every long-running phase, not just rendering** (v1 could not stop an import — fix that): a stop request during rasterization/OCR/chapter-detection finishes in-flight page tasks, keeps their results, marks the book paused-with-partial-progress, and resume picks up exactly where it left off. Also: resume import (keeps completed OCR pages), full reprocess with new page roles (wipes chapters/pages — require explicit confirmation in the UI since this is destructive), re-OCR a single page, dismiss error (clears error state, flips failed pages to complete), per-page manual text editing (marks overlapping rendered audio stale).
 
 ### 2.3 Chapters & boundaries
 - Chapters are defined by cut points: title + startPage + startChar (character offset into that page's text). A chapter ends where the next begins.
@@ -100,7 +100,7 @@ Chapter audio streaming with HTTP Range/ETag, read-along timeline, per-sentence 
 
 ### 3.1 Processes
 
-**`server`** — HTTP API, WebSocket hub, orchestrator (import pipeline + render scheduler + dispatcher), Postgres, filesystem. On boot: migrate DB, seed lexicons, recover interrupted runs, start unspeakable repair in background.
+**`server`** — HTTP API, WebSocket hub, orchestrator (import pipeline + render scheduler + dispatcher), MongoDB, filesystem. On boot: migrate DB, seed lexicons, recover interrupted runs, start unspeakable repair in background.
 
 **`worker`** — connects to RabbitMQ and to the AI servers listed in config. For each configured AI server, one consumer goroutine: health-probe loop (~5 s) → publish heartbeat to a fanout exchange → consume its queue only while healthy, prefetch 1. Roles: `tts`, `vlm`, `slm`, `whisper`. TTS consumes a **per-server queue** (`tasks.tts.server.<id>`) because the dispatcher picks the server; vlm/slm/whisper consume shared role queues (`tasks.vlm`, etc.). VLM additionally consumes an interactive queue (`tasks.vlm.interactive`) with consumer priority so the preferred (fastest) server wins interactive work. Infra failures → nack+requeue and mark unhealthy; application errors → error reply + ack (never requeue). All configured servers can live in one worker process; also support running several worker processes if the user wants (the queues make this transparent).
 
@@ -111,8 +111,8 @@ Chapter audio streaming with HTTP Range/ETag, read-along timeline, per-sentence 
 - TTS dispatcher: blocking acquire of a healthy free server advertising the model; waiters ordered by (priority asc, FIFO); prefer a server whose active model already matches; 2 s re-match tick; 90 s grace before "no TTS server online for model X"; liveness watch during a render (6 missed probes → cancel with "server went offline mid-render"); telemetry for in-flight/current/stats.
 - Reconnect with backoff everywhere; a wiped broker must re-create queues transparently.
 
-### 3.3 Postgres schema (guideline)
-Tables: `books` (status, page roles, language, progress fields, error, timestamps), `ocr_pages` (book_id, page, text, read_text, status, error), `chapters` (book_id, idx, title, start_page, start_char), `sentences` (chapter_id, order, text, display, original, trace_order, split lineage), `voice_tracks` (chapter_id, voice, audio_path, duration, status, error), `segments` (track_id, sentence_id, audio_path, duration, status, error, needs_review, whisper_results JSONB), `lexicons` (language, terms JSONB). Derive track status from segments (`generating > error > stale > all-complete > pending`) — in one place. Use row-level updates instead of v1's whole-document saves; that removes an entire class of clobbering bugs. Wire DTOs for the frontend strip sentences/segments from list payloads and include `segmentsDone/segmentsTotal` per track.
+### 3.3 MongoDB schema (guideline)
+`books`: status, page roles, language, progress fields, error, timestamps, `voices[]`, `ocrPages[] {page, text, readText, status, error}`, `chapters[] {_id, title, startPage, startChar, sentences[], tracks[]}`; sentence = `{_id, order, text, display, original?, traceOrder?, split lineage}`; track = `{voice, audioPath?, audioDurationSecs?, audioStatus, audioError?, segments[]}`; segment = `{sentenceId, audioPath?, durationSecs?, audioStatus, audioError?, needsReview, whisperResults[]}`. `lexicons`: `{language, acronyms[]{term,say}}`. Derive track status from segments (`generating > error > stale > all-complete > pending`) — in one place. Updates are field/array-scoped `$set` with array filters (see §1.1 stack note); v1's clobbering bugs came from concurrent whole-document saves — design the store layer so that's impossible. Wire DTOs for the frontend strip sentences/segments from list payloads and include `segmentsDone/segmentsTotal` per track.
 
 ### 3.4 WebSocket contract
 `/ws`, JSON envelope `{event, data}`. Client sends `subscribe-to-books {lastUpdate}` and `subscribe-to-book {bookId}`; server replies `books:sync` (delta by watermark). Server broadcasts `book:deleted` and a single patch channel `book:update` carrying `{bookId, updatedAt}` plus any subset of: name/status/error/language/cover/totalPages/voices, `progress`, `chapters`, `ocrPages`/`ocrPage`, `splitProgress` (transient), `voiceProgress {voice, chapterIdx, current, total, message}`, `chapterUpdate`, `segmentUpdate`, `sentenceUpdate`, `sentenceDeleted`. Improvement over v1: consider room-scoped delivery (per book) instead of broadcast-to-all, and make **every** live surface WS-driven — the frontend should never poll (v1 polled `/api/servers` every 5 s from two components at once; push a `servers:update` event instead).
@@ -150,9 +150,9 @@ Permanent dark theme, no toggle. Font **Inter** (400/500/600/700 from Google Fon
 Beyond fixing v1's problems, build these in — each addresses a real gap observed in v1. Items marked *(optional)* may be deferred, but leave room for them in the design.
 
 ### 6.1 Reliability / architecture
-- **Run history table.** Record every generation and import run in Postgres (started/finished, trigger, per-chapter outcomes, failure reasons, tokens of work done). Powers a "last run" summary in the UI and makes "why did chapter 12 fail last night" answerable. v1 kept nothing.
+- **Run history collection.** Record every generation and import run in a `runs` collection (started/finished, trigger, per-chapter outcomes, failure reasons, tokens of work done). Powers a "last run" summary in the UI and makes "why did chapter 12 fail last night" answerable. v1 kept nothing.
 - **Deterministic re-render skipping.** Store a hash of the normalized sentence text + voice + engine settings on each segment; on regenerate/continue, skip segments whose hash matches and whose file exists. Makes "Regenerate voice" cheap after small edits.
-- **Server-side listening position.** Persist `{bookId, voice, chapterIdx, time}` in Postgres (debounced writes), with localStorage as offline fallback. v1's localStorage-only position means progress is lost per browser/device.
+- **Server-side listening position.** Persist `{bookId, voice, chapterIdx, time}` in Mongo (debounced writes), with localStorage as offline fallback. v1's localStorage-only position means progress is lost per browser/device.
 - **Global fleet queue view.** One run per book, but the fleet is shared across books. Show which book currently owns each TTS server and let the user reorder queued runs. v1 gave no visibility when two books competed.
 - **Browser notification** (opt-in) when a generation run or import finishes/fails while the tab is backgrounded.
 - **Structured logging + Prometheus metrics** (queue depth, RPC latency per role, render secs per server, verify failure rate). *(optional but cheap in Go)*
@@ -167,7 +167,7 @@ Beyond fixing v1's problems, build these in — each addresses a real gap observ
 - **Server-side batch typo/normalization scan** (replaces the 40-request client fan-out): one job per page or chapter, results streamed over WS, cancellable, findings persisted so review survives reloads.
 - **Per-page reviewed flag + review progress** ("143/300 pages reviewed") so long books are resumable — v1 loses all review state on close.
 - **Heading-based chapter detection fallback** *(optional)*: when a book has no usable ToC, ask the VLM to flag heading candidates per page during OCR and offer them as boundary suggestions in the chapter editor.
-- **Full-text search across a book** *(optional)*: Postgres FTS over `ocr_pages.text`; jump from a hit straight into the review workspace or player position.
+- **Full-text search across a book** *(optional)*: a Mongo text index over `ocrPages.text` (or in-memory search per book — the text is small); jump from a hit straight into the review workspace or player position.
 
 ### 6.4 Player extras (additive only — the core player stays exactly as specced in §7.2)
 - **Media Session API**: lock-screen / hardware-key play-pause, ±30 s, next/prev sentence, cover art. Pure addition, no visual change.
@@ -269,7 +269,7 @@ These are the parts of v1 the owner dislikes: buggy, fragmented, contradictory. 
 
 ### 8.2 Import progress ("work being done")
 
-**Preserve:** the 7-step pipeline status, per-page OCR done/total with failures, ETA from observed throughput, resume / restart-with-new-roles / dismiss-error, live page text streaming in as pages finish.
+**Preserve:** the 7-step pipeline status, per-page OCR done/total with failures, ETA from observed throughput, resume / restart-with-new-roles / dismiss-error, live page text streaming in as pages finish. **Add:** a Stop button for the import itself (new in v2, §2.2) — always visible while importing, mirroring generation's stop semantics.
 **Suggest:** a single import timeline (steps as a vertical checklist with real timestamps, current step live), with per-page OCR shown as a compact grid of page cells (colored by status, clickable → that page in review) rather than a bare counter. Completed information stays visible. Failures are first-class: a failed page shows its error and a one-click re-OCR.
 
 ### 8.3 OCR / text review
@@ -293,7 +293,7 @@ These are the parts of v1 the owner dislikes: buggy, fragmented, contradictory. 
 
 ## 9. Configuration
 
-Env-driven, `.env` supported. Keep v1's knobs and defaults: `PORT` (3001), `DATABASE_URL` (Postgres), `AMQP_URL`, `DATA_DIR`, `FRONTEND_ORIGIN`, `DELETE_ALLOWED_IPS`, `TTS_SERVERS` (`id|label|url` list), SLM primary/fallback URLs + weights + `SLM_MODEL`/`SLM_SPLIT_MODEL`, `WHISPER_MODEL`, verify knobs (`TTS_VERIFY`, threshold 0.85, attempts, min chars 8), `TTS_MAX_SENTENCE_CHARS` 220, concurrency (`TTS_CONCURRENCY` 5, `OCR_CONCURRENCY` 8), audio gains (volume 1.15, title 1.1, title silence 0.7 s, title max words 5), default voice, RPC timeouts. Worker config: per-AI-server entries with role, id, label, url, optional model override, skip-models, consumer priority, health interval.
+Env-driven, `.env` supported. Keep v1's knobs and defaults: `PORT` (3001), `MONGODB_URI`, `AMQP_URL`, `DATA_DIR`, `FRONTEND_ORIGIN`, `DELETE_ALLOWED_IPS`, `TTS_SERVERS` (`id|label|url` list), SLM primary/fallback URLs + weights + `SLM_MODEL`/`SLM_SPLIT_MODEL`, `WHISPER_MODEL`, verify knobs (`TTS_VERIFY`, threshold 0.85, attempts, min chars 8), `TTS_MAX_SENTENCE_CHARS` 220, concurrency (`TTS_CONCURRENCY` 5, `OCR_CONCURRENCY` 8), audio gains (volume 1.15, title 1.1, title silence 0.7 s, title max words 5), default voice, RPC timeouts. Worker config: per-AI-server entries with role, id, label, url, optional model override, skip-models, consumer priority, health interval.
 
 External service contracts (all OpenAI-shaped, keep):
 - TTS: `GET /health` `{state,model,backend}`, `GET /v1/models`, `POST /v1/models/load`, `POST /v1/audio/speech {model,input,voice,response_format:"mp3",speed,language?}` (+ optional `X-Audio-Duration-Seconds`), `GET /v1/audio/voices?model=`.
@@ -305,9 +305,9 @@ External service contracts (all OpenAI-shaped, keep):
 ## 10. Quality bar
 
 - Table-stakes: no polling where WS exists; no duplicated status logic; no swallowed errors (every failure reaches the UI attached to the thing that failed); no native `confirm`/`alert`; no dead props; destructive actions (reprocess, delete, replace chapters) always confirm and say exactly what will be lost.
-- Concurrency safety: one generation run per book; interactive edits lock per book and pre-empt batch TTS via the priority lane; DB writes are row-scoped; the stop flag is checked at segment and chapter boundaries and **must be honored by resume/reprocess flows too** (v1 had a bug where rerunning import ignored the stop flag and wiped chapters).
+- Concurrency safety: one generation run per book; interactive edits lock per book and pre-empt batch TTS via the priority lane; DB writes are field/array-scoped, never whole-document replaces from concurrent paths; the stop flag is checked at segment and chapter boundaries and **must be honored by resume/reprocess flows too** (v1 had a bug where rerunning import ignored the stop flag and wiped chapters).
 - Crash safety: server boot reconciles any `generating` state; segment files are the source of truth (a "complete" segment whose file is missing re-renders); assembly always re-derives the timeline from decoded durations.
 - Tests where they pay: sentence reflow/splitting, speech normalization, the flexible title matcher, similarity verify, track-status derivation, the dispatcher's priority/affinity logic, timeline assembly math.
-- Ship with docker-compose for Postgres + RabbitMQ, migrations that run on boot, and a Makefile covering dev (Vite proxy → server), build, and test.
+- Ship with docker-compose for MongoDB + RabbitMQ, boot-time migrations/seeding, and a Makefile covering dev (Vite proxy → server), build, and test.
 
 Build it in this order: schema + queue + worker skeleton → import pipeline → chapter review UI (the paradigm reference) → generation engine + new generation panel → player → review workspaces → polish.
