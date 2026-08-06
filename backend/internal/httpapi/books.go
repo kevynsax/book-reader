@@ -14,6 +14,7 @@ import (
 	"github.com/kevynsax/book-reader/backend/internal/config"
 	"github.com/kevynsax/book-reader/backend/internal/model"
 	"github.com/kevynsax/book-reader/backend/internal/svc/tts"
+	"github.com/kevynsax/book-reader/backend/internal/worker"
 )
 
 func (s *Server) registerBookRoutes(mux *http.ServeMux) {
@@ -279,9 +280,13 @@ func (s *Server) handleSentences(w http.ResponseWriter, r *http.Request) {
 	ordered := append([]model.Sentence(nil), chapter.Sentences...)
 	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Order < ordered[j].Order })
 
+	idx, _ := strconv.Atoi(r.PathValue("idx"))
+	pages := worker.SentencePages(book, idx)
+
 	type wireSentence struct {
 		ID             string            `json:"_id"`
 		Order          int               `json:"order"`
+		Page           int               `json:"page,omitempty"`
 		Text           string            `json:"text"`
 		Original       *string           `json:"original,omitempty"`
 		AudioStatus    model.AudioStatus `json:"audioStatus"`
@@ -292,7 +297,7 @@ func (s *Server) handleSentences(w http.ResponseWriter, r *http.Request) {
 	sentences := make([]wireSentence, len(ordered))
 	for i, sen := range ordered {
 		out := wireSentence{
-			ID: sen.ID.Hex(), Order: sen.Order, Text: sen.Text,
+			ID: sen.ID.Hex(), Order: sen.Order, Page: pages[sen.ID.Hex()], Text: sen.Text,
 			Original: sen.Original, AudioStatus: model.AudioPending,
 		}
 		if seg := segBySentence[sen.ID.Hex()]; seg != nil {

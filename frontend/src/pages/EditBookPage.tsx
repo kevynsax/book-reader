@@ -591,6 +591,9 @@ export default function EditBookPage() {
   const showGenerate  = (book.status === 'awaiting_chapter_review' || book.status === 'complete' || book.status === 'error') && !isGenerating;
   const hasStaleAudio = book.chapters.some(c => chapterStatus(c) === 'stale');
   const canListenNow  = isGenerating && hasPlayableAudio(book);
+  // Chapter/page review belong to the import phase: once sentences are being
+  // reviewed or audio is rendering they are noise.
+  const showSourceReview = book.status !== 'awaiting_sentence_review' && !isGenerating;
 
   return (
     <div className="min-h-screen">
@@ -730,7 +733,7 @@ export default function EditBookPage() {
           </>
         )}
 
-        {(hasChapters || book.status === 'awaiting_chapter_review') && book.status !== 'awaiting_sentence_review' && (
+        {(hasChapters || book.status === 'awaiting_chapter_review') && showSourceReview && (
           <>
             <div className="card">
               <ChapterReview
@@ -744,7 +747,7 @@ export default function EditBookPage() {
           </>
         )}
 
-        {hasOcrPages && book.status !== 'awaiting_sentence_review' && (
+        {hasOcrPages && showSourceReview && (
           <TextReview ref={textReviewRef} bookId={book._id} ocrPages={book.ocrPages} />
         )}
 

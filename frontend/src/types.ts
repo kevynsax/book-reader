@@ -46,6 +46,7 @@ export interface TimelineEntry {
 export interface EditableSentence {
   _id: string;
   order: number;
+  page?: number;
   text: string;
   audioStatus: AudioStatus;
   audioError?: string;

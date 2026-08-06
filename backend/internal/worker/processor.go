@@ -47,10 +47,26 @@ func utf16Slice(s string, start, end int) string {
 	return string(utf16.Decode(units[start:end]))
 }
 
+// ChapterPage is one page's slice of a chapter's text.
+type ChapterPage struct {
+	Page int
+	Text string
+}
+
 // extractChapterPageTexts returns the chapter's text sliced per page (by
 // startChar/endChar), kept as separate strings so phase 2 can apply the
 // cross-page sentence-continuation rule.
 func extractChapterPageTexts(chapters []model.Chapter, idx int, ocrPages []model.OcrPage, lastPage int) []string {
+	pages := ChapterPageTexts(chapters, idx, ocrPages, lastPage)
+	out := make([]string, len(pages))
+	for i, p := range pages {
+		out[i] = p.Text
+	}
+	return out
+}
+
+// ChapterPageTexts is extractChapterPageTexts with the source page numbers kept.
+func ChapterPageTexts(chapters []model.Chapter, idx int, ocrPages []model.OcrPage, lastPage int) []ChapterPage {
 	chapter := chapters[idx]
 	startPage := chapter.StartPage
 	startChar := chapter.StartChar
@@ -69,25 +85,22 @@ func extractChapterPageTexts(chapters []model.Chapter, idx int, ocrPages []model
 	}
 	sort.SliceStable(pages, func(i, j int) bool { return pages[i].Page < pages[j].Page })
 
-	out := make([]string, len(pages))
+	out := make([]ChapterPage, len(pages))
 	for i, p := range pages {
 		text := sanitize.PageText(p.Text)
 		isFirst := p.Page == startPage
 		isLast := p.Page == endPage
 		switch {
 		case isFirst && isLast:
-			out[i] = utf16Slice(text, startChar, endChar)
+			text = utf16Slice(text, startChar, endChar)
 		case isFirst:
-			out[i] = utf16Slice(text, startChar, -1)
+			text = utf16Slice(text, startChar, -1)
 		case isLast:
 			if endChar >= 0 {
-				out[i] = utf16Slice(text, 0, endChar)
-			} else {
-				out[i] = text
+				text = utf16Slice(text, 0, endChar)
 			}
-		default:
-			out[i] = text
 		}
+		out[i] = ChapterPage{Page: p.Page, Text: text}
 	}
 	return out
 }

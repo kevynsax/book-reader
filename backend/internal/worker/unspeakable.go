@@ -159,7 +159,7 @@ func (w *Worker) MigrateUnspeakableSentences(ctx context.Context) error {
 			book.ID.Hex(), len(rerenderTargets)+len(reassembleOnly))
 
 		for _, t := range rerenderTargets {
-			if err := w.rerenderSegment(ctx, r, t.idx, t.sentenceID, book.Voices, ""); err != nil {
+			if err := w.rerenderSegment(ctx, r, t.idx, t.sentenceID, book.Voices, "", true); err != nil {
 				log.Printf("migrateUnspeakableSentences rerender %s ch%d: %v", book.ID.Hex(), t.idx+1, err)
 			}
 		}

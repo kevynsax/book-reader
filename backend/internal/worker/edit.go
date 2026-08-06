@@ -20,8 +20,9 @@ import (
 // then reassembles each affected chapter mp3. Shared by edit, insert and
 // single-sentence regenerate. synthVoice, when set, is the voice actually
 // synthesized (e.g. a different model to get past a stubborn mismatch) while
-// the audio still lands in each target voice's track.
-func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, sentenceID string, voices []string, synthVoice string) error {
+// the audio still lands in each target voice's track. merge=false renders the
+// segment only, leaving the chapter mp3 for a later finalize.
+func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, sentenceID string, voices []string, synthVoice string, merge bool) error {
 	book := r.book
 	if chapterIdx < 0 || chapterIdx >= len(book.Chapters) {
 		return nil
@@ -89,8 +90,10 @@ func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, se
 				ChapterIdx: chapterIdx, Voice: voice, SentenceID: sentenceID,
 				AudioStatus: model.AudioError, AudioError: &message,
 			}})
-			if err := w.finalizeTrack(ctx, r, chapterIdx, voice, audioDir, true); err != nil {
-				return err
+			if merge {
+				if err := w.finalizeTrack(ctx, r, chapterIdx, voice, audioDir, true); err != nil {
+					return err
+				}
 			}
 			continue
 		}
@@ -122,8 +125,10 @@ func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, se
 			ChapterIdx: chapterIdx, Voice: voice, SentenceID: sentenceID,
 			AudioStatus: seg.AudioStatus, AudioError: seg.AudioError,
 		}})
-		if err := w.finalizeTrack(ctx, r, chapterIdx, voice, audioDir, true); err != nil {
-			return err
+		if merge {
+			if err := w.finalizeTrack(ctx, r, chapterIdx, voice, audioDir, true); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -200,13 +205,14 @@ func (w *Worker) EditSentence(ctx context.Context, bookID string, chapterIdx int
 	if !renderNow {
 		return nil
 	}
-	return w.rerenderSegment(ctx, r, chapterIdx, sentenceID, book.Voices, "")
+	return w.rerenderSegment(ctx, r, chapterIdx, sentenceID, book.Voices, "", true)
 }
 
-// InsertSentence creates a new sentence right after an existing one and
-// renders it for every voice — the manual alternative to the old automatic
-// SLM split. Queues behind any active generation run.
-func (w *Worker) InsertSentence(ctx context.Context, bookID string, chapterIdx int, afterSentenceID, text string, renderNow bool) error {
+// InsertSentence creates a new sentence next to an existing one (before it
+// when before is set, after it otherwise) and renders it for every voice — the
+// manual alternative to the old automatic SLM split. Queues behind any active
+// generation run.
+func (w *Worker) InsertSentence(ctx context.Context, bookID string, chapterIdx int, anchorSentenceID, text string, before, renderNow bool) error {
 	unlock := w.LockBook(bookID)
 	defer unlock()
 	book, err := w.St.Books.FindByID(ctx, bookID)
@@ -219,14 +225,14 @@ func (w *Worker) InsertSentence(ctx context.Context, bookID string, chapterIdx i
 	r := &run{w: w, book: book}
 	chapter := &book.Chapters[chapterIdx]
 
-	afterIdx := -1
+	anchorIdx := -1
 	for i, s := range chapter.Sentences {
-		if s.ID.Hex() == afterSentenceID {
-			afterIdx = i
+		if s.ID.Hex() == anchorSentenceID {
+			anchorIdx = i
 			break
 		}
 	}
-	if afterIdx < 0 {
+	if anchorIdx < 0 {
 		return nil
 	}
 
@@ -241,13 +247,17 @@ func (w *Worker) InsertSentence(ctx context.Context, bookID string, chapterIdx i
 	d := trimmed
 	newSen := model.Sentence{ID: bson.NewObjectID(), Text: norm, Display: &d}
 	if err := r.withSave(ctx, func() {
-		afterOrder := chapter.Sentences[afterIdx].Order
+		anchorOrder := chapter.Sentences[anchorIdx].Order
+		newOrder := anchorOrder + 1
+		if before {
+			newOrder = anchorOrder
+		}
 		for i := range chapter.Sentences {
-			if chapter.Sentences[i].Order > afterOrder {
+			if chapter.Sentences[i].Order >= newOrder {
 				chapter.Sentences[i].Order++
 			}
 		}
-		newSen.Order = afterOrder + 1
+		newSen.Order = newOrder
 		chapter.Sentences = append(chapter.Sentences, newSen)
 		sort.SliceStable(chapter.Sentences, func(i, j int) bool { return chapter.Sentences[i].Order < chapter.Sentences[j].Order })
 		for ti := range chapter.Tracks {
@@ -261,7 +271,7 @@ func (w *Worker) InsertSentence(ctx context.Context, bookID string, chapterIdx i
 	if !renderNow {
 		return nil
 	}
-	return w.rerenderSegment(ctx, r, chapterIdx, newSen.ID.Hex(), book.Voices, "")
+	return w.rerenderSegment(ctx, r, chapterIdx, newSen.ID.Hex(), book.Voices, "", true)
 }
 
 // DeleteSentence deletes a sentence and reassembles each voice from the
@@ -386,7 +396,7 @@ func (w *Worker) ApproveSentence(ctx context.Context, bookID string, chapterIdx 
 // text (e.g. it errored or mismatched). synthVoice, when set, synthesizes
 // with a different voice/model while keeping the audio in the target voice's
 // track. Queues behind any active generation run.
-func (w *Worker) RegenerateSegment(ctx context.Context, bookID string, chapterIdx int, sentenceID, voice, synthVoice string) error {
+func (w *Worker) RegenerateSegment(ctx context.Context, bookID string, chapterIdx int, sentenceID, voice, synthVoice string, merge bool) error {
 	unlock := w.LockBook(bookID)
 	defer unlock()
 	book, err := w.St.Books.FindByID(ctx, bookID)
@@ -398,5 +408,27 @@ func (w *Worker) RegenerateSegment(ctx context.Context, bookID string, chapterId
 	if voice != "" {
 		voices = []string{voice}
 	}
-	return w.rerenderSegment(ctx, r, chapterIdx, sentenceID, voices, synthVoice)
+	return w.rerenderSegment(ctx, r, chapterIdx, sentenceID, voices, synthVoice, merge)
+}
+
+// FinalizeChapter reassembles every voice's chapter mp3 from the cached
+// segments — the merge step the review page defers until save.
+func (w *Worker) FinalizeChapter(ctx context.Context, bookID string, chapterIdx int) error {
+	unlock := w.LockBook(bookID)
+	defer unlock()
+	book, err := w.St.Books.FindByID(ctx, bookID)
+	if err != nil || book == nil {
+		return err
+	}
+	if chapterIdx < 0 || chapterIdx >= len(book.Chapters) {
+		return nil
+	}
+	r := &run{w: w, book: book}
+	audioDir := filepath.Join(book.FolderPath, "audio")
+	for _, voice := range book.Voices {
+		if err := w.finalizeTrack(ctx, r, chapterIdx, voice, audioDir, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }

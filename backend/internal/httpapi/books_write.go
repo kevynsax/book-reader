@@ -59,6 +59,7 @@ func (s *Server) registerBookWriteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/regenerate", s.handleSentenceRegenerate)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/insert-after", s.handleSentenceInsertAfter)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/approve", s.handleSentenceApprove)
+	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/finalize", s.handleChapterFinalize)
 }
 
 // parseSummaryPages accepts the summary pages as a JSON array, a
@@ -1390,14 +1391,18 @@ func (s *Server) handleSentenceRegenerate(w http.ResponseWriter, r *http.Request
 		// SynthVoice renders with a different voice/model (still stored in
 		// Voice's track) — the escape hatch for a stubborn whisper mismatch.
 		SynthVoice string `json:"synthVoice"`
+		// Merge defaults to true; the review page renders segments only and
+		// reassembles the chapter once, on save.
+		Merge *bool `json:"merge"`
 	}
 	_ = decodeJSON(r, &body)
 	Message(w, "Re-rendering sentence.")
 	bookID := book.ID.Hex()
 	voice := body.Voice
 	synthVoice := body.SynthVoice
+	merge := body.Merge == nil || *body.Merge
 	go func() {
-		if err := s.W.RegenerateSegment(context.Background(), bookID, idx, sentenceID, voice, synthVoice); err != nil {
+		if err := s.W.RegenerateSegment(context.Background(), bookID, idx, sentenceID, voice, synthVoice, merge); err != nil {
 			log.Printf("regenerateSegment %s ch%d %s failed: %v", bookID, idx, sentenceID, err)
 		}
 	}()
@@ -1428,20 +1433,43 @@ func (s *Server) handleSentenceInsertAfter(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var body struct {
-		Text   string `json:"text"`
-		Render string `json:"render"` // "now" (default) | "later"
+		Text     string `json:"text"`
+		Render   string `json:"render"`   // "now" (default) | "later"
+		Position string `json:"position"` // "after" (default) | "before"
 	}
 	if err := decodeJSON(r, &body); err != nil || strings.TrimSpace(body.Text) == "" {
 		Error(w, http.StatusBadRequest, "text is required")
 		return
 	}
 	renderNow := body.Render != "later"
+	before := body.Position == "before"
 	Message(w, "Sentence added.")
 	bookID := book.ID.Hex()
 	text := strings.TrimSpace(body.Text)
 	go func() {
-		if err := s.W.InsertSentence(context.Background(), bookID, idx, sentenceID, text, renderNow); err != nil {
+		if err := s.W.InsertSentence(context.Background(), bookID, idx, sentenceID, text, before, renderNow); err != nil {
 			log.Printf("insertSentence %s ch%d after %s failed: %v", bookID, idx, sentenceID, err)
+		}
+	}()
+}
+
+// handleChapterFinalize merges each voice's cached segments into the chapter
+// mp3 — what the sentence review page calls on save.
+func (s *Server) handleChapterFinalize(w http.ResponseWriter, r *http.Request) {
+	book := s.findBook(w, r)
+	if book == nil {
+		return
+	}
+	idx, _ := strconv.Atoi(r.PathValue("idx"))
+	if idx < 0 || idx >= len(book.Chapters) {
+		Error(w, http.StatusNotFound, "Chapter not found")
+		return
+	}
+	Message(w, "Reassembling chapter audio.")
+	bookID := book.ID.Hex()
+	go func() {
+		if err := s.W.FinalizeChapter(context.Background(), bookID, idx); err != nil {
+			log.Printf("finalizeChapter %s ch%d failed: %v", bookID, idx, err)
 		}
 	}()
 }
