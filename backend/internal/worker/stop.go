@@ -5,11 +5,17 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/kevynsax/book-reader/backend/internal/model"
+	"github.com/kevynsax/book-reader/backend/internal/svc/tts"
 )
+
+// How long a recovered run waits for its TTS workers to re-register before
+// giving up — a deploy takes a couple of minutes, a dead server never comes.
+const resumeWaitLimit = 15 * time.Minute
 
 // ErrStopped unwinds a generation run cooperatively at the next
 // chapter/segment boundary (Node's AudioStopped). In-flight renders complete
@@ -147,6 +153,7 @@ func (w *Worker) finalizeStop(ctx context.Context, r *run, manageBookStatus, cle
 		}
 		if clearErrors {
 			book.ErrorMessage = nil
+			book.ResumeAudio = false
 		}
 		if manageBookStatus {
 			book.Status = model.StatusComplete
@@ -187,10 +194,15 @@ func (w *Worker) RecoverInterruptedAudio(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var resume []*model.Book
 	for _, book := range books {
+		wasGenerating := book.Status == model.StatusGeneratingAudio
 		unlock := w.LockBook(book.ID.Hex())
 		r := &run{w: w, book: book}
-		err := w.finalizeStop(ctx, r, book.Status == model.StatusGeneratingAudio, false)
+		err := w.finalizeStop(ctx, r, wasGenerating, false)
+		if err == nil && wasGenerating {
+			err = r.withSave(ctx, func() { book.ResumeAudio = true })
+		}
 		unlock()
 		if err != nil {
 			return err
@@ -200,6 +212,77 @@ func (w *Worker) RecoverInterruptedAudio(ctx context.Context) error {
 			name = book.ID.Hex()
 		}
 		log.Printf("Recovered interrupted audio for %q", name)
+		if wasGenerating {
+			resume = append(resume, book)
+		}
+	}
+
+	// A run cut short by a deploy or a crash picks itself back up: the flag is
+	// persisted, so even a restart during the wait still resumes.
+	pending, err := w.St.Books.Find(ctx, bson.M{"deleted": bson.M{"$ne": true}, "resumeAudio": true}, nil)
+	if err == nil {
+		seen := map[string]bool{}
+		for _, b := range resume {
+			seen[b.ID.Hex()] = true
+		}
+		for _, b := range pending {
+			if !seen[b.ID.Hex()] {
+				resume = append(resume, b)
+			}
+		}
+	}
+	for _, book := range resume {
+		go w.resumeAudioRun(context.WithoutCancel(ctx), book.ID.Hex(), book.Voices)
 	}
 	return nil
+}
+
+// resumeAudioRun waits for the TTS fabric to come back — after a deploy the
+// workers re-register a little after the backend does — then restarts the
+// interrupted render. Gives up quietly if the user stopped the book meanwhile
+// or no worker shows up.
+func (w *Worker) resumeAudioRun(ctx context.Context, bookID string, voices []string) {
+	models := map[string]bool{}
+	for _, v := range voices {
+		m, _ := tts.ParseVoice(v)
+		models[m.ID] = true
+	}
+	ready := func() bool {
+		for id := range models {
+			if !w.Q.Registry.HasModelWorker(id) {
+				return false
+			}
+		}
+		return len(models) > 0
+	}
+
+	deadline := time.Now().Add(resumeWaitLimit)
+	for !ready() {
+		if time.Now().After(deadline) {
+			log.Printf("resumeAudioRun %s: no TTS worker for its voices; leaving it stopped", bookID)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+	}
+
+	book, err := w.St.Books.FindByID(ctx, bookID)
+	if err != nil || book == nil || !book.ResumeAudio {
+		return
+	}
+	unlock := w.LockBook(bookID)
+	r := &run{w: w, book: book}
+	err = r.withSave(ctx, func() { book.ResumeAudio = false })
+	unlock()
+	if err != nil {
+		log.Printf("resumeAudioRun %s: clearing flag failed: %v", bookID, err)
+		return
+	}
+	log.Printf("Resuming interrupted audio generation for %q", bookID)
+	if err := w.GenerateBookAudio(ctx, bookID); err != nil {
+		log.Printf("resumeAudioRun %s failed: %v", bookID, err)
+	}
 }

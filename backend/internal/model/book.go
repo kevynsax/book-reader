@@ -18,11 +18,11 @@ const (
 	StatusAwaitingChapterReview BookStatus = "awaiting_chapter_review"
 	// Sentence phase: chapters are split into TTS-ready sentences (SLM work)
 	// and reviewed by the user before any audio is rendered.
-	StatusGeneratingSentences      BookStatus = "generating_sentences"
-	StatusAwaitingSentenceReview   BookStatus = "awaiting_sentence_review"
-	StatusGeneratingAudio          BookStatus = "generating_audio"
-	StatusComplete              BookStatus = "complete"
-	StatusError                 BookStatus = "error"
+	StatusGeneratingSentences    BookStatus = "generating_sentences"
+	StatusAwaitingSentenceReview BookStatus = "awaiting_sentence_review"
+	StatusGeneratingAudio        BookStatus = "generating_audio"
+	StatusComplete               BookStatus = "complete"
+	StatusError                  BookStatus = "error"
 )
 
 type AudioStatus string
@@ -145,10 +145,14 @@ type Book struct {
 	Progress       Progress      `bson:"progress"                 json:"progress"`
 	ErrorMessage   *string       `bson:"errorMessage,omitempty"   json:"errorMessage,omitempty"`
 	Voices         []string      `bson:"voices"                   json:"voices"`
-	Deleted        bool          `bson:"deleted"                  json:"deleted"`
-	CreatedAt      DateTime      `bson:"createdAt"                json:"createdAt"`
-	UpdatedAt      DateTime      `bson:"updatedAt"                json:"updatedAt"`
-	V              int32         `bson:"__v"                      json:"__v"`
+	// ResumeAudio marks a run a crash/restart cut short: boot recovery sets it
+	// and resumes the render as soon as the TTS fabric is back. Cleared when
+	// the resume starts or the user stops the book.
+	ResumeAudio bool     `bson:"resumeAudio,omitempty"    json:"resumeAudio,omitempty"`
+	Deleted     bool     `bson:"deleted"                  json:"deleted"`
+	CreatedAt   DateTime `bson:"createdAt"                json:"createdAt"`
+	UpdatedAt   DateTime `bson:"updatedAt"                json:"updatedAt"`
+	V           int32    `bson:"__v"                      json:"__v"`
 }
 
 func (b *Book) TrackForVoice(chapter *Chapter, voice string) *VoiceTrack {
