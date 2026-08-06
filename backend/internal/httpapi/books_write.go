@@ -1340,17 +1340,23 @@ func (s *Server) handleSentenceEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Text string `json:"text"`
+		Text   string `json:"text"`
+		Render string `json:"render"` // "now" (default) | "later"
 	}
 	if err := decodeJSON(r, &body); err != nil || strings.TrimSpace(body.Text) == "" {
 		Error(w, http.StatusBadRequest, "text is required")
 		return
 	}
-	Message(w, "Sentence updated. Re-rendering audio.")
+	renderNow := body.Render != "later"
+	if renderNow {
+		Message(w, "Sentence updated. Re-rendering audio.")
+	} else {
+		Message(w, "Sentence updated. Audio will re-render on the next generation.")
+	}
 	bookID := book.ID.Hex()
 	text := strings.TrimSpace(body.Text)
 	go func() {
-		if err := s.W.EditSentence(context.Background(), bookID, idx, sentenceID, text); err != nil {
+		if err := s.W.EditSentence(context.Background(), bookID, idx, sentenceID, text, renderNow); err != nil {
 			log.Printf("editSentence %s ch%d %s failed: %v", bookID, idx, sentenceID, err)
 		}
 	}()
@@ -1422,17 +1428,19 @@ func (s *Server) handleSentenceInsertAfter(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var body struct {
-		Text string `json:"text"`
+		Text   string `json:"text"`
+		Render string `json:"render"` // "now" (default) | "later"
 	}
 	if err := decodeJSON(r, &body); err != nil || strings.TrimSpace(body.Text) == "" {
 		Error(w, http.StatusBadRequest, "text is required")
 		return
 	}
-	Message(w, "Sentence added. Rendering audio.")
+	renderNow := body.Render != "later"
+	Message(w, "Sentence added.")
 	bookID := book.ID.Hex()
 	text := strings.TrimSpace(body.Text)
 	go func() {
-		if err := s.W.InsertSentence(context.Background(), bookID, idx, sentenceID, text); err != nil {
+		if err := s.W.InsertSentence(context.Background(), bookID, idx, sentenceID, text, renderNow); err != nil {
 			log.Printf("insertSentence %s ch%d after %s failed: %v", bookID, idx, sentenceID, err)
 		}
 	}()

@@ -150,7 +150,10 @@ func segmentPathFor(track *model.VoiceTrack, segIdx int, audioDir string, chapte
 // EditSentence edits a sentence's text, then re-renders its segment for
 // every voice. Queues behind any active generation run (LockBook) — an
 // interleaved save here would erase the run's freshly rendered segments.
-func (w *Worker) EditSentence(ctx context.Context, bookID string, chapterIdx int, sentenceID, text string) error {
+// renderNow: re-render the touched segments immediately (they jump the
+// dispatcher queue at priority 0). When false the segments just go stale and
+// the next generate/continue picks them up in batch.
+func (w *Worker) EditSentence(ctx context.Context, bookID string, chapterIdx int, sentenceID, text string, renderNow bool) error {
 	unlock := w.LockBook(bookID)
 	defer unlock()
 	book, err := w.St.Books.FindByID(ctx, bookID)
@@ -194,13 +197,16 @@ func (w *Worker) EditSentence(ctx context.Context, bookID string, chapterIdx int
 		"chapterIdx": chapterIdx, "sentenceId": sentenceID, "text": trimmed,
 	}})
 
+	if !renderNow {
+		return nil
+	}
 	return w.rerenderSegment(ctx, r, chapterIdx, sentenceID, book.Voices, "")
 }
 
 // InsertSentence creates a new sentence right after an existing one and
 // renders it for every voice — the manual alternative to the old automatic
 // SLM split. Queues behind any active generation run.
-func (w *Worker) InsertSentence(ctx context.Context, bookID string, chapterIdx int, afterSentenceID, text string) error {
+func (w *Worker) InsertSentence(ctx context.Context, bookID string, chapterIdx int, afterSentenceID, text string, renderNow bool) error {
 	unlock := w.LockBook(bookID)
 	defer unlock()
 	book, err := w.St.Books.FindByID(ctx, bookID)
@@ -252,6 +258,9 @@ func (w *Worker) InsertSentence(ctx context.Context, bookID string, chapterIdx i
 	}
 	w.emit(book, map[string]any{"chapters": model.SerializeChaptersForClient(book.Chapters)})
 
+	if !renderNow {
+		return nil
+	}
 	return w.rerenderSegment(ctx, r, chapterIdx, newSen.ID.Hex(), book.Voices, "")
 }
 
