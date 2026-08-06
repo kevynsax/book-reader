@@ -63,6 +63,7 @@ export interface TtsServer {
   url: string;
   role?: 'tts' | 'vlm' | 'slm' | 'whisper';
   busy?: boolean;
+  task?: string;
   online: boolean;
   state?: string;
   activeModel?: string;

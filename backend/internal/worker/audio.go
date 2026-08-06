@@ -31,7 +31,7 @@ const sentenceSplitMaxDepth = 4
 // sub-sentences as needed, each re-checked (speech normalization can
 // re-inflate length). `text` is what gets read; `display` keeps the clean
 // original; `original` tracks the pre-split source.
-func splitUnitForTts(ctx context.Context, q *queue.Client, display, language string, depth int, original *string) []model.Sentence {
+func (w *Worker) splitUnitForTts(ctx context.Context, display, language string, depth int, original *string) []model.Sentence {
 	clean := strings.TrimSpace(display)
 	if clean == "" {
 		return nil
@@ -44,7 +44,7 @@ func splitUnitForTts(ctx context.Context, q *queue.Client, display, language str
 		d := clean
 		return []model.Sentence{{Text: norm, Display: &d, Original: original}}
 	}
-	parts := tts.SlmSplitToMax(ctx, q, clean, config.TtsMaxSentenceChars)
+	parts := w.slmSplitToMaxCached(ctx, clean)
 	if parts == nil {
 		d := clean
 		return []model.Sentence{{Text: norm, Display: &d, Original: original}}
@@ -56,7 +56,7 @@ func splitUnitForTts(ctx context.Context, q *queue.Client, display, language str
 	}
 	var out []model.Sentence
 	for _, part := range parts {
-		out = append(out, splitUnitForTts(ctx, q, part, language, depth+1, src)...)
+		out = append(out, w.splitUnitForTts(ctx, part, language, depth+1, src)...)
 	}
 	return out
 }
@@ -94,7 +94,7 @@ func (w *Worker) buildSentences(ctx context.Context, r *run, idx int) (bool, err
 	w.emit(book, map[string]any{"splitProgress": progressPayload{Current: 0, Total: len(units), Message: splitMsg}})
 	var sentences []model.Sentence
 	for i, unit := range units {
-		pieces := splitUnitForTts(ctx, w.Q, unit, language, 0, nil)
+		pieces := w.splitUnitForTts(ctx, unit, language, 0, nil)
 		// Trace lineage: reviewed line i+1 is "N"; pieces the SLM cut from it
 		// up front are "N.1", "N.2", … marked pre-audio-generation.
 		base := fmt.Sprint(i + 1)

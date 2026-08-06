@@ -32,6 +32,15 @@ Make this distinction explicit in the code: a single dispatch API like `Dispatch
 - **Make the chapter-boundaries editor's interaction paradigm (§7.5) the default pattern for every workspace UI in the app.**
 - **Redesign from scratch (functionality preserved, look and structure yours):** audio generation progress / continue / stop, the "work being done" surfaces, and the phrase/generation review UIs (§8). Suggested directions are given; improve on them.
 
+### 1.4 Nothing expensive is ever done twice (core principle)
+
+Every AI task burns real GPU/CPU time and power. The system must be built so that **the unit of rework is exactly the unit that failed — never more**:
+
+- **Granular failure attribution.** Errors are recorded on the precise unit: this page's OCR, this segment's synth, this chapter's assembly — with the actual error message. A book-level `error` status is only a rollup; the UI must always be able to show *which* pages/segments/chapters failed and *why*, and every retry action targets only those units. No "retry" ever re-runs sibling work that succeeded.
+- **All completed work is recyclable, in every flow.** Completed OCR pages survive resume and stop; rendered segments survive chapter re-assembly, voice continue, boundary edits (untouched chapters keep audio; touched ones go `stale`, files kept until replaced), stop/crash/restart, and sentence edits (only edited sentences re-render). A "complete" claim is trusted only if the file exists and is non-empty; otherwise that one unit re-renders. Text-hash skipping (§6.1) extends this: regenerating a voice re-renders only segments whose text/settings actually changed.
+- **Worker fallback is automatic.** When an AI server fails mid-task or goes offline: infra failures nack+requeue so **another server of the same role picks the task up** (shared role queues give this for free; for TTS's per-server queues the dispatcher must re-dispatch the segment to the next capable server). A server failing N tasks in a row is marked unhealthy and drained until its probe recovers; work continues on the rest of the fleet, degraded but not stopped. SLM keeps the primary/fallback weighted pair. Only when *no* server of a required role/model is healthy past the grace period does the affected unit fail — with an error naming the missing role/model, and everything already produced kept.
+- **Partial success is success.** A run where 3 of 40 chapters failed ends as "37 done, 3 failed: <reasons>", with the 37 playable and one action to retry just the 3.
+
 ---
 
 ## 2. Product feature inventory (complete — nothing may be dropped)
@@ -304,6 +313,7 @@ External service contracts (all OpenAI-shaped, keep):
 
 ## 10. Quality bar
 
+- **No documentation in code.** No comments, no doc comments, no explanatory blocks — code must be self-explanatory through naming and structure. All documentation lives in markdown files (e.g. `docs/architecture.md`, `docs/pipeline.md`, `docs/api.md`): the pipeline, the queue/dispatcher design, the data model, the API surface, non-obvious constraints (why assembly re-encodes, why timelines use decoded durations, the write-scoping rules). Keep those md files updated as the code evolves.
 - Table-stakes: no polling where WS exists; no duplicated status logic; no swallowed errors (every failure reaches the UI attached to the thing that failed); no native `confirm`/`alert`; no dead props; destructive actions (reprocess, delete, replace chapters) always confirm and say exactly what will be lost.
 - Concurrency safety: one generation run per book; interactive edits lock per book and pre-empt batch TTS via the priority lane; DB writes are field/array-scoped, never whole-document replaces from concurrent paths; the stop flag is checked at segment and chapter boundaries and **must be honored by resume/reprocess flows too** (v1 had a bug where rerunning import ignored the stop flag and wiped chapters).
 - Crash safety: server boot reconciles any `generating` state; segment files are the source of truth (a "complete" segment whose file is missing re-renders); assembly always re-derives the timeline from decoded durations.

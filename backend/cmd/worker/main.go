@@ -50,6 +50,13 @@ type worker struct {
 	busy    atomic.Bool
 	healthy atomic.Bool
 
+	// Current task label + completed tally, reported in heartbeats so the UI
+	// can show what each worker is doing and how fast it runs.
+	taskMu    sync.Mutex
+	taskLabel string
+	doneCount int64
+	doneSecs  float64
+
 	mu   sync.Mutex
 	conn *amqp.Connection
 	ch   *amqp.Channel
@@ -157,6 +164,15 @@ func (w *worker) healthCycle() {
 	hb := w.probe()
 	w.healthy.Store(hb.Healthy)
 	hb.Busy = w.busy.Load()
+	w.taskMu.Lock()
+	if hb.Busy {
+		hb.Task = w.taskLabel
+	}
+	hb.Done = w.doneCount
+	if w.doneCount > 0 {
+		hb.AvgSecs = w.doneSecs / float64(w.doneCount)
+	}
+	w.taskMu.Unlock()
 
 	w.mu.Lock()
 	ch := w.ch
@@ -329,8 +345,18 @@ func (w *worker) handle(d amqp.Delivery) {
 		return
 	}
 
+	w.taskMu.Lock()
+	w.taskLabel = taskLabel(task)
+	w.taskMu.Unlock()
+
 	started := time.Now()
 	result, err := w.execute(task)
+	if err == nil {
+		w.taskMu.Lock()
+		w.doneCount++
+		w.doneSecs += time.Since(started).Seconds()
+		w.taskMu.Unlock()
+	}
 	switch {
 	case err != nil && isInfra(err):
 		log.Printf("worker: %s %s infra failure after %s: %v (requeueing, pausing)", w.role, task.Type, time.Since(started).Round(time.Millisecond), err)
@@ -345,6 +371,19 @@ func (w *worker) handle(d amqp.Delivery) {
 	}
 	log.Printf("worker: %s %s done in %s", w.role, task.Type, time.Since(started).Round(time.Millisecond))
 	_ = d.Ack(false)
+}
+
+// taskLabel is the short human label heartbeats carry while a task runs.
+func taskLabel(task queue.Task) string {
+	if task.Type == queue.TypeOcrPage {
+		var p struct {
+			Page int `json:"page"`
+		}
+		if json.Unmarshal(task.Payload, &p) == nil && p.Page > 0 {
+			return fmt.Sprintf("p.%d", p.Page)
+		}
+	}
+	return ""
 }
 
 // isInfra distinguishes "this worker can't attempt tasks right now" from a

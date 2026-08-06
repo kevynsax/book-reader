@@ -651,6 +651,7 @@ function HighlightEditor(
 }
 
 function PageView({ bookId, page, large, preview, edit, editHeader }: PageViewProps) {
+  const dispatch = useDispatch<AppDispatch>();
   return (
     <div
       className={`grid gap-4 ${
@@ -692,11 +693,17 @@ function PageView({ bookId, page, large, preview, edit, editHeader }: PageViewPr
         ) : page.status === 'processing' ? (
           <span className="text-xs text-amber-400 animate-pulse">{t('Reading page…')}</span>
         ) : page.status === 'error' ? (
-          <div className="space-y-1">
+          <div className="space-y-2">
             <p className="text-xs font-medium text-red-400">{t('OCR failed for this page')}</p>
             <p className="text-xs text-red-300 break-words whitespace-pre-wrap">
               {page.error || t('No details reported by the OCR server.')}
             </p>
+            <button
+              className="btn-secondary text-xs"
+              onClick={() => dispatch(reocrPage({ bookId, page: page.page }))}
+            >
+              {t('Read this page again')}
+            </button>
           </div>
         ) : page.text?.trim() ? (
           <ReadDiff text={page.text} read={page.readText} />

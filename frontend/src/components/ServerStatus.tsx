@@ -82,7 +82,10 @@ export default function ServerStatus({
           const rendering = isTts && s.online && !!s.rendering;
           const busy = rendering || (!isTts && s.online && !!s.busy);
           const model = modelLabel(s, s.activeModel);
-          const busyText = rendering ? renderingLabel(s, voiceLabel) : BUSY_VERB[role]?.() ?? t('working');
+          const busyText = rendering
+            ? renderingLabel(s, voiceLabel)
+            : `${BUSY_VERB[role]?.() ?? t('working')}${s.task ? ` ${s.task}` : ''}`;
+          const avgUnit = role === 'tts' ? t('s/sentence') : role === 'vlm' ? t('s/page') : t('s/task');
           return (
             <span
               key={`${role}-${s.id}`}
@@ -108,9 +111,9 @@ export default function ServerStatus({
               <span className="shrink-0">{s.label}</span>
               {busy && <span className="text-amber-400/90 truncate">· {busyText}</span>}
               {!busy && isTts && s.online && model && <span className="text-gray-500 truncate">· {model}</span>}
-              {isTts && s.online && s.avgRenderSecs != null && (
-                <span className="text-gray-500 shrink-0" title={t('{n} sentences rendered', { n: s.renders ?? 0 })}>
-                  · {s.avgRenderSecs.toFixed(1)}{t('s/sentence')}
+              {s.online && s.avgRenderSecs != null && (
+                <span className="text-gray-500 shrink-0" title={t('{n} tasks completed', { n: s.renders ?? 0 })}>
+                  · {s.avgRenderSecs.toFixed(1)}{avgUnit}
                 </span>
               )}
             </span>

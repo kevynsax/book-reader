@@ -640,8 +640,19 @@ export default function EditBookPage() {
         {showStatus && (
           <>
             <StatusIndicator book={book} />
+            <div className="flex justify-end">
+              <button
+                className="flex items-center gap-1.5 text-xs font-medium text-red-400 hover:text-red-300 disabled:opacity-40 transition-colors"
+                disabled={stopping}
+                onClick={handleStop}
+                title={t('Stop importing — pages already read are kept; continue whenever you want')}
+              >
+                <span className="w-2.5 h-2.5 rounded-sm bg-current" />
+                {stopping ? t('Stopping…') : t('Stop import')}
+              </button>
+            </div>
             {(book.status === 'ocr_processing' || book.status === 'detecting_chapters' || book.status === 'reading_title') && (
-              <div className="card"><ServerStatus roles={['vlm', 'slm']} /></div>
+              <div className="card"><ServerStatus roles={['vlm']} /></div>
             )}
           </>
         )}

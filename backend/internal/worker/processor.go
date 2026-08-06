@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -235,6 +236,9 @@ func (w *Worker) ProcessBook(ctx context.Context, bookID string, resume bool) er
 
 	if err := w.processBookInner(ctx, r, resume); err != nil {
 		message := err.Error()
+		if errors.Is(err, ErrStopped) {
+			message = "Import stopped — pages already read are kept; use Continue importing to finish."
+		}
 		saveErr := r.withSave(ctx, func() {
 			book.Status = model.StatusError
 			book.ErrorMessage = &message
@@ -249,6 +253,11 @@ func (w *Worker) ProcessBook(ctx context.Context, bookID string, resume bool) er
 
 func (w *Worker) processBookInner(ctx context.Context, r *run, resume bool) error {
 	book := r.book
+	// The import honors the same cooperative stop flag as audio generation:
+	// checked at phase boundaries and per OCR page, so a stop leaves the book
+	// resumable (finished pages keep their text; Continue importing redoes the
+	// rest).
+	stopped := func() bool { return w.stopRequested(book.ID.Hex()) }
 
 	if err := w.setProgress(ctx, r, 0, 1, "Splitting pages…", model.StatusSplittingPages); err != nil {
 		return err
@@ -261,6 +270,9 @@ func (w *Worker) processBookInner(ctx context.Context, r *run, resume bool) erro
 		return err
 	}
 
+	if stopped() {
+		return ErrStopped
+	}
 	if err := w.setProgress(ctx, r, 0, 1, "Extracting cover…", model.StatusExtractingCover); err != nil {
 		return err
 	}
@@ -347,6 +359,9 @@ func (w *Worker) processBookInner(ctx context.Context, r *run, resume bool) erro
 	doneCount.Store(int64(totalPagesToRead - len(worklist)))
 
 	_ = pool.Run(worklist, config.OcrConcurrency, func(i int, _ int) error {
+		if stopped() {
+			return nil
+		}
 		pageNum := book.OcrPages[i].Page
 		if pageNum-1 >= len(allPagePaths) {
 			return nil
@@ -359,7 +374,7 @@ func (w *Worker) processBookInner(ctx context.Context, r *run, resume bool) erro
 		var result queue.OcrPageResult
 		err := readErr
 		if err == nil {
-			result, err = w.Q.OcrPage(ctx, image)
+			result, err = w.Q.OcrPage(ctx, image, pageNum)
 		}
 		if err == nil {
 			reflowed := sentences.ReflowSentences(result.Content)
@@ -371,6 +386,9 @@ func (w *Worker) processBookInner(ctx context.Context, r *run, resume bool) erro
 				book.OcrPages[i].Status = model.OcrComplete
 				book.OcrPages[i].Error = nil
 			})
+			// Warm the split cache while other pages are still being read —
+			// the SLM servers are otherwise idle during OCR.
+			go w.prefetchSplits(reflowed, BookSpeechLanguage(book, result.Language))
 		} else {
 			message := err.Error()
 			log.Printf("OCR failed for page %d of book %s: %s", pageNum, book.ID.Hex(), message)
@@ -395,6 +413,9 @@ func (w *Worker) processBookInner(ctx context.Context, r *run, resume bool) erro
 		return nil
 	})
 
+	if stopped() {
+		return ErrStopped
+	}
 	if err := w.setProgress(ctx, r, 0, 1, "Detecting chapters…", model.StatusDetectingChapters); err != nil {
 		return err
 	}
@@ -537,7 +558,7 @@ func (w *Worker) ReprocessPageOcr(ctx context.Context, bookID string, pageNum in
 		image, err := os.ReadFile(imagePath)
 		var result queue.OcrPageResult
 		if err == nil {
-			result, err = w.Q.OcrPage(ctx, image)
+			result, err = w.Q.OcrPage(ctx, image, pageNum)
 		}
 		if err != nil {
 			ocrErr = err

@@ -82,6 +82,15 @@ func (s *Server) handleServers(w http.ResponseWriter, _ *http.Request) {
 			Models: []tts.ModelRef{},
 		}
 		if hb.Role != queue.RoleTTS {
+			if hb.Busy && hb.Task != "" {
+				task := hb.Task
+				status.Task = &task
+			}
+			status.Renders = hb.Done
+			if hb.Done > 0 {
+				avg := hb.AvgSecs
+				status.AvgRenderSecs = &avg
+			}
 			statuses[i] = status
 			continue
 		}

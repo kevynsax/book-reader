@@ -32,8 +32,9 @@ type ServerStatus struct {
 	// whole fleet so the UI can show who is working during every phase.
 	Role string `json:"role,omitempty"`
 	// Whether the worker is executing a task right now (non-tts roles; tts
-	// busyness is conveyed by Rendering).
-	Busy   bool `json:"busy,omitempty"`
+	// busyness is conveyed by Rendering), and the task's short label ("p.34").
+	Busy   bool    `json:"busy,omitempty"`
+	Task   *string `json:"task,omitempty"`
 	Online bool `json:"online"`
 	State       *string `json:"state,omitempty"`
 	ActiveModel *string `json:"activeModel,omitempty"`

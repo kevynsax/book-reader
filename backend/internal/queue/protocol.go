@@ -77,6 +77,8 @@ const (
 
 type OcrPagePayload struct {
 	Image []byte `json:"image"`
+	// Book page number, so the worker can report "reading p.N" in heartbeats.
+	Page int `json:"page,omitempty"`
 }
 
 type OcrPageResult struct {
@@ -176,6 +178,12 @@ type Heartbeat struct {
 	ActiveModel string  `json:"activeModel,omitempty"`
 	Models      []Model `json:"models"`
 	Busy        bool    `json:"busy"`
+	// Short label of the task in flight ("p.34" for an OCR page), plus this
+	// worker's own completed-task tally — main can't attribute shared-queue
+	// tasks to servers, so each worker reports its own.
+	Task    string  `json:"task,omitempty"`
+	Done    int64   `json:"done,omitempty"`
+	AvgSecs float64 `json:"avgSecs,omitempty"`
 }
 
 type Model struct {

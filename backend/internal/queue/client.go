@@ -423,8 +423,8 @@ func submitAs[T any](c *Client, ctx context.Context, role Role, taskType string,
 
 // Typed helpers used by the orchestration code.
 
-func (c *Client) OcrPage(ctx context.Context, image []byte) (OcrPageResult, error) {
-	return submitAs[OcrPageResult](c, ctx, RoleVLM, TypeOcrPage, OcrPagePayload{Image: image})
+func (c *Client) OcrPage(ctx context.Context, image []byte, page int) (OcrPageResult, error) {
+	return submitAs[OcrPageResult](c, ctx, RoleVLM, TypeOcrPage, OcrPagePayload{Image: image, Page: page})
 }
 
 // ExtractTitle is a single on-demand read (not part of the queued page sweep),

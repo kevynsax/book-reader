@@ -128,23 +128,19 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
   const [showSummary, setShowSummary] = useState(false);
 
   const [detecting,   setDetecting]   = useState(false);
-  const [suggestions, setSuggestions] = useState<ChapterSuggestion[] | null>(null);
   const [previewPage, setPreviewPage] = useState(summaryPage);
-  const [editingIdx,  setEditingIdx]  = useState<number | null>(null);
 
   // Chapter editor modal (list + page preview + start picker).
   const [showEditor,  setShowEditor]  = useState(false);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [editingRow,  setEditingRow]  = useState<number | null>(null);
 
-  const suggestionsRef = useRef<ChapterSuggestion[] | null>(null);
   const rowsRef = useRef<Row[]>(rows);
   const pageRepeatDelayRef = useRef<number | null>(null);
   const pageRepeatIntervalRef = useRef<number | null>(null);
 
   const previewTotal = book.totalPages || book.lastPage;
 
-  useEffect(() => { suggestionsRef.current = suggestions; }, [suggestions]);
   useEffect(() => { rowsRef.current = rows; }, [rows]);
 
   useEffect(() => {
@@ -202,74 +198,26 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
     setError(null);
     try {
       const res = await api.post<{ chapters: ChapterSuggestion[] }>(`/api/books/${book._id}/summary/re-read`);
-      setPreviewPage(summaryPage);
-      setEditingIdx(null);
-      setSuggestions(res.data.chapters);
+      const next: Row[] = res.data.chapters
+        .filter(s => s.title.trim() && s.page >= book.firstPage && s.page <= book.lastPage)
+        .map(s => {
+          const startPage = clampPage(s.page);
+          const label = s.found ? (wordAtOffset(pageText(startPage), s.startChar) || s.title.trim()) : s.title.trim();
+          return { title: s.title.trim(), startPage, label, charAt: s.found ? s.startChar : undefined };
+        });
+      if (!next.length) {
+        setError(t('No chapters could be read from the summary page.'));
+        return;
+      }
+      setRows(next);
+      persist(next);
+      setSelectedIdx(0);
     } catch (err) {
       const msg = (err as { response?: { data?: { error?: string } } }).response?.data?.error;
       setError(msg ?? t('Failed to read the summary page'));
     } finally {
       setDetecting(false);
     }
-  };
-
-  const removeSuggestion = (idx: number) =>
-    setSuggestions(prev => (prev ? prev.filter((_, i) => i !== idx) : prev));
-
-  const pageOf = (s: ChapterSuggestion) => (Number.isFinite(s.page) ? s.page : 1);
-
-  // Re-check whether the chapter title actually appears on a given page's OCR text.
-  // Keeps the green "found" marker live as the page is moved or the title is edited.
-  const locateTitleOnPage = (title: string, page: number): { startChar: number; found: boolean } => {
-    const needle = title.trim();
-    if (!needle) return { startChar: 0, found: false };
-    const m = findFlexible(pageText(page), needle);
-    return m ? { startChar: m.index, found: true } : { startChar: 0, found: false };
-  };
-
-  const withFoundAt = (s: ChapterSuggestion, page: number): ChapterSuggestion => {
-    const np = Math.max(1, page);
-    return { ...s, page: np, ...locateTitleOnPage(s.title, np) };
-  };
-
-  const setTitle = (idx: number, title: string) =>
-    setSuggestions(prev =>
-      prev ? prev.map((s, i) => (i === idx ? { ...s, title, ...locateTitleOnPage(title, pageOf(s)) } : s)) : prev);
-
-  // Two book pages per scanned sheet → the table-of-contents page is ~twice the
-  // file page, so halving maps printed numbers onto the actual pages.
-  const halveAllPages = () =>
-    setSuggestions(prev => (prev ? prev.map(s => withFoundAt(s, Math.round(pageOf(s) / 2))) : prev));
-
-  const shiftAllPages = (delta: number) =>
-    setSuggestions(prev => (prev ? prev.map(s => withFoundAt(s, pageOf(s) + delta)) : prev));
-
-  const stepSuggestionPage = (idx: number, delta: number) => {
-    const current = suggestionsRef.current?.[idx];
-    if (!current) return;
-    const np = Math.max(1, pageOf(current) + delta);
-    const next = suggestionsRef.current?.map((s, i) => (i === idx ? withFoundAt(s, np) : s)) ?? null;
-    suggestionsRef.current = next;
-    setSuggestions(next);
-    setPreviewPage(Math.min(previewTotal, np));
-  };
-
-  // Only import suggestions whose chosen page falls within the reading range —
-  // titles read off the summary page that land outside it are dropped, not clamped in.
-  const inReadingRange = (p: number) => p >= book.firstPage && p <= book.lastPage;
-
-  const applySuggestions = () => {
-    if (!suggestions) return;
-    const next: Row[] = suggestions.filter(s => s.title.trim() && inReadingRange(pageOf(s))).map(s => {
-      const startPage = clampPage(s.page);
-      // When the AI located the title we keep its exact offset; an edited page
-      // invalidated it already (found=false → offset 0).
-      const label = s.found ? (wordAtOffset(pageText(startPage), s.startChar) || s.title.trim()) : s.title.trim();
-      return { title: s.title.trim(), startPage, label, charAt: s.found ? s.startChar : undefined };
-    });
-    setRows(next);
-    persist(next);
-    setSuggestions(null);
   };
 
   const clampPage = (p: number) =>
@@ -283,8 +231,14 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
     return { startChar: m ? m.index : 0, found: !!m };
   };
 
+  // Chapters are page ranges, so their order is their position in the book:
+  // always sorted by start page, then by start offset within the page.
+  const sortRows = (list: Row[]) =>
+    [...list].sort((a, b) =>
+      (clampPage(a.startPage) - clampPage(b.startPage)) || (locate(a).startChar - locate(b).startChar));
+
   const toPayload = (list: Row[]) =>
-    list.filter(r => r.title.trim()).map(r => ({
+    sortRows(list.filter(r => r.title.trim())).map(r => ({
       title: r.title.trim(),
       startPage: clampPage(r.startPage),
       startChar: locate(r).startChar,
@@ -333,7 +287,9 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
   const closeEditor = () => {
     setShowEditor(false);
     setEditingRow(null);
-    persist(rowsRef.current);
+    const sorted = sortRows(rowsRef.current);
+    setRows(sorted);
+    persist(sorted);
   };
 
   const stepRowPage = (idx: number, delta: number) => {
@@ -620,183 +576,6 @@ const ChapterReview = forwardRef<ChapterReviewHandle, Props>(function ChapterRev
 
             <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-800 shrink-0">
               <button className="btn-primary text-sm" onClick={closeEditor}>{t('Done')}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {suggestions !== null && (
-        <div
-          className="fixed inset-0 z-50 bg-gray-950/80 backdrop-blur flex items-center justify-center p-4"
-          onClick={() => setSuggestions(null)}
-        >
-          <div
-            className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-[1040px] max-w-[96vw] h-[680px] max-h-[92vh] flex flex-col"
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-800 shrink-0">
-              <h2 className="font-semibold text-gray-100">{t('Chapters')}</h2>
-              <button
-                className="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-800 text-gray-300 hover:bg-amber-600/20 hover:text-amber-300 transition-colors"
-                onClick={() => setPreviewPage(Math.min(previewTotal, Math.max(1, summaryPage)))}
-                title={t('Go to the summary page in the preview')}
-              >
-                {t('Summary · p.{page}', { page: summaryPage })}
-              </button>
-              <div className="flex-1" />
-              <button
-                className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
-                onClick={() => setSuggestions(null)}
-                title={t('Close')}
-                aria-label={t('Close')}
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            <div className="flex-1 min-h-0 flex">
-              {/* Editable chapter list */}
-              <div className="flex flex-col min-h-0 w-[30rem] max-w-full shrink-0 md:border-r border-gray-800">
-                <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-gray-800 shrink-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-500">{t('All pages')}</span>
-                    <div className="flex items-center rounded-lg border border-gray-700 overflow-hidden">
-                      <button
-                        className="px-2 py-1 text-gray-300 hover:bg-gray-800 disabled:opacity-40 transition-colors"
-                        onClick={() => shiftAllPages(-1)}
-                        disabled={suggestions.length === 0}
-                        title={t('Shift every page back by one')}
-                        aria-label={t('Shift every page back by one')}
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
-                        </svg>
-                      </button>
-                      <button
-                        className="px-3 py-1 font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-40 border-x border-gray-700 transition-colors"
-                        onClick={halveAllPages}
-                        disabled={suggestions.length === 0}
-                        title={t('Halve every page (two book pages per scanned page)')}
-                        aria-label={t('Halve every page')}
-                      >
-                        ½
-                      </button>
-                      <button
-                        className="px-2 py-1 text-gray-300 hover:bg-gray-800 disabled:opacity-40 transition-colors"
-                        onClick={() => shiftAllPages(1)}
-                        disabled={suggestions.length === 0}
-                        title={t('Shift every page forward by one')}
-                        aria-label={t('Shift every page forward by one')}
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                  <span className="text-xs text-gray-500">{t('Click a title to edit')}</span>
-                </div>
-
-                {suggestions.length === 0 ? (
-                  <p className="px-5 py-8 text-sm text-gray-500 text-center">
-                    {t('No chapters could be read from the summary page.')}
-                  </p>
-                ) : (
-                  <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-gray-800/70">
-                    {suggestions.map((s, i) => {
-                      return (
-                        <div
-                          key={i}
-                          className="flex items-center gap-2 px-3 py-2 hover:bg-gray-800/40"
-                        >
-                          <div className="flex-1 min-w-0">
-                            {editingIdx === i ? (
-                              <input
-                                autoFocus
-                                className="input text-sm py-1"
-                                value={s.title}
-                                onChange={e => setTitle(i, e.target.value)}
-                                onBlur={() => setEditingIdx(null)}
-                                onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') setEditingIdx(null); }}
-                                placeholder={t('Chapter title…')}
-                              />
-                            ) : (
-                              <button
-                                className={`w-full text-left text-sm line-clamp-2 leading-tight px-1 py-0.5 rounded hover:bg-gray-800/60 transition-colors ${s.found ? 'text-green-300' : 'text-gray-200'}`}
-                                onClick={() => setEditingIdx(i)}
-                                title={s.title.trim() || t('Untitled — click to edit')}
-                              >
-                                {s.title.trim() || <span className="text-gray-500 italic">{t('Untitled')}</span>}
-                              </button>
-                            )}
-                          </div>
-                          <div className="flex items-center shrink-0">
-                            <button
-                              className="w-6 h-7 rounded-l flex items-center justify-center text-gray-400 hover:text-gray-100 hover:bg-gray-800 transition-colors"
-                              {...repeatHandlers(() => stepSuggestionPage(i, -1))}
-                              title={t('Page −1 and preview')}
-                              aria-label={t('Page back by one')}
-                            >
-                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
-                              </svg>
-                            </button>
-                            <button
-                              className="w-12 h-7 text-sm text-center tabular-nums text-gray-200 hover:text-amber-300 hover:bg-gray-800 transition-colors"
-                              onClick={() => setPreviewPage(Math.min(previewTotal, Math.max(1, pageOf(s))))}
-                              title={t('Go to this page in the preview')}
-                            >
-                              {Number.isFinite(s.page) ? s.page : '?'}
-                            </button>
-                            <button
-                              className="w-6 h-7 rounded-r flex items-center justify-center text-gray-400 hover:text-gray-100 hover:bg-gray-800 transition-colors"
-                              {...repeatHandlers(() => stepSuggestionPage(i, 1))}
-                              title={t('Page +1 and preview')}
-                              aria-label={t('Page forward by one')}
-                            >
-                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-                              </svg>
-                            </button>
-                          </div>
-                          <button
-                            className="text-gray-600 hover:text-red-400 transition-colors shrink-0"
-                            onClick={() => removeSuggestion(i)}
-                            aria-label={t('Remove chapter')}
-                          >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* Book page preview, opens on the summary page */}
-              <div className="hidden md:flex flex-1 min-w-0 min-h-0 p-3">
-                <PagePreview
-                  bookId={book._id}
-                  totalPages={previewTotal}
-                  page={previewPage}
-                  onPageChange={setPreviewPage}
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-800 shrink-0">
-              <button className="btn-secondary text-sm" onClick={() => setSuggestions(null)}>{t('Cancel')}</button>
-              <button
-                className="btn-primary text-sm"
-                onClick={applySuggestions}
-                disabled={suggestions.filter(s => s.title.trim() && inReadingRange(pageOf(s))).length === 0}
-              >
-                {t('Replace chapters')}
-              </button>
             </div>
           </div>
         </div>
