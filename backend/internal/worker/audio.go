@@ -739,6 +739,7 @@ func pendingJobs(book *model.Book, voices []string) []job {
 
 func (w *Worker) generateForVoices(ctx context.Context, book *model.Book, voices []string, manageBookStatus bool) error {
 	r := &run{w: w, book: book}
+	defer w.publishRun(book.ID.Hex(), r)()
 	audioDir := filepath.Join(book.FolderPath, "audio")
 	if err := os.MkdirAll(audioDir, 0o755); err != nil {
 		return err
@@ -897,6 +898,7 @@ func (w *Worker) RegenerateChapterAudio(ctx context.Context, bookID string, chap
 		return nil
 	}
 	r := &run{w: w, book: book}
+	defer w.publishRun(book.ID.Hex(), r)()
 
 	w.ensureBookLanguage(ctx, r)
 
@@ -1004,6 +1006,7 @@ func (w *Worker) RegenerateChapterVoiceAudio(ctx context.Context, bookID string,
 		return nil
 	}
 	r := &run{w: w, book: book}
+	defer w.publishRun(book.ID.Hex(), r)()
 
 	w.ensureBookLanguage(ctx, r)
 
@@ -1045,6 +1048,7 @@ func (w *Worker) ContinueChapterVoiceAudio(ctx context.Context, bookID string, c
 		return nil
 	}
 	r := &run{w: w, book: book}
+	defer w.publishRun(book.ID.Hex(), r)()
 
 	w.ensureBookLanguage(ctx, r)
 

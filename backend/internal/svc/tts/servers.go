@@ -41,9 +41,12 @@ type ServerStatus struct {
 	Backend     *string `json:"backend,omitempty"`
 	// Model of the render main's dispatcher currently holds on this server,
 	// plus the voice and sentence of the synthesize RPC in flight.
-	Rendering      *string `json:"rendering,omitempty"`
-	RenderingVoice *string `json:"renderingVoice,omitempty"`
-	RenderingText  *string `json:"renderingText,omitempty"`
+	// RenderingVoiceName is the display name main owns for that voice — the
+	// UI shows it verbatim so a chip can never disagree with the voice picker.
+	Rendering          *string `json:"rendering,omitempty"`
+	RenderingVoice     *string `json:"renderingVoice,omitempty"`
+	RenderingVoiceName *string `json:"renderingVoiceName,omitempty"`
+	RenderingText      *string `json:"renderingText,omitempty"`
 	// Synthesize history since boot. Renders/AvgRenderSecs describe the model
 	// this server is currently rendering (or last rendered) — per model,
 	// because a kokoro sentence and a higgs sentence differ by an order of

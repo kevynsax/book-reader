@@ -33,6 +33,7 @@ func New(st *store.Store, hub *ws.Hub, w *worker.Worker) http.Handler {
 	mux.HandleFunc("GET /api/servers", s.handleServers)
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("GET /api/models/{id}/voices", s.handleModelVoices)
+	mux.HandleFunc("GET /api/voice-names", s.handleVoiceNames)
 
 	s.registerBookRoutes(mux)
 	s.registerBookWriteRoutes(mux)
@@ -111,6 +112,9 @@ func (s *Server) handleServers(w http.ResponseWriter, _ *http.Request) {
 				text = string(r[:80]) + "…"
 			}
 			status.RenderingVoice = &voice
+			if name := tts.DisplayName(cur.Model, voice); name != "" {
+				status.RenderingVoiceName = &name
+			}
 			status.RenderingText = &text
 		}
 		if byModel, ok := renderStats[hb.ServerID]; ok && len(byModel) > 0 {
@@ -173,6 +177,12 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	JSON(w, http.StatusOK, out)
+}
+
+// Every voice display name main owns, engine → voice id → name. Static: no
+// server probe, so labels resolve even when the fleet is offline.
+func (s *Server) handleVoiceNames(w http.ResponseWriter, _ *http.Request) {
+	JSON(w, http.StatusOK, map[string]any{"names": tts.AllVoiceNames()})
 }
 
 // Voices for a given model. A model is `available` if any server is online.

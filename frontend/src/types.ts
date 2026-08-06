@@ -73,6 +73,7 @@ export interface TtsServer {
   backend?: string;
   rendering?: string;
   renderingVoice?: string;
+  renderingVoiceName?: string;
   renderingText?: string;
   renders?: number;
   avgRenderSecs?: number;

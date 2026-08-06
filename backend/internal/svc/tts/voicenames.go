@@ -109,3 +109,38 @@ func VoiceDisplayNames(modelID string, voices []string) map[string]string {
 	}
 	return names
 }
+
+// DisplayName names a voice as a render RPC reports it: bare ids are read
+// under modelID, composite "model:voice" ids carry their own model.
+func DisplayName(modelID, voice string) string {
+	if strings.Contains(voice, ":") {
+		m, bare := ParseVoice(voice)
+		return VoiceDisplayName(m.ID, bare)
+	}
+	return VoiceDisplayName(modelID, voice)
+}
+
+// AllVoiceNames is the whole table, engine → voice id → display name. The UI
+// labels a voice from this alone, so a name never depends on which server
+// answered a probe (or on a probe answering at all).
+func AllVoiceNames() map[string]map[string]string {
+	out := make(map[string]map[string]string, len(voiceAliases))
+	for engine, names := range voiceAliases {
+		engineNames := make(map[string]string, len(names))
+		for voice, name := range names {
+			engineNames[voice] = name
+		}
+		out[engine] = engineNames
+	}
+	for _, m := range Models {
+		if out[m.ID] == nil {
+			out[m.ID] = map[string]string{}
+		}
+		for _, v := range m.FallbackVoices {
+			if _, ok := out[m.ID][v]; !ok {
+				out[m.ID][v] = VoiceDisplayName(m.ID, v)
+			}
+		}
+	}
+	return out
+}

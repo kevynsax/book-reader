@@ -22,11 +22,13 @@ const ROLE_TAG: Record<string, () => string> = {
 };
 
 // "renderizando Mateus: 'E, antes, a disciplina teologica…'" when the render's
-// voice/sentence are known, falling back to the model name. The voice label
-// comes from the model's own names map (useVoiceLabel) so it matches the name
-// shown on the voice's progress card, not the raw clone id.
+// voice/sentence are known, falling back to the model name. The name comes from
+// the backend with the render itself (renderingVoiceName), so the chip always
+// matches the voice picker and the progress cards.
 function renderingLabel(s: TtsServer, voiceLabel: (composite: string) => string): string {
-  const subject = s.renderingVoice
+  const subject = s.renderingVoiceName
+    ? s.renderingVoiceName
+    : s.renderingVoice
     ? voiceLabel(`${s.rendering ?? ''}:${s.renderingVoice}`)
     : modelLabel(s, s.rendering);
   const text = s.renderingText ? `: '${s.renderingText}'` : '';

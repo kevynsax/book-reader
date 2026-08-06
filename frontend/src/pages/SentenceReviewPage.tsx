@@ -4,6 +4,7 @@ import { useSelector } from 'react-redux';
 import { RootState } from '../store';
 import { EditableSentence } from '../types';
 import { useVoiceLabel } from '../hooks/useVoiceLabel';
+import PagePreview from '../components/PagePreview';
 import { t } from '../i18n';
 
 const dotClass = (st?: string) =>
@@ -37,6 +38,7 @@ export default function SentenceReviewPage() {
   const [saving, setSaving] = useState(false);
   const [pendingMerge, setPendingMerge] = useState(false);
   const [playing, setPlaying] = useState<string | null>(null);
+  const [previewPage, setPreviewPage] = useState(0);
   const audioRef = useRef<HTMLAudioElement>(null);
 
   const load = () => {
@@ -76,6 +78,8 @@ export default function SentenceReviewPage() {
     setSelectedId(selected._id);
     setDraft(selected.text);
     setDirty(false);
+    const page = selected.page || book?.chapters[idx]?.startPage || 0;
+    if (page > 0) setPreviewPage(page);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedKey]);
 
@@ -133,7 +137,6 @@ export default function SentenceReviewPage() {
     return <div className="min-h-screen flex items-center justify-center"><p className="text-gray-500">{t('Loading…')}</p></div>;
   }
   const chapter = book.chapters[idx];
-  const page = selected?.page ? book.ocrPages.find(p => p.page === selected.page) : undefined;
 
   const worstStatus = (sentenceId: string) => {
     const states = voices.map(v => perVoice[v]?.[sentenceId]?.audioStatus);
@@ -299,14 +302,17 @@ export default function SentenceReviewPage() {
             </div>
           )}
 
-          <div className="card max-h-[calc(100vh-8rem)] overflow-y-auto xl:sticky xl:top-24">
-            <h3 className="text-sm font-semibold text-gray-200 mb-2">
-              {selected?.page ? t('Page {n}', { n: selected.page }) : t('Page preview')}
-            </h3>
-            {page ? (
-              <p className="text-xs text-gray-400 whitespace-pre-wrap leading-relaxed">{page.readText || page.text}</p>
+          <div className="card h-[calc(100vh-8rem)] flex flex-col xl:sticky xl:top-24">
+            <h3 className="text-sm font-semibold text-gray-200 mb-2 shrink-0">{t('Page preview')}</h3>
+            {previewPage > 0 && book.totalPages > 0 ? (
+              <PagePreview
+                bookId={book._id}
+                totalPages={book.totalPages}
+                page={previewPage}
+                onPageChange={setPreviewPage}
+              />
             ) : (
-              <p className="text-xs text-gray-500">{t('No page text for this sentence.')}</p>
+              <p className="text-xs text-gray-500">{t('No page for this sentence.')}</p>
             )}
           </div>
         </main>

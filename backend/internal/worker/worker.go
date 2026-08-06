@@ -38,13 +38,56 @@ type Worker struct {
 	active map[string]bool
 	stops  map[string]bool
 	locks  map[string]*sync.Mutex
+	// live is the generation run that owns each book right now. A user edit
+	// joins that run's in-memory copy instead of waiting on the book lock,
+	// which a full render holds for hours.
+	live map[string]*run
 }
 
 func New(st *store.Store, hub ws.Emitter, q *queue.Client) *Worker {
 	return &Worker{
 		St: st, Hub: hub, Q: q,
 		active: map[string]bool{}, stops: map[string]bool{}, locks: map[string]*sync.Mutex{},
+		live: map[string]*run{},
 	}
+}
+
+// publishRun makes a run joinable by edits for as long as it holds the book.
+func (w *Worker) publishRun(bookID string, r *run) func() {
+	w.mu.Lock()
+	w.live[bookID] = r
+	w.mu.Unlock()
+	return func() {
+		w.mu.Lock()
+		if w.live[bookID] == r {
+			delete(w.live, bookID)
+		}
+		w.mu.Unlock()
+	}
+}
+
+func (w *Worker) liveRun(bookID string) *run {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.live[bookID]
+}
+
+// withBookRun runs fn against the book. While a generation run owns it, fn
+// joins that run's copy so the edit lands (and renders at dispatcher priority
+// 0) within seconds instead of after the whole book finishes; every mutation
+// still goes through run.withSave, so the two never interleave a save.
+// Otherwise the book is loaded and locked as before.
+func (w *Worker) withBookRun(ctx context.Context, bookID string, fn func(r *run) error) error {
+	if r := w.liveRun(bookID); r != nil {
+		return fn(r)
+	}
+	unlock := w.LockBook(bookID)
+	defer unlock()
+	book, err := w.St.Books.FindByID(ctx, bookID)
+	if err != nil || book == nil {
+		return err
+	}
+	return fn(&run{w: w, book: book})
 }
 
 // run wraps one generation run over a shared *model.Book: the mutex is the
