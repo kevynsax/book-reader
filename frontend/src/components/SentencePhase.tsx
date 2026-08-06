@@ -314,6 +314,7 @@ export function VoiceSection({ book }: { book: Book }) {
   const [lang, setLang] = useState('pt');
   const [staged, setStaged] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const stagedLabel = useVoiceLabel(staged);
 
   // One shared sample player: /api/books/{id}/sample?voice=… synthesizes a
   // short excerpt of this book with that voice.
@@ -482,7 +483,7 @@ export function VoiceSection({ book }: { book: Book }) {
           {staged.map(v => (
             <div key={v} className="flex items-center gap-2 rounded-lg border border-amber-600/50 bg-amber-950/20 px-3 py-1.5">
               <PlayButton composite={v} />
-              <span className="text-sm text-amber-200 flex-1 truncate">{friendlyVoice(v)} <span className="text-amber-500/70">· {engineOf(v)}</span></span>
+              <span className="text-sm text-amber-200 flex-1 truncate">{stagedLabel(v)} <span className="text-amber-500/70">· {engineOf(v)}</span></span>
               <button
                 className="text-xs text-amber-400 hover:text-amber-300 shrink-0"
                 onClick={() => dispatch(addVoice({ bookId: book._id, voice: v })).unwrap()

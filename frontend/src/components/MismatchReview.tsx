@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { onBookUpdate } from '../hooks/useWebSocket';
-import { friendlyVoice } from '../lib/format';
+import { useVoiceLabel } from '../hooks/useVoiceLabel';
 import { TtsModel } from '../types';
 import { t } from '../i18n';
 
@@ -29,6 +29,7 @@ interface Props {
 // the rest of the chapter.
 export default function MismatchReview({ bookId }: Props) {
   const [mismatches, setMismatches] = useState<Mismatch[]>([]);
+  const voiceLabel = useVoiceLabel(mismatches.flatMap(m => m.voices.map(v => v.voice)));
   const [open, setOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
@@ -248,7 +249,7 @@ export default function MismatchReview({ bookId }: Props) {
                                 ? <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg>
                                 : <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>}
                             </button>
-                            <span className="text-gray-400 font-medium">{friendlyVoice(v.voice)}</span>
+                            <span className="text-gray-400 font-medium">{voiceLabel(v.voice)}</span>
                             <button
                               className="p-0.5 text-gray-500 hover:text-amber-400 transition-colors"
                               disabled={busy}

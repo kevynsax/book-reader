@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { EditableSentence } from '../types';
 import { onBookUpdate } from '../hooks/useWebSocket';
-import { friendlyVoice } from '../lib/format';
+import { useVoiceLabel } from '../hooks/useVoiceLabel';
 import { t } from '../i18n';
 
 interface Props {
@@ -19,6 +19,7 @@ const DOT: Record<EditableSentence['audioStatus'], string> = {
 };
 
 export default function SentenceEditor({ bookId, chapterIdx, voice }: Props) {
+  const voiceLabel = useVoiceLabel([voice]);
   const [sentences, setSentences] = useState<EditableSentence[]>([]);
   const [state, setState] = useState<'loading' | 'ready' | 'empty'>('loading');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -144,7 +145,7 @@ export default function SentenceEditor({ bookId, chapterIdx, voice }: Props) {
 
       <div className="flex items-center justify-between gap-3">
         <h3 className="font-semibold text-gray-100">{t('Edit sentences')}</h3>
-        <span className="text-xs text-gray-500 shrink-0">{friendlyVoice(voice)} - {t('{n} sentences', { n: sentences.length })}</span>
+        <span className="text-xs text-gray-500 shrink-0">{voiceLabel(voice)} - {t('{n} sentences', { n: sentences.length })}</span>
       </div>
       <p className="text-xs text-gray-500">{t('Fix one sentence or delete it; the chapter audio is rebuilt from sentence segments.')}</p>
 
