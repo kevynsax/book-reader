@@ -12,13 +12,18 @@ import { t } from '../i18n';
 // audio is rendered.
 // ---------------------------------------------------------------------------
 
-function ChapterSentences({ bookId, chapterIdx }: { bookId: string; chapterIdx: number }) {
+function ChapterSentences({ bookId, chapterIdx, voices, voiceLabel }: {
+  bookId: string; chapterIdx: number; voices: string[]; voiceLabel: (v: string) => string;
+}) {
   const [sentences, setSentences] = useState<EditableSentence[] | null>(null);
+  const [voiceStatus, setVoiceStatus] = useState<Record<string, Record<string, EditableSentence['audioStatus']>>>({});
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [addingAfter, setAddingAfter] = useState<string | null>(null);
   const [addDraft, setAddDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  const [playing, setPlaying] = useState<string | null>(null); // `${sentenceId}|${voice}`
+  const audioRef = useRef<HTMLAudioElement>(null);
 
   const load = () => {
     fetch(`/api/books/${bookId}/chapters/${chapterIdx}/sentences`)
@@ -28,8 +33,20 @@ function ChapterSentences({ bookId, chapterIdx }: { bookId: string; chapterIdx: 
         setSentences(Array.isArray(list) ? list : []);
       })
       .catch(() => setSentences([]));
+    // Per-voice audio status: one fetch per voice, keyed sentenceId -> status.
+    voices.forEach(v => {
+      fetch(`/api/books/${bookId}/chapters/${chapterIdx}/sentences?voice=${encodeURIComponent(v)}`)
+        .then(r => (r.ok ? r.json() : {}))
+        .then((data: { sentences?: EditableSentence[] }) => {
+          const list = Array.isArray(data) ? data as EditableSentence[] : data.sentences;
+          if (!Array.isArray(list)) return;
+          setVoiceStatus(prev => ({ ...prev, [v]: Object.fromEntries(list.map(x => [x._id, x.audioStatus])) }));
+        })
+        .catch(() => {});
+    });
   };
-  useEffect(load, [bookId, chapterIdx]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(load, [bookId, chapterIdx, voices.join(',')]);
 
   const call = async (method: string, path: string, body?: object) => {
     setBusy(true);
@@ -45,13 +62,23 @@ function ChapterSentences({ bookId, chapterIdx }: { bookId: string; chapterIdx: 
     }
   };
 
+  const play = (sentenceId: string, voice: string) => {
+    const key = `${sentenceId}|${voice}`;
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playing === key) { audio.pause(); return; }
+    audio.src = `/api/books/${bookId}/chapters/${chapterIdx}/sentences/${sentenceId}/audio?voice=${encodeURIComponent(voice)}&_=${Date.now()}`;
+    audio.play().then(() => setPlaying(key)).catch(() => setPlaying(null));
+  };
+
   if (sentences === null) return <p className="text-xs text-gray-500 px-3 py-2">{t('Loading…')}</p>;
   if (sentences.length === 0) return <p className="text-xs text-gray-500 px-3 py-2">{t('No sentences in this chapter.')}</p>;
 
   return (
     <div className="divide-y divide-gray-800/60">
+      <audio ref={audioRef} onEnded={() => setPlaying(null)} onPause={() => setPlaying(null)} />
       {sentences.map(s => (
-        <div key={s._id} className="px-3 py-1.5 group">
+        <div key={s._id} className="px-3 py-2 group">
           {editingId === s._id ? (
             <div className="space-y-1.5">
               <textarea
@@ -76,14 +103,55 @@ function ChapterSentences({ bookId, chapterIdx }: { bookId: string; chapterIdx: 
               </div>
             </div>
           ) : (
-            <div className="flex items-start gap-2">
-              <button
-                className="flex-1 text-left text-sm text-gray-300 hover:text-gray-100 leading-snug"
-                onClick={() => { setEditingId(s._id); setDraft(s.text); }}
-                title={t('Click to edit')}
-              >
-                {s.text}
-              </button>
+            <div className="flex items-start gap-3">
+              <div className="flex-1 min-w-0">
+                <button
+                  className="w-full text-left text-sm text-gray-300 hover:text-gray-100 leading-snug"
+                  onClick={() => { setEditingId(s._id); setDraft(s.text); }}
+                  title={t('Click to edit')}
+                >
+                  {s.text}
+                </button>
+                {voices.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                    {voices.map(v => {
+                      const st = voiceStatus[v]?.[s._id];
+                      const key = `${s._id}|${v}`;
+                      if (st === 'complete') {
+                        return (
+                          <button
+                            key={v}
+                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                              playing === key
+                                ? 'border-amber-500 bg-amber-600/20 text-amber-300'
+                                : 'border-gray-700 bg-gray-800/60 text-gray-300 hover:border-amber-600 hover:text-amber-300'
+                            }`}
+                            onClick={() => play(s._id, v)}
+                            title={t('Hear this sentence with {v}', { v: voiceLabel(v) })}
+                          >
+                            {playing === key ? (
+                              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg>
+                            ) : (
+                              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                            )}
+                            {voiceLabel(v)}
+                          </button>
+                        );
+                      }
+                      return (
+                        <span
+                          key={v}
+                          className="inline-flex items-center gap-1 rounded-full border border-gray-800 px-2 py-0.5 text-[11px] text-gray-600"
+                          title={st === 'error' ? t('Audio failed for {v}', { v: voiceLabel(v) }) : t('No audio yet for {v}', { v: voiceLabel(v) })}
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full ${st === 'generating' ? 'bg-amber-400 animate-pulse' : st === 'error' ? 'bg-red-500' : 'bg-gray-700'}`} />
+                          {voiceLabel(v)}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                 <button
                   className="text-gray-600 hover:text-amber-400 text-xs px-1"
@@ -142,6 +210,7 @@ function ChapterSentences({ bookId, chapterIdx }: { bookId: string; chapterIdx: 
 
 export function SentenceReviewSection({ book }: { book: Book }) {
   const dispatch = useDispatch<AppDispatch>();
+  const reviewVoiceLabel = useVoiceLabel(book.voices);
   const [open, setOpen] = useState<number | null>(0);
   const [goingBack, setGoingBack] = useState(false);
 
@@ -185,8 +254,8 @@ export function SentenceReviewSection({ book }: { book: Book }) {
               </svg>
             </button>
             {open === i && (
-              <div className="border-t border-gray-800 max-h-80 overflow-y-auto bg-gray-900/40">
-                <ChapterSentences bookId={book._id} chapterIdx={i} />
+              <div className="border-t border-gray-800 max-h-96 overflow-y-auto bg-gray-900/40">
+                <ChapterSentences bookId={book._id} chapterIdx={i} voices={book.voices} voiceLabel={reviewVoiceLabel} />
               </div>
             )}
           </div>
