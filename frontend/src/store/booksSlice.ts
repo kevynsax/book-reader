@@ -56,6 +56,22 @@ export const generateBook = createAsyncThunk(
   }
 );
 
+export const generateSentences = createAsyncThunk(
+  'books/generateSentences',
+  async (bookId: string) => {
+    await api.post(`/api/books/${bookId}/sentences/generate`);
+    return bookId;
+  }
+);
+
+export const backToChapterReview = createAsyncThunk(
+  'books/backToChapterReview',
+  async (bookId: string) => {
+    await api.post(`/api/books/${bookId}/back-to-chapter-review`);
+    return bookId;
+  }
+);
+
 export const stopBook = createAsyncThunk(
   'books/stop',
   async (bookId: string) => {

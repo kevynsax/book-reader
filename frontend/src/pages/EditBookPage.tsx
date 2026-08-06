@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { AppDispatch, RootState } from '../store';
-import { confirmChapters, updateChapters, deleteBook, renameBook, generateBook, stopBook, regenerateVoice, regenerateChapterVoice, continueChapterVoice, resumeBook, dismissBookError } from '../store/booksSlice';
+import { confirmChapters, updateChapters, deleteBook, renameBook, generateBook, generateSentences, stopBook, regenerateVoice, regenerateChapterVoice, continueChapterVoice, resumeBook, dismissBookError } from '../store/booksSlice';
 import { requestBook } from '../hooks/useWebSocket';
 import { Book, BookStatus, TtsServer } from '../types';
 import { chapterStatus, bookVoices, trackFor, hasPlayableAudio } from '../lib/format';
@@ -12,6 +12,7 @@ import TextReview, { TextReviewHandle } from '../components/OcrPageReview';
 import CoverPickerModal from '../components/CoverPickerModal';
 import VoiceManager from '../components/VoiceManager';
 import GenerateVoiceModal from '../components/GenerateVoiceModal';
+import { SentenceReviewSection, VoiceSection } from '../components/SentencePhase';
 import ServerStatus from '../components/ServerStatus';
 import ConfirmDialog from '../components/ConfirmDialog';
 import ReimportModal from '../components/ReimportModal';
@@ -25,6 +26,8 @@ const STATUS_STEPS: { status: BookStatus; label: string }[] = [
   { status: 'ocr_processing',          label: t('Reading pages') },
   { status: 'detecting_chapters',      label: t('Detecting chapters') },
   { status: 'awaiting_chapter_review', label: t('Ready for review') },
+  { status: 'generating_sentences',    label: t('Splitting sentences') },
+  { status: 'awaiting_sentence_review', label: t('Sentences ready for review') },
   { status: 'complete',                label: t('Complete') },
 ];
 
@@ -503,6 +506,16 @@ export default function EditBookPage() {
     await dispatch(confirmChapters({ bookId: id!, chapters, voices: voiceRef.current })).unwrap();
   };
 
+  const runGenerateSentences = async () => {
+    setGenerating(true);
+    try {
+      await chapterReviewRef.current?.save();
+      await dispatch(generateSentences(id!)).unwrap();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally { setGenerating(false); }
+  };
+
   const runGenerate = async (voices?: string[]) => {
     setShowVoiceDialog(false);
     setGenerating(true);
@@ -640,19 +653,34 @@ export default function EditBookPage() {
         {showStatus && (
           <>
             <StatusIndicator book={book} />
-            <div className="flex justify-end">
-              <button
-                className="flex items-center gap-1.5 text-xs font-medium text-red-400 hover:text-red-300 disabled:opacity-40 transition-colors"
-                disabled={stopping}
-                onClick={handleStop}
-                title={t('Stop importing — pages already read are kept; continue whenever you want')}
-              >
-                <span className="w-2.5 h-2.5 rounded-sm bg-current" />
-                {stopping ? t('Stopping…') : t('Stop import')}
-              </button>
-            </div>
+            {book.status !== 'awaiting_chapter_review' && book.status !== 'awaiting_sentence_review' && (
+              <div className="flex justify-end">
+                <button
+                  className="flex items-center gap-1.5 text-xs font-medium text-red-400 hover:text-red-300 disabled:opacity-40 transition-colors"
+                  disabled={stopping}
+                  onClick={handleStop}
+                  title={t('Stop importing — pages already read are kept; continue whenever you want')}
+                >
+                  <span className="w-2.5 h-2.5 rounded-sm bg-current" />
+                  {stopping ? t('Stopping…') : t('Stop import')}
+                </button>
+              </div>
+            )}
             {(book.status === 'ocr_processing' || book.status === 'detecting_chapters' || book.status === 'reading_title') && (
               <div className="card"><ServerStatus roles={['vlm']} /></div>
+            )}
+            {book.status === 'generating_sentences' && (
+              <div className="card space-y-3">
+                <ServerStatus roles={['slm']} />
+                {book.splitProgress && book.splitProgress.total > 0 && (
+                  <AutoHideBar
+                    current={book.splitProgress.current}
+                    total={book.splitProgress.total}
+                    message={`${book.splitProgress.message} (${book.splitProgress.current}/${book.splitProgress.total})`}
+                    color="sky"
+                  />
+                )}
+              </div>
             )}
           </>
         )}
@@ -687,7 +715,14 @@ export default function EditBookPage() {
           </div>
         )}
 
-        {hasChapters && (
+        {book.status === 'awaiting_sentence_review' && (
+          <>
+            <SentenceReviewSection book={book} />
+            <VoiceSection book={book} />
+          </>
+        )}
+
+        {(hasChapters || book.status === 'awaiting_chapter_review') && book.status !== 'awaiting_sentence_review' && (
           <>
             <div className="card">
               <ChapterReview
@@ -701,7 +736,9 @@ export default function EditBookPage() {
           </>
         )}
 
-        {hasOcrPages && <TextReview ref={textReviewRef} bookId={book._id} ocrPages={book.ocrPages} />}
+        {hasOcrPages && book.status !== 'awaiting_sentence_review' && (
+          <TextReview ref={textReviewRef} bookId={book._id} ocrPages={book.ocrPages} />
+        )}
 
         {hasChapters && (isGenerating || hasAudioError) && (
           <div className="card space-y-4">
@@ -774,9 +811,13 @@ export default function EditBookPage() {
             <button
               className="btn-primary w-full justify-center"
               disabled={generating}
-              onClick={() => book.status === 'complete' || book.status === 'error' ? runGenerate() : setShowVoiceDialog(true)}
+              onClick={() => book.status === 'complete' || book.status === 'error' ? runGenerate() : runGenerateSentences()}
             >
-              {generating ? t('Generating…') : hasStaleAudio ? t('Continue') : book.status === 'error' ? t('Retry') : t('Generate')}
+              {generating
+                ? t('Generating…')
+                : hasStaleAudio ? t('Continue')
+                : book.status === 'error' ? t('Retry')
+                : t('Generate sentences')}
             </button>
           </div>
         )}

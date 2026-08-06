@@ -16,7 +16,11 @@ const (
 	StatusOcrProcessing         BookStatus = "ocr_processing"
 	StatusDetectingChapters     BookStatus = "detecting_chapters"
 	StatusAwaitingChapterReview BookStatus = "awaiting_chapter_review"
-	StatusGeneratingAudio       BookStatus = "generating_audio"
+	// Sentence phase: chapters are split into TTS-ready sentences (SLM work)
+	// and reviewed by the user before any audio is rendered.
+	StatusGeneratingSentences      BookStatus = "generating_sentences"
+	StatusAwaitingSentenceReview   BookStatus = "awaiting_sentence_review"
+	StatusGeneratingAudio          BookStatus = "generating_audio"
 	StatusComplete              BookStatus = "complete"
 	StatusError                 BookStatus = "error"
 )

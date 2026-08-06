@@ -40,6 +40,8 @@ func (s *Server) registerBookWriteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/books/{id}/chapters", s.handleChaptersPatch)
 	mux.HandleFunc("PUT /api/books/{id}/chapters", s.handleChaptersPut)
 	mux.HandleFunc("POST /api/books/{id}/generate", s.handleGenerate)
+	mux.HandleFunc("POST /api/books/{id}/sentences/generate", s.handleGenerateSentences)
+	mux.HandleFunc("POST /api/books/{id}/back-to-chapter-review", s.handleBackToChapterReview)
 	mux.HandleFunc("POST /api/books/{id}/stop", s.handleStop)
 	mux.HandleFunc("PUT /api/books/{id}/pages/{page}/text", s.handlePageText)
 	mux.HandleFunc("POST /api/books/{id}/pages/{page}/reocr", s.handleReocr)
@@ -818,6 +820,56 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			log.Printf("generateBookAudio %s failed: %v", bookID, err)
 		}
 	}()
+}
+
+// POST /:id/sentences/generate — run the sentence phase (split every chapter
+// into TTS-ready sentences for review; no audio).
+func (s *Server) handleGenerateSentences(w http.ResponseWriter, r *http.Request) {
+	book := s.findBook(w, r)
+	if book == nil {
+		return
+	}
+	if len(book.Chapters) == 0 {
+		Error(w, http.StatusBadRequest, "No chapters to split")
+		return
+	}
+	Message(w, "Sentence generation started")
+	bookID := book.ID.Hex()
+	go func() {
+		if err := s.W.GenerateBookSentences(context.Background(), bookID); err != nil {
+			log.Printf("generateBookSentences %s failed: %v", bookID, err)
+		}
+	}()
+}
+
+// POST /:id/back-to-chapter-review — return a sentence-review book to the
+// chapter/text review phase. Sentences already built are kept; editing a
+// chapter's boundaries invalidates only that chapter's sentences (PUT
+// /chapters semantics).
+func (s *Server) handleBackToChapterReview(w http.ResponseWriter, r *http.Request) {
+	book := s.findBook(w, r)
+	if book == nil {
+		return
+	}
+	release, ok := s.W.TryLockBook(book.ID.Hex())
+	if !ok {
+		Error(w, http.StatusConflict, "A run is in progress — stop it first.")
+		return
+	}
+	defer release()
+	if book.Status != model.StatusAwaitingSentenceReview {
+		Error(w, http.StatusConflict, "Book is not in sentence review")
+		return
+	}
+	updatedAt, err := s.St.Books.UpdateByID(r.Context(), book.ID, bson.M{"$set": bson.M{"status": model.StatusAwaitingChapterReview}})
+	if err != nil {
+		Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.Hub.Emit("book:update", map[string]any{
+		"bookId": book.ID.Hex(), "updatedAt": updatedAt, "status": model.StatusAwaitingChapterReview,
+	})
+	Message(w, "Back to chapter review")
 }
 
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {

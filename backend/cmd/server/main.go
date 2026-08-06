@@ -21,7 +21,7 @@ import (
 // Startup mirrors backend/src/index.ts: connect → migrations → seed →
 // mkdir → recoverInterruptedAudio → listen → background unspeakable migration.
 //
-// @version 2.8.9
+// @version 2.8.10
 func main() {
 	config.Load()
 

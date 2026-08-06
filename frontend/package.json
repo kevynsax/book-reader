@@ -1,6 +1,6 @@
 {
   "name": "book-reader-frontend",
-  "version": "1.22.9",
+  "version": "1.22.10",
   "type": "module",
   "scripts": {
     "dev": "vite",

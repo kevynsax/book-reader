@@ -6,6 +6,8 @@ export type BookStatus =
   | 'ocr_processing'
   | 'detecting_chapters'
   | 'awaiting_chapter_review'
+  | 'generating_sentences'
+  | 'awaiting_sentence_review'
   | 'generating_audio'
   | 'complete'
   | 'error';
