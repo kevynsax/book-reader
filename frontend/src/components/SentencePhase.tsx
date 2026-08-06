@@ -227,18 +227,20 @@ export function SentenceReviewSection({ book }: { book: Book }) {
             {t('Open a chapter to review its sentences with each voice\u2019s audio and what Whisper heard.')}
           </p>
         </div>
-        <button
-          className="btn-secondary text-xs shrink-0"
-          disabled={goingBack}
-          onClick={async () => {
-            setGoingBack(true);
-            try { await dispatch(backToChapterReview(book._id)).unwrap(); }
-            catch (e) { alert(e instanceof Error ? e.message : String(e)); }
-            finally { setGoingBack(false); }
-          }}
-        >
-          {t('\u2190 Back to chapters & text')}
-        </button>
+        {book.status === 'awaiting_sentence_review' && (
+          <button
+            className="btn-secondary text-xs shrink-0"
+            disabled={goingBack}
+            onClick={async () => {
+              setGoingBack(true);
+              try { await dispatch(backToChapterReview(book._id)).unwrap(); }
+              catch (e) { alert(e instanceof Error ? e.message : String(e)); }
+              finally { setGoingBack(false); }
+            }}
+          >
+            {t('\u2190 Back to chapters & text')}
+          </button>
+        )}
       </div>
 
       <div className="rounded-lg border border-gray-700 divide-y divide-gray-800/70">

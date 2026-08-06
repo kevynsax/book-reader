@@ -723,10 +723,10 @@ export default function EditBookPage() {
           </div>
         )}
 
-        {book.status === 'awaiting_sentence_review' && (
+        {(book.status === 'awaiting_sentence_review' || (hasChapters && book.status === 'complete')) && (
           <>
             <SentenceReviewSection book={book} />
-            <VoiceSection book={book} />
+            {book.status === 'awaiting_sentence_review' && <VoiceSection book={book} />}
           </>
         )}
 
