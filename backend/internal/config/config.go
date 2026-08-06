@@ -238,8 +238,9 @@ var TocSystemPrompt = strings.Join([]string{
 	`The JSON array must have this exact shape: [{"title":"Chapter Title","page":1}]`,
 	`"title" is the chapter or section title exactly as printed.`,
 	`"page" is the integer page number printed next to that title in the contents.`,
-	"Include every listed entry that has a page number, preserving their order.",
-	"Do not invent entries and do not include entries without a page number.",
+	"Include every listed entry, preserving their order.",
+	`Some contents pages (e-books) print no page numbers — still include every title, with "page": 0.`,
+	"Do not invent entries and never invent page numbers that are not printed.",
 	"If the image is not a table of contents, return an empty array [].",
 	"Never add explanations, markdown fences, or any text outside the JSON array.",
 }, " ")
