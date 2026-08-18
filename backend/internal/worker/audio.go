@@ -33,7 +33,7 @@ const sentenceSplitMaxDepth = 4
 // re-inflate length). `text` is what gets read; `display` keeps the clean
 // original; `original` tracks the pre-split source.
 func (w *Worker) splitUnitForTts(ctx context.Context, display, language string, depth int, original *string) []model.Sentence {
-	clean := strings.TrimSpace(display)
+	clean := strings.TrimSpace(normalizer.StripFootnoteMarks(display))
 	if clean == "" {
 		return nil
 	}
