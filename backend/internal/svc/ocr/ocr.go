@@ -573,6 +573,7 @@ var verifyTranscriptPrompt = strings.Join([]string{
 	"Return one valid JSON object and nothing else.",
 	`The JSON object must have this exact shape: {"missing":true,"reason":"..."}`,
 	"missing is true ONLY when a word group, clause, or sentence of the original text was not spoken at all — nothing in the transcript corresponds to it.",
+	"CRITICAL: if the transcript is a TRANSLATION of the text into another language (e.g. the text is Portuguese but the transcript is English), the original words were NOT spoken: missing is ALWAYS true, regardless of how well the meaning matches.",
 	"Differences that are NEVER missing content:",
 	"(1) punctuation of any kind — semicolons, colons, commas, quotes, parentheses, dashes are not spoken; ignore them completely;",
 	"(2) proper nouns, names, titles, and rare words transcribed differently or garbled (e.g. \"Waltke's\" heard as \"Lulte's\") — the word WAS spoken, the recognizer just spelled it differently; that counts as present;",

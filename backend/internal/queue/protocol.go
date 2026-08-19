@@ -159,6 +159,10 @@ type SynthesizePayload struct {
 	Language string  `json:"language"`
 	// Whether the engine takes a language param (Model.UsesLanguage).
 	UsesLanguage bool `json:"usesLanguage"`
+	// Optional sampling temperature override. Verify retries escalate it so a
+	// deterministic bad take (e.g. an LLM-TTS engine translating its input)
+	// gets a genuinely different sample instead of the same audio again.
+	Temperature *float64 `json:"temperature,omitempty"`
 }
 
 type SynthesizeResult struct {

@@ -53,15 +53,15 @@ type chunkResult struct {
 // SynthesizeOn renders one chunk against exactly one TTS server — the worker
 // path. usesLanguage mirrors Model.UsesLanguage for ids outside the static
 // catalog.
-func SynthesizeOn(ctx context.Context, serverURL, modelID, input, voice string, speed float64, language string, usesLanguage bool) ([]byte, float64, error) {
-	out, err := synthesizeChunk(ctx, input, serverURL, Model{ID: modelID, UsesLanguage: usesLanguage}, voice, speed, language)
+func SynthesizeOn(ctx context.Context, serverURL, modelID, input, voice string, speed float64, language string, usesLanguage bool, temperature *float64) ([]byte, float64, error) {
+	out, err := synthesizeChunk(ctx, input, serverURL, Model{ID: modelID, UsesLanguage: usesLanguage}, voice, speed, language, temperature)
 	if err != nil {
 		return nil, 0, err
 	}
 	return out.buffer, out.durationSecs, nil
 }
 
-func synthesizeChunk(ctx context.Context, text, serverURL string, model Model, voice string, speed float64, language string) (chunkResult, error) {
+func synthesizeChunk(ctx context.Context, text, serverURL string, model Model, voice string, speed float64, language string, temperature *float64) (chunkResult, error) {
 	body := map[string]any{
 		"model":           model.ID,
 		"input":           text,
@@ -71,6 +71,9 @@ func synthesizeChunk(ctx context.Context, text, serverURL string, model Model, v
 	}
 	if model.UsesLanguage {
 		body["language"] = language
+	}
+	if temperature != nil {
+		body["temperature"] = *temperature
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -127,6 +130,9 @@ type renderContext struct {
 	speed    float64
 	language string
 	priority int64
+	// temperature, when set, overrides the engine's sampling temperature for
+	// this render — used by verify retries to escape a deterministic bad take.
+	temperature *float64
 }
 
 // renderChunkToBuffer synthesizes one chunk on a dispatcher-granted server,
@@ -148,6 +154,7 @@ func renderChunkToBuffer(ctx context.Context, text string, rc renderContext) (ch
 			Speed:        rc.speed,
 			Language:     rc.language,
 			UsesLanguage: rc.model.UsesLanguage,
+			Temperature:  rc.temperature,
 		}, serverID)
 		release()
 		if err == nil {
@@ -213,6 +220,13 @@ func renderVerified(ctx context.Context, display, text string, rc renderContext)
 	var best RenderedPiece
 	bestSimilarity := -1.0
 	for attempt := 1; attempt <= config.TtsVerifyAttempts; attempt++ {
+		if attempt > 1 {
+			// Retry with a raised sampling temperature: LLM-TTS engines can be
+			// near-deterministic, and a take that came out wrong (translated,
+			// truncated) would otherwise reproduce itself on every retry.
+			t := 0.8 + 0.1*float64(attempt)
+			rc.temperature = &t
+		}
 		result, err := renderChunkToBuffer(ctx, text, rc)
 		if err != nil {
 			return RenderedPiece{}, err
@@ -241,6 +255,15 @@ func renderVerified(ctx context.Context, display, text string, rc renderContext)
 		if similarity > bestSimilarity {
 			bestSimilarity = similarity
 			best = leaf
+		}
+
+		// An engine that translated its input produced audio in the wrong
+		// language — never acceptable, and the SLM judge would wave it
+		// through as "matching in meaning". Retry without consulting it.
+		if verify.TranscriptLanguageMismatch(text, transcript) {
+			log.Printf("tts verify: attempt %d/%d transcript is a translation (sim=%.2f) for %q — retrying",
+				attempt, config.TtsVerifyAttempts, similarity, truncate(display, 60))
+			continue
 		}
 
 		// Below threshold: let the SLM judge whether content is actually
@@ -319,7 +342,7 @@ func SynthesizeSample(ctx context.Context, text, voice string) ([]byte, error) {
 		return nil, err
 	}
 	speakable := normalizer.NormalizeForSpeech(ctx, truncate(text, 1500), config.DefaultLanguage)
-	out, err := synthesizeChunk(ctx, speakable, server.URL, model, bareVoice, config.TtsSpeed, config.DefaultLanguage)
+	out, err := synthesizeChunk(ctx, speakable, server.URL, model, bareVoice, config.TtsSpeed, config.DefaultLanguage, nil)
 	if err != nil {
 		return nil, err
 	}

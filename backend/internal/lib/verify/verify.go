@@ -115,3 +115,46 @@ func WordSimilarityLang(expected, actual, lang string) float64 {
 	b := expandDigits(NormalizeWords(actual), lang)
 	return score(a, b)
 }
+
+var stopwordsByLang = map[string]map[string]bool{
+	"pt": toSet("o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "que", "e", "em", "no", "na", "para", "por", "com", "nao", "se", "ele", "ela", "seu", "sua", "foi", "era", "sao", "mas", "como", "mais", "ou", "ao", "pelo", "pela", "isso", "este", "esta"),
+	"en": toSet("the", "a", "an", "of", "that", "and", "in", "on", "for", "by", "with", "not", "if", "he", "she", "his", "her", "was", "were", "is", "are", "but", "as", "more", "or", "to", "this", "it", "at", "from", "they", "them"),
+}
+
+func toSet(words ...string) map[string]bool {
+	m := make(map[string]bool, len(words))
+	for _, w := range words {
+		m[w] = true
+	}
+	return m
+}
+
+func stopwordHits(words []string, lang string) int {
+	set := stopwordsByLang[lang]
+	n := 0
+	for _, w := range words {
+		if set[w] {
+			n++
+		}
+	}
+	return n
+}
+
+// TranscriptLanguageMismatch reports whether the transcript reads as a
+// different language than the expected text — the signature of a TTS engine
+// that translated its input instead of speaking it. Only distinguishes the
+// pt/en pair; on short or ambiguous input it returns false (no evidence).
+func TranscriptLanguageMismatch(expected, transcript string) bool {
+	e := NormalizeWords(expected)
+	t := NormalizeWords(transcript)
+	if len(e) < 4 || len(t) < 4 {
+		return false
+	}
+	ePt, eEn := stopwordHits(e, "pt"), stopwordHits(e, "en")
+	tPt, tEn := stopwordHits(t, "pt"), stopwordHits(t, "en")
+	expectedPt := ePt > eEn*2 && ePt > 0
+	expectedEn := eEn > ePt*2 && eEn > 0
+	transcriptPt := tPt > tEn*2 && tPt > 0
+	transcriptEn := tEn > tPt*2 && tEn > 0
+	return (expectedPt && transcriptEn) || (expectedEn && transcriptPt)
+}

@@ -546,7 +546,7 @@ func (w *worker) executeTTS(ctx context.Context, task queue.Task) (json.RawMessa
 	if !tts.EnsureModelLoaded(ctx, server, p.Model) {
 		return nil, fmt.Errorf("%w: %s on %s", errModelLoad, p.Model, w.url)
 	}
-	audio, duration, err := tts.SynthesizeOn(ctx, w.url, p.Model, p.Input, p.Voice, p.Speed, p.Language, p.UsesLanguage)
+	audio, duration, err := tts.SynthesizeOn(ctx, w.url, p.Model, p.Input, p.Voice, p.Speed, p.Language, p.UsesLanguage, p.Temperature)
 	if err != nil {
 		return nil, err
 	}
