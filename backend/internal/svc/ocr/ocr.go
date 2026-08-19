@@ -777,3 +777,39 @@ func ResolveChapters(tocLists [][]TocEntry, ocrPages []PageText) []ChapterSugges
 	}
 	return out
 }
+
+var classifyQuotePrompt = strings.Join([]string{
+	"You will see a short passage from a book. The QUOTE line contains quoted material — a quotation, Bible verse, dialogue line, or citation — that an audiobook voices with a separate narrator.",
+	"Decide the most likely identity of the quoted SPEAKER (whose words they are, not the book's author narrating):",
+	`"man": an adult man (a male author, a male Bible figure, God, a father, a rabbi).`,
+	`"woman": an adult woman.`,
+	`"kid": a child, boy or girl.`,
+	`"unknown": quoted material whose speaker cannot be told from the context.`,
+	`"none": the line is NOT quoted speech at all (plain narration wrongly flagged).`,
+	"Return one valid JSON object and nothing else.",
+	`The JSON object must have this exact shape: {"speaker":"man"}`,
+	"Do not add commentary or markdown.",
+}, " ")
+
+// ClassifyQuoteOn asks one SLM server who speaks a quoted sentence, with a
+// couple of context sentences on each side. Worker path.
+func ClassifyQuoteOn(ctx context.Context, base string, before []string, sentence string, after []string, model string) (string, error) {
+	user := "CONTEXT BEFORE:\n" + strings.Join(before, "\n") +
+		"\n\nQUOTE:\n" + sentence +
+		"\n\nCONTEXT AFTER:\n" + strings.Join(after, "\n")
+	raw, err := callSlmOn(ctx, base, classifyQuotePrompt, user, model)
+	if err != nil {
+		return "", err
+	}
+	obj, ok := parseJSONLoose(stripMarkdownFence(strings.TrimSpace(raw))).(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("SLM returned no speaker")
+	}
+	speaker, _ := obj["speaker"].(string)
+	speaker = strings.ToLower(strings.TrimSpace(speaker))
+	switch speaker {
+	case "man", "woman", "kid", "unknown", "none":
+		return speaker, nil
+	}
+	return "unknown", nil
+}

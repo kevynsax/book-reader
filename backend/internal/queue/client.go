@@ -560,3 +560,10 @@ func (c *Client) Synthesize(ctx context.Context, p SynthesizePayload, serverID s
 	}
 	return out, nil
 }
+
+// ClassifyQuote asks an SLM worker who speaks a quoted sentence.
+func (c *Client) ClassifyQuote(ctx context.Context, before []string, sentence string, after []string, model string) (string, error) {
+	r, err := submitAs[ClassifyQuoteResult](c, ctx, RoleSLM, TypeClassifyQuote,
+		ClassifyQuotePayload{Before: before, Sentence: sentence, After: after, Model: model})
+	return r.Speaker, err
+}

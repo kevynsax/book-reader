@@ -73,13 +73,29 @@ func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, se
 			ChapterIdx: chapterIdx, Voice: voice, SentenceID: sentenceID, AudioStatus: model.AudioGenerating,
 		}})
 
-		renderVoice := chapter.Sentences[senIdx].SynthVoice(voice)
+		sen := chapter.Sentences[senIdx]
+		renderVoice := sen.SynthVoiceFor(voice, book.VoiceRoles, false)
+		altVoice := sen.SynthVoiceFor(voice, book.VoiceRoles, true)
 		if synthVoice != "" {
+			// An explicit escape-hatch voice replaces both takes.
 			renderVoice = synthVoice
+			altVoice = synthVoice
 		}
-		ttsModel, _ := tts.ParseVoice(renderVoice)
-		if !w.Q.Registry.HasModelWorker(ttsModel.ID) {
-			message := fmt.Sprintf("No TTS server is online for model %q.", ttsModel.ID)
+		if altVoice == renderVoice {
+			altVoice = ""
+		}
+		missingModel := ""
+		for _, v := range []string{renderVoice, altVoice} {
+			if v == "" {
+				continue
+			}
+			if m, _ := tts.ParseVoice(v); !w.Q.Registry.HasModelWorker(m.ID) {
+				missingModel = m.ID
+				break
+			}
+		}
+		if missingModel != "" {
+			message := fmt.Sprintf("No TTS server is online for model %q.", missingModel)
 			if err := r.withSave(ctx, func() {
 				track.Segments[segIdx].AudioStatus = model.AudioError
 				track.Segments[segIdx].AudioError = &message
@@ -100,7 +116,16 @@ func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, se
 
 		sentence := chapter.Sentences[senIdx]
 		segPath := segmentPathFor(track, segIdx, audioDir, chapterIdx, voice, sentence.Order)
-		durationSecs, transcripts, mismatch, renderErr := tts.SynthesizeSegment(ctx, w.Q, strings.TrimSpace(sentence.Text), segPath, renderVoice, language)
+		text := strings.TrimSpace(sentence.Text)
+		durationSecs, transcripts, mismatch, renderErr := tts.SynthesizeSegment(ctx, w.Q, text, segPath, renderVoice, language)
+		altPath := altPathFor(segPath)
+		var altDur float64
+		var altMismatch bool
+		if renderErr == nil && altVoice != "" {
+			var altTranscripts []string
+			altDur, altTranscripts, altMismatch, renderErr = tts.SynthesizeSegment(ctx, w.Q, text, altPath, altVoice, language)
+			transcripts = append(transcripts, altTranscripts...)
+		}
 		if err := r.withSave(ctx, func() {
 			seg := &track.Segments[segIdx]
 			if renderErr == nil {
@@ -109,7 +134,16 @@ func (w *Worker) rerenderSegment(ctx context.Context, r *run, chapterIdx int, se
 				seg.AudioStatus = model.AudioComplete
 				seg.AudioError = nil
 				seg.WhisperResults = transcripts
-				seg.NeedsReview = mismatch
+				seg.NeedsReview = mismatch || altMismatch
+				if altVoice != "" {
+					seg.AltAudioPath = &altPath
+					seg.AltDurationSecs = &altDur
+					seg.AltVoice = altVoice
+				} else {
+					seg.AltAudioPath = nil
+					seg.AltDurationSecs = nil
+					seg.AltVoice = ""
+				}
 			} else {
 				message := renderErr.Error()
 				log.Printf("rerenderSegment %s ch%d (%s): %v", book.ID.Hex(), chapterIdx+1, voice, renderErr)
@@ -304,8 +338,13 @@ func (w *Worker) deleteSentence(ctx context.Context, r *run, chapterIdx int, sen
 	var deletedAudio []string
 	for _, t := range chapter.Tracks {
 		for _, s := range t.Segments {
-			if s.SentenceID.Hex() == sentenceID && s.AudioPath != nil {
-				deletedAudio = append(deletedAudio, *s.AudioPath)
+			if s.SentenceID.Hex() == sentenceID {
+				if s.AudioPath != nil {
+					deletedAudio = append(deletedAudio, *s.AudioPath)
+				}
+				if s.AltAudioPath != nil {
+					deletedAudio = append(deletedAudio, *s.AltAudioPath)
+				}
 			}
 		}
 	}
@@ -319,7 +358,7 @@ func (w *Worker) deleteSentence(ctx context.Context, r *run, chapterIdx int, sen
 		}
 		sort.SliceStable(kept, func(i, j int) bool { return kept[i].Order < kept[j].Order })
 		for order := range kept {
-			kept[order] = model.Sentence{ID: kept[order].ID, Order: order, Text: kept[order].Text, Display: kept[order].Display, Original: kept[order].Original, TraceOrder: kept[order].TraceOrder, SplitOf: kept[order].SplitOf, SplitCreatedWhen: kept[order].SplitCreatedWhen}
+			kept[order] = model.Sentence{ID: kept[order].ID, Order: order, Text: kept[order].Text, Display: kept[order].Display, Original: kept[order].Original, TraceOrder: kept[order].TraceOrder, SplitOf: kept[order].SplitOf, SplitCreatedWhen: kept[order].SplitCreatedWhen, VoiceOverrides: kept[order].VoiceOverrides, Role: kept[order].Role}
 		}
 		chapter.Sentences = kept
 
@@ -477,4 +516,119 @@ func (w *Worker) FinalizeChapter(ctx context.Context, bookID string, chapterIdx 
 		}
 		return nil
 	})
+}
+
+// ApplyVoiceRoles replaces the book's role→voice configuration. VoiceRoles is
+// persisted via UpdateByID (never the SaveGeneration allowlist — a running
+// render must not clobber it), then every complete segment whose alt take is
+// affected by the diff goes stale so the next generate/continue re-renders
+// just those takes.
+func (w *Worker) ApplyVoiceRoles(ctx context.Context, bookID string, roles map[string]model.RoleVoices) error {
+	return w.withBookRun(ctx, bookID, func(r *run) error {
+		book := r.book
+		old := book.VoiceRoles
+
+		if err := w.St.Books.SetVoiceRoles(ctx, book.ID, roles); err != nil {
+			return err
+		}
+
+		if err := r.withSave(ctx, func() {
+			book.VoiceRoles = roles
+			for ci := range book.Chapters {
+				chapter := &book.Chapters[ci]
+				senByID := map[string]*model.Sentence{}
+				for si := range chapter.Sentences {
+					senByID[chapter.Sentences[si].ID.Hex()] = &chapter.Sentences[si]
+				}
+				for ti := range chapter.Tracks {
+					track := &chapter.Tracks[ti]
+					touched := false
+					for si := range track.Segments {
+						seg := &track.Segments[si]
+						sen := senByID[seg.SentenceID.Hex()]
+						if sen == nil || sen.Role == model.RoleNone {
+							continue
+						}
+						if old[track.Voice][sen.Role] == roles[track.Voice][sen.Role] {
+							continue
+						}
+						if seg.AudioStatus == model.AudioComplete {
+							seg.AudioStatus = model.AudioStale
+							seg.AudioError = nil
+							touched = true
+						}
+					}
+					if touched && track.AudioStatus == model.AudioComplete {
+						track.AudioStatus = model.AudioStale
+					}
+				}
+			}
+		}); err != nil {
+			return err
+		}
+		w.emit(book, map[string]any{
+			"voiceRoles": roles,
+			"chapters":   model.SerializeChaptersForClient(book.Chapters),
+		})
+		return nil
+	})
+}
+
+// SetSentenceRole classifies (or clears) one sentence's role. Complete
+// segments whose alt take changes with the new role go stale so the next
+// render/regenerate refreshes them.
+func (w *Worker) SetSentenceRole(ctx context.Context, bookID string, chapterIdx int, sentenceID string, role model.SentenceRole) error {
+	return w.withBookRun(ctx, bookID, func(r *run) error {
+		book := r.book
+		if chapterIdx < 0 || chapterIdx >= len(book.Chapters) {
+			return nil
+		}
+		chapter := &book.Chapters[chapterIdx]
+		senIdx := -1
+		for i, s := range chapter.Sentences {
+			if s.ID.Hex() == sentenceID {
+				senIdx = i
+				break
+			}
+		}
+		if senIdx < 0 {
+			return nil
+		}
+		if err := r.withSave(ctx, func() {
+			sen := &chapter.Sentences[senIdx]
+			old := sen.Role
+			sen.Role = role
+			for ti := range chapter.Tracks {
+				track := &chapter.Tracks[ti]
+				oldAlt := roleVoiceFor(book.VoiceRoles, track.Voice, old)
+				newAlt := roleVoiceFor(book.VoiceRoles, track.Voice, role)
+				if oldAlt == newAlt {
+					continue
+				}
+				touched := false
+				for si := range track.Segments {
+					seg := &track.Segments[si]
+					if seg.SentenceID.Hex() == sentenceID && seg.AudioStatus == model.AudioComplete {
+						seg.AudioStatus = model.AudioStale
+						seg.AudioError = nil
+						touched = true
+					}
+				}
+				if touched && track.AudioStatus == model.AudioComplete {
+					track.AudioStatus = model.AudioStale
+				}
+			}
+		}); err != nil {
+			return err
+		}
+		w.emit(book, map[string]any{"chapters": model.SerializeChaptersForClient(book.Chapters)})
+		return nil
+	})
+}
+
+func roleVoiceFor(roles map[string]model.RoleVoices, trackVoice string, role model.SentenceRole) string {
+	if role == model.RoleNone {
+		return ""
+	}
+	return roles[trackVoice][role]
 }

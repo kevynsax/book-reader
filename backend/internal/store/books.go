@@ -145,6 +145,18 @@ func (b *Books) UpdateByID(ctx context.Context, id bson.ObjectID, update bson.M,
 
 // SetChapters is the targeted-update exception (PATCH /:id/chapters uses
 // findByIdAndUpdate in Node).
+// SetVoiceRoles writes the role→voice configuration directly — deliberately
+// outside the SaveGeneration allowlist so a running render can't clobber it.
+func (b *Books) SetVoiceRoles(ctx context.Context, id bson.ObjectID, roles map[string]model.RoleVoices) error {
+	update := bson.M{"$set": bson.M{"voiceRoles": roles}}
+	if len(roles) == 0 {
+		update = bson.M{"$unset": bson.M{"voiceRoles": ""}}
+	}
+	update["$currentDate"] = bson.M{"updatedAt": true}
+	_, err := b.col.UpdateOne(ctx, bson.M{"_id": id}, update)
+	return err
+}
+
 func (b *Books) SetChapters(ctx context.Context, id bson.ObjectID, chapters []model.Chapter) error {
 	_, err := b.col.UpdateOne(ctx, bson.M{"_id": id}, bson.M{
 		"$set":         bson.M{"chapters": chapters},

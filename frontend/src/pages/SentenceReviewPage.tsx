@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store';
-import { EditableSentence } from '../types';
-import { useVoiceLabel, useVoiceNames } from '../hooks/useVoiceLabel';
+import { EditableSentence, SentenceRole } from '../types';
+import { useVoiceLabel } from '../hooks/useVoiceLabel';
 import PagePreview from '../components/PagePreview';
+import VoicePicker from '../components/VoicePicker';
 import { t } from '../i18n';
 
 const ALL_VOICES = '*';
@@ -27,18 +28,6 @@ export default function SentenceReviewPage() {
   const book = useSelector((s: RootState) => s.books.books.find(b => b._id === id));
   const voices = useMemo(() => book?.voices ?? [], [book?.voices]);
   const label = useVoiceLabel(voices);
-  const voiceNames = useVoiceNames();
-  const voiceOptions = useMemo(
-    () => Object.entries(voiceNames)
-      .map(([engine, byId]) => ({
-        engine,
-        voices: Object.entries(byId)
-          .map(([bare, name]) => ({ value: `${engine}:${bare}`, name }))
-          .sort((a, b) => a.name.localeCompare(b.name)),
-      }))
-      .sort((a, b) => a.engine.localeCompare(b.engine)),
-    [voiceNames],
-  );
 
   const [sentences, setSentences] = useState<EditableSentence[] | null>(null);
   const [perVoice, setPerVoice] = useState<Record<string, Record<string, EditableSentence>>>({});
@@ -142,21 +131,28 @@ export default function SentenceReviewPage() {
   };
 
   const overrideSelect = (voice: string) => (
-    <select
-      className="input text-[11px] py-1 px-1.5 max-w-[11rem]"
+    <VoicePicker
+      className="max-w-[11rem]"
       value={selected?.voiceOverrides?.[voice] ?? ''}
       disabled={busy}
-      onChange={e => setOverride(voice, e.target.value)}
+      onChange={v => setOverride(voice, v)}
       title={t('Read this sentence with a different voice')}
-    >
-      <option value="">{voice === ALL_VOICES ? t('Each voice as usual') : t('Same voice')}</option>
-      {voiceOptions.map(g => (
-        <optgroup key={g.engine} label={g.engine}>
-          {g.voices.map(o => <option key={o.value} value={o.value}>{o.name}</option>)}
-        </optgroup>
-      ))}
-    </select>
+      emptyLabel={voice === ALL_VOICES ? t('Each voice as usual') : t('Same voice')}
+    />
   );
+
+  // Tag the sentence's role (title / quote flavours) so per-role alternative
+  // voices apply to it, then re-render every voice's take like an override does.
+  const setRole = async (role: SentenceRole | '') => {
+    if (!selected) return;
+    await applyText();
+    await call('PUT', `/api/books/${id}/chapters/${idx}/sentences/${selected._id}/role`, { role });
+    setPendingMerge(true);
+    for (const v of voices) {
+      await call('POST', `/api/books/${id}/chapters/${idx}/sentences/${selected._id}/regenerate`,
+        { voice: v, merge: false });
+    }
+  };
 
   const save = async () => {
     setSaving(true);
@@ -296,6 +292,20 @@ export default function SentenceReviewPage() {
                 <div className="flex items-center gap-2 flex-wrap pt-1">
                   <span className="text-[11px] text-gray-500">{t('Read by:')}</span>
                   {overrideSelect(ALL_VOICES)}
+                  <select
+                    className="input text-[11px] py-1 px-1.5"
+                    value={selected.role ?? ''}
+                    disabled={busy}
+                    onChange={e => setRole(e.target.value as SentenceRole | '')}
+                    title={t('Mark what this sentence is, so role voices apply')}
+                  >
+                    <option value="">{t('Narration')}</option>
+                    <option value="title">{t('Title')}</option>
+                    <option value="quoteMale">{t('Masculine quote')}</option>
+                    <option value="quoteFemale">{t('Feminine quote')}</option>
+                    <option value="quoteChild">{t('Child quote')}</option>
+                    <option value="quoteDefault">{t('Other quote')}</option>
+                  </select>
                   {selected.voiceOverrides?.[ALL_VOICES] && (
                     <span className="text-[11px] text-amber-400">{t('every voice overridden')}</span>
                   )}

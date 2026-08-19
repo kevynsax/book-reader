@@ -11,6 +11,7 @@ import ChapterReview, { ChapterReviewHandle } from '../components/ChapterReview'
 import TextReview, { TextReviewHandle } from '../components/OcrPageReview';
 import CoverPickerModal from '../components/CoverPickerModal';
 import VoiceManager from '../components/VoiceManager';
+import VoiceRolesSection from '../components/VoiceRolesSection';
 import GenerateVoiceModal from '../components/GenerateVoiceModal';
 import { SentenceReviewSection, VoiceSection } from '../components/SentencePhase';
 import ServerStatus from '../components/ServerStatus';
@@ -746,6 +747,7 @@ export default function EditBookPage() {
           <>
             <SentenceReviewSection book={book} />
             {book.status === 'awaiting_sentence_review' && <VoiceSection book={book} />}
+            <VoiceRolesSection book={book} />
           </>
         )}
 

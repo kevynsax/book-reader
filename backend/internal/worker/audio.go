@@ -15,6 +15,7 @@ import (
 
 	"github.com/kevynsax/book-reader/backend/internal/config"
 	"github.com/kevynsax/book-reader/backend/internal/lib/pool"
+	"github.com/kevynsax/book-reader/backend/internal/lib/sentences"
 	"github.com/kevynsax/book-reader/backend/internal/model"
 	"github.com/kevynsax/book-reader/backend/internal/queue"
 	"github.com/kevynsax/book-reader/backend/internal/svc/normalizer"
@@ -100,7 +101,18 @@ func (w *Worker) buildSentences(ctx context.Context, r *run, idx int) (bool, err
 	pieced := make([][]model.Sentence, len(units))
 	var splitDone atomic.Int64
 	_ = pool.Run(units, config.SentenceSplitConcurrency, func(unit string, i int) error {
-		pieces := w.splitUnitForTts(ctx, unit, language, 0, nil)
+		// Quotation runs become their own sentences so a different voice can
+		// speak them; the classifier later refines WHO (default: quoteDefault).
+		var pieces []model.Sentence
+		for _, qr := range sentences.SplitQuoteRuns(unit) {
+			ps := w.splitUnitForTts(ctx, qr.Text, language, 0, nil)
+			if qr.IsQuote {
+				for k := range ps {
+					ps[k].Role = model.RoleQuoteDefault
+				}
+			}
+			pieces = append(pieces, ps...)
+		}
 		// Trace lineage: reviewed line i+1 is "N"; pieces the SLM cut from it
 		// up front are "N.1", "N.2", … marked pre-audio-generation.
 		base := fmt.Sprint(i + 1)
@@ -117,12 +129,17 @@ func (w *Worker) buildSentences(ctx context.Context, r *run, idx int) (bool, err
 		w.emit(book, map[string]any{"splitProgress": progressPayload{Current: int(splitDone.Add(1)), Total: len(units), Message: splitMsg}})
 		return nil
 	})
-	var sentences []model.Sentence
+	var built []model.Sentence
 	for _, pieces := range pieced {
-		sentences = append(sentences, pieces...)
+		built = append(built, pieces...)
 	}
-	if len(sentences) == 0 {
+	if len(built) == 0 {
 		return false, nil
+	}
+	// The chapter heading is the first short line — the title role drives its
+	// alternative voice and the silence/gain treatment during assembly.
+	if built[0].Role == model.RoleNone && sentences.IsTitle(built[0].Text, config.TitleMaxWords) {
+		built[0].Role = model.RoleTitle
 	}
 	// A cancelled context (pre-splitter unwinding) degrades SLM splits into
 	// keep-whole passthroughs — never persist that as a finished split.
@@ -131,11 +148,11 @@ func (w *Worker) buildSentences(ctx context.Context, r *run, idx int) (bool, err
 	}
 
 	if err := r.withSave(ctx, func() {
-		for order := range sentences {
-			sentences[order].ID = bson.NewObjectID()
-			sentences[order].Order = order
+		for order := range built {
+			built[order].ID = bson.NewObjectID()
+			built[order].Order = order
 		}
-		chapter.Sentences = sentences
+		chapter.Sentences = built
 	}); err != nil {
 		return false, err
 	}
@@ -158,12 +175,33 @@ func ensureSegments(track *model.VoiceTrack, chapter *model.Chapter) {
 				SentenceID: sen.ID, AudioPath: ex.AudioPath, DurationSecs: ex.DurationSecs,
 				AudioStatus: ex.AudioStatus, AudioError: ex.AudioError,
 				WhisperResults: ex.WhisperResults, NeedsReview: ex.NeedsReview,
+				AltAudioPath: ex.AltAudioPath, AltDurationSecs: ex.AltDurationSecs, AltVoice: ex.AltVoice,
 			}
 		} else {
 			next[i] = model.Segment{SentenceID: sen.ID, AudioStatus: model.AudioPending}
 		}
 	}
 	track.Segments = next
+}
+
+// chapterHasRoles: whether any sentence carries a role — the switch between
+// role-driven voicing and the legacy word-count title heuristic.
+func chapterHasRoles(chapter *model.Chapter) bool {
+	for _, s := range chapter.Sentences {
+		if s.Role != model.RoleNone {
+			return true
+		}
+	}
+	return false
+}
+
+// segmentIsTitle: role wins when the chapter has roles; the word-count
+// heuristic remains the fallback for legacy books without them.
+func segmentIsTitle(sen model.Sentence, hasRoles bool) bool {
+	if hasRoles {
+		return sen.Role == model.RoleTitle
+	}
+	return sentences.IsTitle(sen.Text, config.TitleMaxWords)
 }
 
 // orderedSegmentInputs is the ordered {audioPath, durationSecs, text,
@@ -173,6 +211,7 @@ func orderedSegmentInputs(chapter *model.Chapter, track *model.VoiceTrack) []tts
 	for i := range track.Segments {
 		byID[track.Segments[i].SentenceID.Hex()] = &track.Segments[i]
 	}
+	hasRoles := chapterHasRoles(chapter)
 	ordered := append([]model.Sentence(nil), chapter.Sentences...)
 	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Order < ordered[j].Order })
 	out := make([]tts.SegmentInput, len(ordered))
@@ -182,13 +221,21 @@ func orderedSegmentInputs(chapter *model.Chapter, track *model.VoiceTrack) []tts
 		if sen.Display != nil && strings.TrimSpace(*sen.Display) != "" {
 			display = strings.TrimSpace(*sen.Display)
 		}
-		in := tts.SegmentInput{Text: text, Display: display}
+		in := tts.SegmentInput{
+			Text:    text,
+			Display: display,
+			IsTitle: segmentIsTitle(sen, hasRoles),
+			Quote:   sen.Role != model.RoleNone && sen.Role != model.RoleTitle,
+		}
 		if seg := byID[sen.ID.Hex()]; seg != nil {
 			if seg.AudioPath != nil {
 				in.AudioPath = *seg.AudioPath
 			}
 			if seg.DurationSecs != nil {
 				in.DurationSecs = *seg.DurationSecs
+			}
+			if seg.AltAudioPath != nil {
+				in.AltAudioPath = *seg.AltAudioPath
 			}
 		}
 		out[i] = in
@@ -241,6 +288,7 @@ func (w *Worker) finalizeTrack(ctx context.Context, r *run, idx int, voice, audi
 	var assembledPath string
 	var durationSecs float64
 	var assembleErr error
+	variants := map[string]model.TrackVariant{}
 	if allComplete {
 		message := fmt.Sprintf("Merging %q audio…", chapter.Title)
 		w.emit(book, map[string]any{
@@ -251,7 +299,20 @@ func (w *Worker) finalizeTrack(ctx context.Context, r *run, idx int, voice, audi
 			},
 		})
 		assembledPath = ChapterAudioPath(audioDir, idx, voice)
-		durationSecs, assembleErr = tts.AssembleChapter(inputs, assembledPath)
+		durationSecs, assembleErr = tts.AssembleChapter(inputs, assembledPath, tts.AssembleVariant{})
+		if assembleErr == nil {
+			for _, v := range variantsFor(inputs) {
+				path := ChapterAudioVariantPath(audioDir, idx, voice, v.Key())
+				dur, err := tts.AssembleChapter(inputs, path, v)
+				if err != nil {
+					// A broken variant never blocks the default mix — the
+					// serving route falls back to it for the missing key.
+					log.Printf("assembleChapter %s ch%d (%s) variant %q: %v", book.ID.Hex(), idx+1, voice, v.Key(), err)
+					continue
+				}
+				variants[v.Key()] = model.TrackVariant{AudioPath: path, DurationSecs: dur}
+			}
+		}
 	}
 
 	if err := r.withSave(ctx, func() {
@@ -262,6 +323,10 @@ func (w *Worker) finalizeTrack(ctx context.Context, r *run, idx int, voice, audi
 			track.AudioDurationSecs = &rounded
 			track.AudioStatus = model.AudioComplete
 			track.AudioError = nil
+			track.Variants = nil
+			if len(variants) > 0 {
+				track.Variants = variants
+			}
 		case allComplete:
 			message := "Assembly failed: " + assembleErr.Error()
 			log.Printf("assembleChapter %s ch%d (%s): %v", book.ID.Hex(), idx+1, voice, assembleErr)
@@ -292,8 +357,37 @@ func (w *Worker) finalizeTrack(ctx context.Context, r *run, idx int, voice, audi
 		Idx: idx, Voice: voice,
 		AudioStatus: track.AudioStatus, AudioPath: track.AudioPath,
 		AudioDurationSecs: track.AudioDurationSecs, AudioError: track.AudioError,
+		Variants: track.Variants,
 	}})
 	return nil
+}
+
+// variantsFor lists the alternative mixes worth assembling: only variants
+// whose toggled roles actually have alt takes in this chapter.
+func variantsFor(inputs []tts.SegmentInput) []tts.AssembleVariant {
+	altTitle, altQuote := false, false
+	for _, in := range inputs {
+		if in.AltAudioPath == "" {
+			continue
+		}
+		if in.IsTitle {
+			altTitle = true
+		}
+		if in.Quote {
+			altQuote = true
+		}
+	}
+	var out []tts.AssembleVariant
+	if altTitle {
+		out = append(out, tts.AssembleVariant{AltTitle: true})
+	}
+	if altQuote {
+		out = append(out, tts.AssembleVariant{AltQuote: true})
+	}
+	if altTitle && altQuote {
+		out = append(out, tts.AssembleVariant{AltTitle: true, AltQuote: true})
+	}
+	return out
 }
 
 // segmentTask is one sentence to synthesize: indices into the shared Book
@@ -306,12 +400,24 @@ type segmentTask struct {
 	// speaks it (they differ when the sentence carries a voice override).
 	voice      string
 	synthVoice string
-	segIdx     int
-	senIdx     int
-	text       string
-	segPath    string
-	language   string
-	priority   int64
+	// altSynthVoice, when set, is the role voice for the sentence's alt take
+	// (rendered to altPathFor(segPath) alongside the plain one).
+	altSynthVoice string
+	// Which takes this task still has to render — a resume skips takes whose
+	// audio already sits on disk.
+	needPlain bool
+	needAlt   bool
+	segIdx    int
+	senIdx    int
+	text      string
+	segPath   string
+	language  string
+	priority  int64
+}
+
+// altPathFor derives the alt take's file from the plain take's path.
+func altPathFor(p string) string {
+	return strings.TrimSuffix(p, ".mp3") + ".alt.mp3"
 }
 
 // renderSegment synthesizes one sentence on the tts server the dispatcher
@@ -340,7 +446,26 @@ func (w *Worker) renderSegment(ctx, stopCtx context.Context, r *run, task segmen
 	if synthVoice == "" {
 		synthVoice = task.voice
 	}
-	piece, err := tts.RenderSegment(stopCtx, w.Q, display, task.text, synthVoice, task.language, task.priority)
+
+	renderTake := func(voice, outPath string) (tts.RenderedPiece, error) {
+		piece, err := tts.RenderSegment(stopCtx, w.Q, display, task.text, voice, task.language, task.priority)
+		if err != nil {
+			return piece, err
+		}
+		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+			return piece, err
+		}
+		return piece, os.WriteFile(outPath, piece.Buffer, 0o644)
+	}
+
+	var plain, alt tts.RenderedPiece
+	var err error
+	if task.needPlain {
+		plain, err = renderTake(synthVoice, task.segPath)
+	}
+	if err == nil && task.needAlt && task.altSynthVoice != "" {
+		alt, err = renderTake(task.altSynthVoice, altPathFor(task.segPath))
+	}
 
 	if err != nil && stopCtx.Err() != nil {
 		// The stop cancelled this render mid-flight; put the segment back to
@@ -357,32 +482,38 @@ func (w *Worker) renderSegment(ctx, stopCtx context.Context, r *run, task segmen
 		return ErrStopped
 	}
 
-	var writeErr error
-	if err == nil {
-		if writeErr = os.MkdirAll(filepath.Dir(task.segPath), 0o755); writeErr == nil {
-			writeErr = os.WriteFile(task.segPath, piece.Buffer, 0o644)
-		}
-	}
-
 	r.locked(func() {
 		chapter := &book.Chapters[task.idx]
 		seg := &book.Chapters[task.idx].Tracks[trackIndex(chapter, task.voice)].Segments[task.segIdx]
-		if err == nil && writeErr == nil {
-			segPath := task.segPath
-			duration := piece.DurationSecs
-			seg.AudioPath = &segPath
-			seg.DurationSecs = &duration
-			seg.WhisperResults = piece.Transcripts
-			seg.NeedsReview = piece.Mismatch
+		if err == nil {
+			if task.needPlain {
+				segPath := task.segPath
+				duration := plain.DurationSecs
+				seg.AudioPath = &segPath
+				seg.DurationSecs = &duration
+				seg.WhisperResults = plain.Transcripts
+				seg.NeedsReview = plain.Mismatch
+			}
+			if task.altSynthVoice != "" {
+				if task.needAlt {
+					altPath := altPathFor(task.segPath)
+					altDur := alt.DurationSecs
+					seg.AltAudioPath = &altPath
+					seg.AltDurationSecs = &altDur
+					seg.AltVoice = task.altSynthVoice
+					seg.WhisperResults = append(seg.WhisperResults, alt.Transcripts...)
+					seg.NeedsReview = seg.NeedsReview || alt.Mismatch
+				}
+			} else {
+				seg.AltAudioPath = nil
+				seg.AltDurationSecs = nil
+				seg.AltVoice = ""
+			}
 			seg.AudioStatus = model.AudioComplete
 			seg.AudioError = nil
 		} else {
-			renderErr := err
-			if renderErr == nil {
-				renderErr = writeErr
-			}
-			message := renderErr.Error()
-			log.Printf("renderSegment %s ch%d (%s): %v", book.ID.Hex(), task.idx+1, task.voice, renderErr)
+			message := err.Error()
+			log.Printf("renderSegment %s ch%d (%s): %v", book.ID.Hex(), task.idx+1, task.voice, err)
 			seg.AudioStatus = model.AudioError
 			seg.AudioError = &message
 			seg.NeedsReview = false
@@ -469,20 +600,36 @@ func (w *Worker) prepareChapterTasks(ctx context.Context, r *run, voice string, 
 		if !found {
 			continue
 		}
-		// A segment counts as done only if its audio is still on disk.
+		sen := chapter.Sentences[senIdx]
+		plainVoice := sen.SynthVoiceFor(voice, book.VoiceRoles, false)
+		altVoice := sen.SynthVoiceFor(voice, book.VoiceRoles, true)
+		if altVoice == plainVoice {
+			altVoice = ""
+		}
+		// A take counts as done only if its audio is still on disk (and, for
+		// the alt take, was rendered by the currently configured role voice).
+		plainOK := segmentFilePresent(seg.AudioPath)
+		altOK := altVoice == "" || (segmentFilePresent(seg.AltAudioPath) && seg.AltVoice == altVoice)
 		if seg.AudioStatus == model.AudioComplete {
-			if segmentFilePresent(seg.AudioPath) {
+			if plainOK && altOK {
 				continue
 			}
 			seg.AudioStatus = model.AudioPending
 			seg.AudioError = nil
 			reconciled = true
 		}
-		sen := chapter.Sentences[senIdx]
+		// Keep writing to the file the segment already owns (paths may be
+		// id-keyed rather than order-derived after sentence edits).
+		segPath := segmentAudioPath(audioDir, idx, voice, sen.Order)
+		if seg.AudioPath != nil && *seg.AudioPath != "" {
+			segPath = *seg.AudioPath
+		}
 		tasks = append(tasks, segmentTask{
-			idx: idx, voice: voice, synthVoice: sen.SynthVoice(voice), segIdx: si, senIdx: senIdx,
+			idx: idx, voice: voice, synthVoice: plainVoice, altSynthVoice: altVoice,
+			needPlain: !plainOK, needAlt: altVoice != "" && !altOK,
+			segIdx: si, senIdx: senIdx,
 			text:     strings.TrimSpace(sen.Text),
-			segPath:  segmentAudioPath(audioDir, idx, voice, sen.Order),
+			segPath:  segPath,
 			language: language,
 			priority: priority,
 		})
@@ -529,6 +676,38 @@ func (w *Worker) renderChapter(ctx, stopCtx context.Context, r *run, j job, pos 
 	tasks, err := w.prepareChapterTasks(ctx, r, voice, idx, int64(pos)+1, audioDir, progress)
 	if err != nil {
 		return err
+	}
+
+	// Role/override voices can live on other engines — fail fast for those
+	// models too, before any task is queued.
+	missing := map[string]bool{}
+	for _, t := range tasks {
+		for _, v := range []string{t.synthVoice, t.altSynthVoice} {
+			if v == "" {
+				continue
+			}
+			if m, _ := tts.ParseVoice(v); !missing[m.ID] && !w.Q.Registry.HasModelWorker(m.ID) {
+				missing[m.ID] = true
+			}
+		}
+	}
+	if len(missing) > 0 {
+		ids := make([]string, 0, len(missing))
+		for id := range missing {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		audioError := fmt.Sprintf("No TTS server is online for model %q — start the server and try again.", strings.Join(ids, ", "))
+		log.Printf("renderChapter %s ch%d (%s): %s", book.ID.Hex(), idx+1, voice, audioError)
+		if err := r.withSave(ctx, func() {
+			track.AudioStatus = model.AudioError
+			track.AudioError = &audioError
+			progress.done++
+		}); err != nil {
+			return err
+		}
+		w.emit(book, map[string]any{"chapterUpdate": chapterUpdate{Idx: idx, Voice: voice, AudioStatus: model.AudioError, AudioError: &audioError}})
+		return nil
 	}
 
 	// Per-chapter progress: percent reflects this chapter's own segments
@@ -921,12 +1100,14 @@ func (w *Worker) RegenerateChapterAudio(ctx context.Context, bookID string, chap
 			chapter.Tracks[ti].Segments = []model.Segment{}
 			chapter.Tracks[ti].AudioStatus = model.AudioPending
 			chapter.Tracks[ti].AudioError = nil
+			chapter.Tracks[ti].Variants = nil
 		}
 	}); err != nil {
 		return err
 	}
 	for _, voice := range book.Voices {
 		os.RemoveAll(SegmentDir(audioDir, chapterIdx, voice))
+		removeChapterFiles(audioDir, chapterIdx, voice)
 	}
 
 	progress := &renderProgress{total: len(book.Voices)}
@@ -955,9 +1136,20 @@ func clearTrackAudio(book *model.Book, audioDir string, chapterIdx int, voice st
 		track.AudioError = nil
 		track.AudioPath = nil
 		track.AudioDurationSecs = nil
+		track.Variants = nil
 	}
 	os.RemoveAll(SegmentDir(audioDir, chapterIdx, voice))
-	os.Remove(ChapterAudioPath(audioDir, chapterIdx, voice))
+	removeChapterFiles(audioDir, chapterIdx, voice)
+}
+
+// removeChapterFiles deletes a chapter track's assembled mp3s (all variants)
+// and their timelines.
+func removeChapterFiles(audioDir string, chapterIdx int, voice string) {
+	for _, variant := range []string{"", "t", "q", "tq"} {
+		p := ChapterAudioVariantPath(audioDir, chapterIdx, voice, variant)
+		os.Remove(p)
+		os.Remove(tts.TimelinePathFor(p))
+	}
 }
 
 // RegenerateVoiceAudio regenerates one voice across every chapter.

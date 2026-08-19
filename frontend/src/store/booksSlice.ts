@@ -144,6 +144,12 @@ export const addVoice = createAsyncThunk(
   }
 );
 
+export const updateVoiceRoles = createAsyncThunk(
+  'books/updateVoiceRoles',
+  async ({ bookId, voiceRoles }: { bookId: string; voiceRoles: NonNullable<Book['voiceRoles']> }) =>
+    (await api.put<{ message: string }>(`/api/books/${bookId}/voice-roles`, { voiceRoles })).data
+);
+
 export const removeVoice = createAsyncThunk(
   'books/removeVoice',
   async ({ bookId, voice }: { bookId: string; voice: string }) => {
@@ -222,6 +228,8 @@ const booksSlice = createSlice({
 
       if (patch.voices) book.voices = patch.voices as string[];
 
+      if (patch.voiceRoles) book.voiceRoles = patch.voiceRoles as Book['voiceRoles'];
+
       if ('chapterSnapshotAt' in patch) book.chapterSnapshotAt = (patch.chapterSnapshotAt as string) || undefined;
 
       if (patch.chapters) book.chapters = patch.chapters as Chapter[];
@@ -244,6 +252,7 @@ const booksSlice = createSlice({
         const cu = patch.chapterUpdate as {
           idx: number; voice?: string; audioStatus: VoiceTrack['audioStatus'];
           audioPath?: string; audioDurationSecs?: number; audioError?: string;
+          variants?: VoiceTrack['variants'];
         };
         const chapter = book.chapters[cu.idx];
         if (chapter) {
@@ -259,6 +268,7 @@ const booksSlice = createSlice({
             track.audioError = cu.audioError;
             if (cu.audioPath) track.audioPath = cu.audioPath;
             if (cu.audioDurationSecs !== undefined) track.audioDurationSecs = cu.audioDurationSecs;
+            if (cu.variants) track.variants = cu.variants;
           }
           if (voice && cu.audioStatus !== 'generating' && book.voiceProgress?.[voice]?.chapterIdx === cu.idx) {
             delete book.voiceProgress[voice];

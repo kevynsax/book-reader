@@ -197,6 +197,20 @@ func (s *Server) chapterFromPath(w http.ResponseWriter, r *http.Request, book *m
 	return &book.Chapters[idx]
 }
 
+// variantAudioPath picks the assembled file for an `alt` variant request
+// ("t" alt titles, "q" alt quotes, "tq" both), degrading gracefully — a
+// missing "tq" tries "q" then "t" — and falling back to the default mix so
+// legacy and mid-migration books always play.
+func variantAudioPath(track *model.VoiceTrack, alt string) string {
+	order := map[string][]string{"tq": {"tq", "q", "t"}, "t": {"t"}, "q": {"q"}}
+	for _, key := range order[alt] {
+		if v, ok := track.Variants[key]; ok && fileExists(v.AudioPath) {
+			return v.AudioPath
+		}
+	}
+	return *track.AudioPath
+}
+
 // Chapter MP3 with Range/206/ETag/304 — http.ServeContent supplies the Range
 // and conditional-request handling the Node route hand-rolled.
 func (s *Server) handleChapterAudio(w http.ResponseWriter, r *http.Request) {
@@ -213,8 +227,9 @@ func (s *Server) handleChapterAudio(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusNotFound, "Audio not ready")
 		return
 	}
+	audioPath := variantAudioPath(track, r.URL.Query().Get("alt"))
 
-	f, err := os.Open(*track.AudioPath)
+	f, err := os.Open(audioPath)
 	if err != nil {
 		Error(w, http.StatusNotFound, "Audio not ready")
 		return
@@ -248,7 +263,10 @@ func (s *Server) handleChapterTimeline(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusNotFound, "No timeline")
 		return
 	}
-	timelinePath := tts.TimelinePathFor(*track.AudioPath)
+	timelinePath := tts.TimelinePathFor(variantAudioPath(track, r.URL.Query().Get("alt")))
+	if !fileExists(timelinePath) {
+		timelinePath = tts.TimelinePathFor(*track.AudioPath)
+	}
 	if !fileExists(timelinePath) {
 		Error(w, http.StatusNotFound, "No timeline")
 		return
@@ -295,15 +313,16 @@ func (s *Server) handleSentences(w http.ResponseWriter, r *http.Request) {
 		WhisperResults []string          `json:"whisperResults,omitempty"`
 		// Voice pinned for this sentence: per requested voice, plus the
 		// whole map so the UI can show an all-voices override too.
-		SynthVoice     string            `json:"synthVoice,omitempty"`
-		VoiceOverrides map[string]string `json:"voiceOverrides,omitempty"`
+		SynthVoice     string             `json:"synthVoice,omitempty"`
+		VoiceOverrides map[string]string  `json:"voiceOverrides,omitempty"`
+		Role           model.SentenceRole `json:"role,omitempty"`
 	}
 	sentences := make([]wireSentence, len(ordered))
 	for i, sen := range ordered {
 		out := wireSentence{
 			ID: sen.ID.Hex(), Order: sen.Order, Page: pages[sen.ID.Hex()], Text: sen.Text,
 			Original: sen.Original, AudioStatus: model.AudioPending,
-			VoiceOverrides: sen.VoiceOverrides,
+			VoiceOverrides: sen.VoiceOverrides, Role: sen.Role,
 		}
 		if synth := sen.SynthVoice(voice); synth != voice {
 			out.SynthVoice = synth

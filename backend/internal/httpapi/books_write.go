@@ -51,6 +51,7 @@ func (s *Server) registerBookWriteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/regenerate", s.handleChapterRegenerate)
 	mux.HandleFunc("POST /api/books/{id}/reassemble", s.handleReassemble)
 	mux.HandleFunc("POST /api/books/{id}/voices", s.handleAddVoices)
+	mux.HandleFunc("PUT /api/books/{id}/voice-roles", s.handleVoiceRoles)
 	mux.HandleFunc("DELETE /api/books/{id}/voices/{voice}", s.handleRemoveVoice)
 	mux.HandleFunc("POST /api/books/{id}/voices/{voice}/regenerate", s.handleVoiceRegenerate)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/voices/{voice}/regenerate", s.handleChapterVoiceRegenerate)
@@ -61,6 +62,7 @@ func (s *Server) registerBookWriteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/insert-after", s.handleSentenceInsertAfter)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/approve", s.handleSentenceApprove)
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/voice-override", s.handleSentenceVoiceOverride)
+	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/sentences/{sentenceId}/role", s.handleSentenceRole)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/finalize", s.handleChapterFinalize)
 }
 
@@ -1270,8 +1272,15 @@ func (s *Server) handleRemoveVoice(w http.ResponseWriter, r *http.Request) {
 	audioDir := filepath.Join(book.FolderPath, "audio")
 	for idx := range book.Chapters {
 		chapter := &book.Chapters[idx]
-		if track := book.TrackForVoice(chapter, voice); track != nil && track.AudioPath != nil {
-			os.Remove(*track.AudioPath)
+		if track := book.TrackForVoice(chapter, voice); track != nil {
+			if track.AudioPath != nil {
+				os.Remove(*track.AudioPath)
+				os.Remove(tts.TimelinePathFor(*track.AudioPath))
+			}
+			for _, v := range track.Variants {
+				os.Remove(v.AudioPath)
+				os.Remove(tts.TimelinePathFor(v.AudioPath))
+			}
 		}
 		os.RemoveAll(worker.SegmentDir(audioDir, idx, voice))
 		kept := make([]model.VoiceTrack, 0, len(chapter.Tracks))
@@ -1570,6 +1579,91 @@ func (s *Server) handleChapterFinalize(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		if err := s.W.FinalizeChapter(context.Background(), bookID, idx); err != nil {
 			log.Printf("finalizeChapter %s ch%d failed: %v", bookID, idx, err)
+		}
+	}()
+}
+
+// PUT /api/books/{id}/voice-roles — replace the per-track role→voice matrix.
+// Affected alt takes go stale and a resume render is kicked so the variants
+// refresh in the background.
+func (s *Server) handleVoiceRoles(w http.ResponseWriter, r *http.Request) {
+	book := s.findBook(w, r)
+	if book == nil {
+		return
+	}
+	var body struct {
+		VoiceRoles map[string]model.RoleVoices `json:"voiceRoles"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		Error(w, http.StatusBadRequest, "voiceRoles object is required")
+		return
+	}
+	bookVoices := map[string]bool{}
+	for _, v := range book.Voices {
+		bookVoices[v] = true
+	}
+	roles := map[string]model.RoleVoices{}
+	for track, rv := range body.VoiceRoles {
+		if !bookVoices[track] {
+			Error(w, http.StatusBadRequest, fmt.Sprintf("%q is not a voice of this book", track))
+			return
+		}
+		clean := model.RoleVoices{}
+		for role, voice := range rv {
+			if !model.ValidRole(role) {
+				Error(w, http.StatusBadRequest, fmt.Sprintf("unknown role %q", role))
+				return
+			}
+			voice = strings.TrimSpace(voice)
+			if voice == "" {
+				continue
+			}
+			clean[role] = voice
+		}
+		if len(clean) > 0 {
+			roles[track] = clean
+		}
+	}
+
+	if s.W.IsBookBusy(book.ID.Hex()) {
+		Error(w, http.StatusConflict, "Audio generation is running — stop it before changing role voices.")
+		return
+	}
+	Message(w, "Role voices saved. Re-rendering affected audio.")
+
+	bookID := book.ID.Hex()
+	go func() {
+		if err := s.W.ApplyVoiceRoles(context.Background(), bookID, roles); err != nil {
+			log.Printf("applyVoiceRoles %s failed: %v", bookID, err)
+			return
+		}
+		if err := s.W.GenerateBookAudio(context.Background(), bookID); err != nil {
+			log.Printf("generateBookAudio %s failed: %v", bookID, err)
+		}
+	}()
+}
+
+// PUT /:id/chapters/:idx/sentences/:sentenceId/role — classify the sentence
+// (title / quote speaker) for role-based voicing; empty role clears it.
+func (s *Server) handleSentenceRole(w http.ResponseWriter, r *http.Request) {
+	book, idx, sentenceID, ok := s.sentenceRoutePrologue(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Role string `json:"role"`
+	}
+	_ = decodeJSON(r, &body)
+	role := model.SentenceRole(strings.TrimSpace(body.Role))
+	if role != model.RoleNone && !model.ValidRole(role) {
+		Error(w, http.StatusBadRequest, fmt.Sprintf("unknown role %q", role))
+		return
+	}
+	Message(w, "Role updated.")
+	bookID := book.ID.Hex()
+	go func() {
+		if err := s.W.SetSentenceRole(context.Background(), bookID, idx, sentenceID, role); err != nil {
+			log.Printf("setSentenceRole %s ch%d %s failed: %v", bookID, idx, sentenceID, err)
 		}
 	}()
 }

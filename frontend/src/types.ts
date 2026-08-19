@@ -14,6 +14,8 @@ export type BookStatus =
 
 export type AudioStatus = 'pending' | 'stale' | 'generating' | 'complete' | 'error';
 
+export type SentenceRole = 'title' | 'quoteMale' | 'quoteFemale' | 'quoteChild' | 'quoteDefault';
+
 export interface Segment {
   sentenceId: string;
   audioStatus: AudioStatus;
@@ -33,6 +35,7 @@ export interface VoiceTrack {
   // seeds the per-voice progress bar right after a page load.
   segmentsDone?: number;
   segmentsTotal?: number;
+  variants?: Record<string, { audioPath: string; durationSecs: number }>;
 }
 
 // Read-along: a spoken sentence and its start/end time (seconds) in the chapter audio.
@@ -54,6 +57,7 @@ export interface EditableSentence {
   whisperResults?: string[];
   synthVoice?: string;
   voiceOverrides?: Record<string, string>;
+  role?: SentenceRole;
 }
 
 // A selectable TTS engine/model returned by GET /api/models.
@@ -124,6 +128,7 @@ export interface Book {
   lastPage: number;
   totalPages: number;
   voices: string[];
+  voiceRoles?: Record<string, Partial<Record<SentenceRole, string>>>;
   chapters: Chapter[];
   ocrPages: OcrPage[];
   progress: Progress;

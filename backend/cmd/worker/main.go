@@ -522,6 +522,16 @@ func (w *worker) executeSLM(ctx context.Context, task queue.Task) (json.RawMessa
 			return nil, err
 		}
 		return json.Marshal(queue.SplitToMaxResult{Parts: parts})
+	case queue.TypeClassifyQuote:
+		var p queue.ClassifyQuotePayload
+		if err := json.Unmarshal(task.Payload, &p); err != nil {
+			return nil, err
+		}
+		speaker, err := ocr.ClassifyQuoteOn(ctx, w.url, p.Before, p.Sentence, p.After, w.slmModel(p.Model))
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(queue.ClassifyQuoteResult{Speaker: speaker})
 	case queue.TypeVerifyTranscript:
 		var p queue.VerifyTranscriptPayload
 		if err := json.Unmarshal(task.Payload, &p); err != nil {

@@ -33,6 +33,13 @@ function fmt(s: number): string {
 }
 
 const POS_KEY  = (id: string) => `br_pos_${id}`;
+const ALT_TITLE_KEY = (id: string) => `br_alt_title_${id}`;
+const ALT_QUOTE_KEY = (id: string) => `br_alt_quote_${id}`;
+
+function loadFlag(key: string): boolean {
+  try { return localStorage.getItem(key) !== '0'; }
+  catch { return true; }
+}
 
 function loadJson<T>(key: string, fallback: T): T {
   try { return JSON.parse(localStorage.getItem(key) ?? '') ?? fallback; }
@@ -56,6 +63,13 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
   const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
   const [speed, setSpeed] = useState(1);
 
+  // Alternative role voices (titles/quotes) — on by default, per book, and the
+  // server falls back to the base audio when a variant doesn't exist.
+  const [altTitle, setAltTitle] = useState(() => loadFlag(ALT_TITLE_KEY(bookId)));
+  const [altQuote, setAltQuote] = useState(() => loadFlag(ALT_QUOTE_KEY(bookId)));
+  const altKey = (altTitle ? 't' : '') + (altQuote ? 'q' : '');
+  const prevAltRef = useRef(altKey);
+
   const readyChapters = chapters.filter(c => trackFor(c, voice)?.audioStatus === 'complete');
   // More chapters for this voice are still on the way (so we should keep the
   // player alive past the last ready chapter and auto-resume when they land).
@@ -72,6 +86,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
   const [playing, setPlaying]       = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [speedOpen, setSpeedOpen]   = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration]     = useState(0);
 
@@ -103,24 +118,28 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
   // Duration changes whenever a sentence is re-rendered, so it doubles as a
   // cache-buster that forces a reload of the rebuilt chapter audio + timeline.
   const audioVersion = chapter ? (trackFor(chapter, voice)?.audioDurationSecs ?? 0) : 0;
+  const altParam   = altKey ? `&alt=${altKey}` : '';
   const audioUrl   = chapter
-    ? `/api/books/${bookId}/chapters/${chapterIdx}/audio?voice=${encodeURIComponent(voice)}&v=${audioVersion}`
+    ? `/api/books/${bookId}/chapters/${chapterIdx}/audio?voice=${encodeURIComponent(voice)}&v=${audioVersion}${altParam}`
     : null;
+  const hasVariants = chapters.some(c => Object.keys(trackFor(c, voice)?.variants ?? {}).length > 0);
 
   useEffect(() => { onChapterChange?.(chapterIdx); }, [chapterIdx, onChapterChange]);
 
   // Load the read-along timeline for the current chapter/voice (404 => none). On a
-  // voice switch, capture the line that was playing *before* it's cleared so we can
-  // resume the new voice's audio at that same sentence once its timeline arrives.
+  // voice or alt-variant switch, capture the line that was playing *before* it's
+  // cleared so we can resume the new audio at that same sentence once its
+  // timeline arrives.
   useEffect(() => {
-    if (prevVoiceRef.current !== voice) {
+    if (prevVoiceRef.current !== voice || prevAltRef.current !== altKey) {
       pendingSentenceSeek.current = activeLineRef.current;
       prevVoiceRef.current = voice;
+      prevAltRef.current = altKey;
     }
     setTimeline([]); timelineRef.current = []; setActiveLine(-1);
     if (chapterIdx < 0) return;
     let cancelled = false;
-    fetch(`/api/books/${bookId}/chapters/${chapterIdx}/timeline?voice=${encodeURIComponent(voice)}&v=${audioVersion}`)
+    fetch(`/api/books/${bookId}/chapters/${chapterIdx}/timeline?voice=${encodeURIComponent(voice)}&v=${audioVersion}${altParam}`)
       .then(r => (r.ok ? r.json() : []))
       .then((data: TimelineEntry[]) => {
         if (cancelled) return;
@@ -142,7 +161,7 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
       })
       .catch(() => { pendingSentenceSeek.current = -1; });
     return () => { cancelled = true; };
-  }, [bookId, chapterIdx, voice, audioVersion]);
+  }, [bookId, chapterIdx, voice, audioVersion, altKey]);
 
   const savePos = useCallback(() => {
     const audio = audioRef.current;
@@ -238,6 +257,14 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
       savePos();
     };
   }, [savePos]);
+
+  const toggleAlt = (kind: 'title' | 'quote') => {
+    const next = kind === 'title' ? !altTitle : !altQuote;
+    if (kind === 'title') setAltTitle(next); else setAltQuote(next);
+    try {
+      localStorage.setItem(kind === 'title' ? ALT_TITLE_KEY(bookId) : ALT_QUOTE_KEY(bookId), next ? '1' : '0');
+    } catch {}
+  };
 
   const applySpeed = (next: number) => {
     setSpeed(next);
@@ -428,6 +455,22 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
           </svg>
           <span className="text-[11px] text-gray-500">{t('Chapters')}</span>
         </button>
+
+        {hasVariants && (
+          <button
+            className="flex flex-col items-center gap-1 text-gray-200 hover:text-amber-400 transition-colors"
+            onClick={() => setSettingsOpen(true)}
+            title={t('Playback settings')}
+          >
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            <span className="text-[11px] text-gray-500">{t('Settings')}</span>
+          </button>
+        )}
       </div>
 
       {morePending && (
@@ -491,6 +534,41 @@ export default function AudioPlayer({ bookId, chapters, voice, onProgress, onCha
                   onClick={() => applySpeed(s)}
                 >
                   {s}x{s === 1 && <span className="ml-2 text-gray-500 font-sans">{t('Normal')}</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {settingsOpen && (
+        <div
+          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+          onClick={e => e.target === e.currentTarget && setSettingsOpen(false)}
+        >
+          <div className="bg-gray-900 rounded-2xl border border-gray-700 w-full max-w-xs shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800 shrink-0">
+              <h2 className="font-semibold text-gray-100">{t('Playback settings')}</h2>
+              <button className="text-gray-500 hover:text-gray-300 text-xl leading-none" onClick={() => setSettingsOpen(false)}>×</button>
+            </div>
+            <div className="p-2">
+              {([
+                ['title', t('Alternative voice for titles'), altTitle],
+                ['quote', t('Alternative voice for quotes'), altQuote],
+              ] as const).map(([kind, label, on]) => (
+                <button
+                  key={kind}
+                  className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
+                    on ? 'bg-amber-600/20 text-amber-400' : 'text-gray-300 hover:bg-gray-800'
+                  }`}
+                  onClick={() => toggleAlt(kind)}
+                >
+                  <span className="text-left">{label}</span>
+                  {on && (
+                    <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  )}
                 </button>
               ))}
             </div>

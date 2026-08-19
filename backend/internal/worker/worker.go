@@ -203,6 +203,15 @@ func ChapterAudioPath(audioDir string, chapterIdx int, voice string) string {
 	return filepath.Join(audioDir, fmt.Sprintf("chapter-%03d__%s.mp3", chapterIdx+1, safeVoice(voice)))
 }
 
+// ChapterAudioVariantPath is the assembled file for one alternative mix;
+// variant "" is the default file (ChapterAudioPath).
+func ChapterAudioVariantPath(audioDir string, chapterIdx int, voice, variant string) string {
+	if variant == "" {
+		return ChapterAudioPath(audioDir, chapterIdx, voice)
+	}
+	return filepath.Join(audioDir, fmt.Sprintf("chapter-%03d__%s__alt-%s.mp3", chapterIdx+1, safeVoice(voice), variant))
+}
+
 func SegmentDir(audioDir string, chapterIdx int, voice string) string {
 	return filepath.Join(audioDir, fmt.Sprintf("chapter-%03d__%s", chapterIdx+1, safeVoice(voice)))
 }
@@ -214,12 +223,13 @@ func segmentAudioPath(audioDir string, chapterIdx int, voice string, order int) 
 // chapterUpdate / segmentUpdate are the WS patch payload shapes the frontend
 // reads; optional fields must be absent (not null) exactly like Node.
 type chapterUpdate struct {
-	Idx               int               `json:"idx"`
-	Voice             string            `json:"voice,omitempty"`
-	AudioStatus       model.AudioStatus `json:"audioStatus,omitempty"`
-	AudioPath         *string           `json:"audioPath,omitempty"`
-	AudioDurationSecs *float64          `json:"audioDurationSecs,omitempty"`
-	AudioError        *string           `json:"audioError,omitempty"`
+	Idx               int                            `json:"idx"`
+	Voice             string                         `json:"voice,omitempty"`
+	AudioStatus       model.AudioStatus              `json:"audioStatus,omitempty"`
+	AudioPath         *string                        `json:"audioPath,omitempty"`
+	AudioDurationSecs *float64                       `json:"audioDurationSecs,omitempty"`
+	AudioError        *string                        `json:"audioError,omitempty"`
+	Variants          map[string]model.TrackVariant  `json:"variants,omitempty"`
 }
 
 type segmentUpdate struct {

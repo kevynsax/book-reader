@@ -17,7 +17,6 @@ import (
 
 	"github.com/kevynsax/book-reader/backend/internal/config"
 	"github.com/kevynsax/book-reader/backend/internal/lib/pool"
-	"github.com/kevynsax/book-reader/backend/internal/lib/sentences"
 	"github.com/kevynsax/book-reader/backend/internal/lib/verify"
 	"github.com/kevynsax/book-reader/backend/internal/queue"
 	"github.com/kevynsax/book-reader/backend/internal/svc/audioprobe"
@@ -364,6 +363,43 @@ type SegmentInput struct {
 	DurationSecs float64
 	Text         string
 	Display      string
+	// IsTitle drives the title silence/gain treatment; the caller decides it
+	// (sentence role when the book has roles, the word-count heuristic
+	// otherwise) so assembly never re-derives it from text.
+	IsTitle bool
+	// Quote marks quote-role sentences; with an alt take present, the
+	// AltQuote variant assembles AltAudioPath instead of AudioPath.
+	Quote        bool
+	AltAudioPath string
+}
+
+// AssembleVariant selects which take role segments contribute to an
+// assembled chapter mix.
+type AssembleVariant struct {
+	AltTitle bool
+	AltQuote bool
+}
+
+// Key is the variant's storage key: "" default, "t", "q", or "tq".
+func (v AssembleVariant) Key() string {
+	k := ""
+	if v.AltTitle {
+		k += "t"
+	}
+	if v.AltQuote {
+		k += "q"
+	}
+	return k
+}
+
+// pickFile is the audio file this variant plays for one segment; a missing
+// alt take gracefully falls back to the plain one.
+func (v AssembleVariant) pickFile(s SegmentInput) string {
+	want := (s.IsTitle && v.AltTitle) || (s.Quote && v.AltQuote)
+	if want && s.AltAudioPath != "" {
+		return s.AltAudioPath
+	}
+	return s.AudioPath
 }
 
 func round3(x float64) float64 {
@@ -375,7 +411,7 @@ func round3(x float64) float64 {
 // PCM domain so the join is sample-accurate. Timeline offsets are summed from
 // each file's *real* decoded duration — not the stored segment durations —
 // so highlights stay locked to the audio across a long chapter.
-func AssembleChapter(segments []SegmentInput, outputPath string) (float64, error) {
+func AssembleChapter(segments []SegmentInput, outputPath string, variant AssembleVariant) (float64, error) {
 	if len(segments) == 0 {
 		return 0, fmt.Errorf("no segments to assemble")
 	}
@@ -393,17 +429,22 @@ func AssembleChapter(segments []SegmentInput, outputPath string) (float64, error
 		}
 	}()
 
+	chosen := make([]string, len(segments))
+	for i, s := range segments {
+		chosen[i] = variant.pickFile(s)
+	}
+
 	silenceFile := ""
 	silenceDur := 0.0
 	anyTitle := false
 	for _, s := range segments {
-		if sentences.IsTitle(s.Text, config.TitleMaxWords) {
+		if s.IsTitle {
 			anyTitle = true
 			break
 		}
 	}
 	if anyTitle {
-		sampleRate, channels, err := audioprobe.ProbeAudioFormat(segments[0].AudioPath)
+		sampleRate, channels, err := audioprobe.ProbeAudioFormat(chosen[0])
 		if err != nil {
 			return 0, err
 		}
@@ -420,17 +461,17 @@ func AssembleChapter(segments []SegmentInput, outputPath string) (float64, error
 		}
 	}
 
-	// The actual file fed into the concat for each sentence — the original
-	// segment, or a temp gain-boosted copy for titles (the demuxer can't apply
+	// The actual file fed into the concat for each sentence — the chosen
+	// take, or a temp gain-boosted copy for titles (the demuxer can't apply
 	// per-file gain, so it's pre-baked here).
 	files := make([]string, len(segments))
 	err := pool.Run(segments, 8, func(seg SegmentInput, i int) error {
-		if silenceFile == "" || !sentences.IsTitle(seg.Text, config.TitleMaxWords) {
-			files[i] = seg.AudioPath
+		if silenceFile == "" || !seg.IsTitle {
+			files[i] = chosen[i]
 			return nil
 		}
 		file := filepath.Join(tmpDir, fmt.Sprintf("_title_%d_%s.mp3", i, base))
-		data, err := os.ReadFile(seg.AudioPath)
+		data, err := os.ReadFile(chosen[i])
 		if err != nil {
 			return err
 		}
@@ -448,7 +489,7 @@ func AssembleChapter(segments []SegmentInput, outputPath string) (float64, error
 		return 0, err
 	}
 	for i, f := range files {
-		if f != segments[i].AudioPath {
+		if f != chosen[i] {
 			boostedPaths = append(boostedPaths, f)
 		}
 	}
@@ -469,7 +510,7 @@ func AssembleChapter(segments []SegmentInput, outputPath string) (float64, error
 	timeline := make([]TimelineEntry, 0, len(segments))
 	cursor := 0.0
 	for i, seg := range segments {
-		title := silenceFile != "" && sentences.IsTitle(seg.Text, config.TitleMaxWords)
+		title := silenceFile != "" && seg.IsTitle
 		if title {
 			lines = append(lines, concatLine(silenceFile))
 			cursor += silenceDur

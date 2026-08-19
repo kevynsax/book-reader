@@ -51,6 +51,13 @@ type Segment struct {
 	DurationSecs *float64      `bson:"durationSecs,omitempty" json:"durationSecs,omitempty"`
 	AudioStatus  AudioStatus   `bson:"audioStatus"            json:"audioStatus"`
 	AudioError   *string       `bson:"audioError,omitempty"   json:"audioError,omitempty"`
+	// Alt* is the alternative take for a role sentence (title/quote spoken by
+	// the configured role voice); AudioPath stays the plain take in the
+	// track's own voice. AltVoice records who rendered the alt take so a
+	// voice-roles change can invalidate just the stale alt audio.
+	AltAudioPath    *string  `bson:"altAudioPath,omitempty"    json:"altAudioPath,omitempty"`
+	AltDurationSecs *float64 `bson:"altDurationSecs,omitempty" json:"altDurationSecs,omitempty"`
+	AltVoice        string   `bson:"altVoice,omitempty"        json:"altVoice,omitempty"`
 	// WhisperResults traces verification: every transcript Whisper returned
 	// while producing this segment's audio, in attempt order (failed retries
 	// first, the accepted pass last). Empty when verification was skipped.
@@ -69,6 +76,16 @@ type VoiceTrack struct {
 	AudioStatus       AudioStatus `bson:"audioStatus"                 json:"audioStatus"`
 	AudioError        *string     `bson:"audioError,omitempty"        json:"audioError,omitempty"`
 	Segments          []Segment   `bson:"segments"                    json:"segments"`
+	// Variants are the extra assembled chapter files keyed by variant key
+	// ("t" alt titles, "q" alt quotes, "tq" both); the default mix stays in
+	// AudioPath. Only materialized when the chapter has alt takes.
+	Variants map[string]TrackVariant `bson:"variants,omitempty" json:"variants,omitempty"`
+}
+
+// TrackVariant is one assembled alternative mix of a chapter track.
+type TrackVariant struct {
+	AudioPath    string  `bson:"audioPath"    json:"audioPath"`
+	DurationSecs float64 `bson:"durationSecs" json:"durationSecs"`
 }
 
 // When a sentence was produced by an SLM split.
@@ -105,19 +122,66 @@ type Sentence struct {
 	// applies to every track. Two uses: a voice that keeps garbling one
 	// sentence borrows another, and a quote is read by a different voice.
 	VoiceOverrides map[string]string `bson:"voiceOverrides,omitempty" json:"voiceOverrides,omitempty"`
+	// Role classifies the sentence for role-based voicing: a chapter title or
+	// quoted speech by a male/female/child/unknown speaker. Empty means plain
+	// narration. Book.VoiceRoles maps each role to the voice that speaks it.
+	Role SentenceRole `bson:"role,omitempty" json:"role,omitempty"`
 }
 
 // AllVoices is the VoiceOverrides key that applies to every track.
 const AllVoices = "*"
 
+// SentenceRole classifies who a sentence's words belong to.
+type SentenceRole string
+
+const (
+	RoleNone         SentenceRole = ""
+	RoleTitle        SentenceRole = "title"
+	RoleQuoteMale    SentenceRole = "quoteMale"
+	RoleQuoteFemale  SentenceRole = "quoteFemale"
+	RoleQuoteChild   SentenceRole = "quoteChild"
+	RoleQuoteDefault SentenceRole = "quoteDefault"
+)
+
+// QuoteRoles are the roles the player's "alternative voice for quotes"
+// toggle covers (every role except titles).
+var QuoteRoles = []SentenceRole{RoleQuoteMale, RoleQuoteFemale, RoleQuoteChild, RoleQuoteDefault}
+
+// ValidRole reports whether s is a known stored role value.
+func ValidRole(s SentenceRole) bool {
+	switch s {
+	case RoleTitle, RoleQuoteMale, RoleQuoteFemale, RoleQuoteChild, RoleQuoteDefault:
+		return true
+	}
+	return false
+}
+
+// RoleVoices maps a sentence role to the engine:voice that speaks it on one
+// track.
+type RoleVoices map[SentenceRole]string
+
 // SynthVoice is the voice to synthesize this sentence with for a track,
 // which is the track's own voice unless an override says otherwise.
 func (s Sentence) SynthVoice(voice string) string {
+	return s.SynthVoiceFor(voice, nil, false)
+}
+
+// SynthVoiceFor resolves who speaks this sentence on a track. Precedence:
+// explicit per-track override → the AllVoices override → (for the alt take)
+// the role voice configured for this track → the track's own voice. Explicit
+// overrides outrank roles in both takes, so an override collapses the
+// variants for that sentence.
+func (s Sentence) SynthVoiceFor(voice string, roles map[string]RoleVoices, alt bool) string {
 	if v := s.VoiceOverrides[voice]; v != "" {
 		return v
 	}
 	if v := s.VoiceOverrides[AllVoices]; v != "" {
 		return v
+	}
+	if alt && s.Role != RoleNone {
+		if v := roles[voice][s.Role]; v != "" {
+			return v
+		}
 	}
 	return voice
 }
@@ -165,6 +229,11 @@ type Book struct {
 	Progress       Progress      `bson:"progress"                 json:"progress"`
 	ErrorMessage   *string       `bson:"errorMessage,omitempty"   json:"errorMessage,omitempty"`
 	Voices         []string      `bson:"voices"                   json:"voices"`
+	// VoiceRoles configures, per book voice (track), which engine:voice speaks
+	// each sentence role (title and the quote roles). Written only via
+	// Books.UpdateByID — deliberately NOT in the SaveGeneration allowlist so a
+	// running render can never clobber a concurrent edit.
+	VoiceRoles map[string]RoleVoices `bson:"voiceRoles,omitempty" json:"voiceRoles,omitempty"`
 	// ResumeAudio marks a run a crash/restart cut short: boot recovery sets it
 	// and resumes the render as soon as the TTS fabric is back. Cleared when
 	// the resume starts or the user stops the book.
@@ -234,8 +303,9 @@ type ClientTrack struct {
 	// Segment progress counts (segments themselves are stripped from the
 	// sync payload) so the UI can seed per-voice progress bars on page load,
 	// before the first live voiceProgress event arrives.
-	SegmentsDone  int `json:"segmentsDone"`
-	SegmentsTotal int `json:"segmentsTotal"`
+	SegmentsDone  int                     `json:"segmentsDone"`
+	SegmentsTotal int                     `json:"segmentsTotal"`
+	Variants      map[string]TrackVariant `json:"variants,omitempty"`
 }
 
 type ClientChapter struct {
@@ -265,6 +335,7 @@ func SerializeChaptersForClient(chapters []Chapter) []ClientChapter {
 				AudioError:        t.AudioError,
 				SegmentsDone:      done,
 				SegmentsTotal:     len(t.Segments),
+				Variants:          t.Variants,
 			}
 		}
 		out[i] = ClientChapter{ID: c.ID, Title: c.Title, StartPage: c.StartPage, StartChar: c.StartChar, Tracks: tracks}

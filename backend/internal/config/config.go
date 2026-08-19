@@ -73,6 +73,9 @@ var (
 	// How many chapter lines are normalized/SLM-split at once — feeds all
 	// slm workers concurrently instead of one at a time.
 	SentenceSplitConcurrency int
+	// RoleClassify: whether the sentence phase asks the SLM who speaks each
+	// quoted sentence (ROLE_CLASSIFY=0 skips it).
+	RoleClassify bool
 	// Max OCR page tasks in flight at once (bounds page images queued in the
 	// broker).
 	OcrConcurrency   int
@@ -183,6 +186,7 @@ func initAll() {
 	TtsSpeed = envFloat("TTS_SPEED", 1.0)
 	TtsConcurrency = envInt("TTS_CONCURRENCY", 5)
 	SentenceSplitConcurrency = max(1, envInt("SENTENCE_SPLIT_CONCURRENCY", 4))
+	RoleClassify = env("ROLE_CLASSIFY", "1") != "0"
 	OcrConcurrency = max(1, envInt("OCR_CONCURRENCY", 8))
 	AmqpURL = env("AMQP_URL", "amqp://guest:guest@localhost:5672/")
 	TtsVolumeGain = envFloat("TTS_VOLUME_GAIN", 1.15)

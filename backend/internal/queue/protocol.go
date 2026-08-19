@@ -67,6 +67,7 @@ const (
 	TypeSplitInTwo       = "split-in-two"
 	TypeSplitToMax       = "split-to-max"
 	TypeVerifyTranscript = "verify-transcript"
+	TypeClassifyQuote    = "classify-quote"
 
 	TypeTranscribe = "transcribe"
 
@@ -140,6 +141,21 @@ type VerifyTranscriptPayload struct {
 type VerifyTranscriptResult struct {
 	Missing bool   `json:"missing"`
 	Reason  string `json:"reason"`
+}
+
+// ClassifyQuotePayload asks the SLM who speaks a quoted sentence, with a
+// little surrounding context to identify the speaker.
+type ClassifyQuotePayload struct {
+	Before   []string `json:"before"`
+	Sentence string   `json:"sentence"`
+	After    []string `json:"after"`
+	Model    string   `json:"model"`
+}
+
+// ClassifyQuoteResult carries the judged speaker: man, woman, kid, unknown,
+// or none (not actually quoted speech).
+type ClassifyQuoteResult struct {
+	Speaker string `json:"speaker"`
 }
 
 type TranscribePayload struct {

@@ -102,8 +102,13 @@ func (w *Worker) MigrateUnspeakableSentences(ctx context.Context) error {
 						seg.AudioStatus = model.AudioStale
 						seg.AudioError = nil
 					}
-					if garbageIDs[seg.SentenceID.Hex()] && seg.AudioPath != nil {
-						removedAudio = append(removedAudio, *seg.AudioPath)
+					if garbageIDs[seg.SentenceID.Hex()] {
+						if seg.AudioPath != nil {
+							removedAudio = append(removedAudio, *seg.AudioPath)
+						}
+						if seg.AltAudioPath != nil {
+							removedAudio = append(removedAudio, *seg.AltAudioPath)
+						}
 					}
 				}
 			}
@@ -111,7 +116,7 @@ func (w *Worker) MigrateUnspeakableSentences(ctx context.Context) error {
 			kept := make([]model.Sentence, 0, len(ordered)-len(garbageIDs))
 			for _, s := range ordered {
 				if !garbageIDs[s.ID.Hex()] {
-					kept = append(kept, model.Sentence{ID: s.ID, Text: s.Text, Display: s.Display, Original: s.Original, TraceOrder: s.TraceOrder, SplitOf: s.SplitOf, SplitCreatedWhen: s.SplitCreatedWhen})
+					kept = append(kept, model.Sentence{ID: s.ID, Text: s.Text, Display: s.Display, Original: s.Original, TraceOrder: s.TraceOrder, SplitOf: s.SplitOf, SplitCreatedWhen: s.SplitCreatedWhen, VoiceOverrides: s.VoiceOverrides, Role: s.Role})
 				}
 			}
 			for order := range kept {
