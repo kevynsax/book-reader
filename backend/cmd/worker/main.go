@@ -41,6 +41,9 @@ type worker struct {
 	// tts only: model ids from WORKER_SKIP_MODELS this worker must never
 	// advertise or consume (e.g. a model that doesn't run well on its server).
 	skipModels map[string]bool
+
+	lastCatalog   []queue.Model
+	lastCatalogAt time.Time
 	// Consumer priority on the summary re-read queue only (WORKER_PRIORITY):
 	// when several vlm workers are free the broker hands a summary task to
 	// the highest (spark > macbook > kevyn-server), the rest being fallbacks.
@@ -255,6 +258,20 @@ func (w *worker) probe() queue.Heartbeat {
 				hb.ActiveModel = m.ID
 			}
 			hb.Models = append(hb.Models, queue.Model{ID: m.ID, Label: m.Label})
+		}
+		// A busy engine blocks its HTTP handlers mid-render, so probes time
+		// out exactly when the server is doing its job. Carry the last good
+		// catalog through busy spells instead of advertising an empty one —
+		// an actually-dead server ages out after the grace window.
+		if len(hb.Models) > 0 && hb.Healthy {
+			w.lastCatalog = hb.Models
+			w.lastCatalogAt = time.Now()
+		} else if time.Since(w.lastCatalogAt) < 3*time.Minute && len(w.lastCatalog) > 0 {
+			hb.Healthy = true
+			if hb.State == "" {
+				hb.State = "busy"
+			}
+			hb.Models = w.lastCatalog
 		}
 	case queue.RoleVLM, queue.RoleSLM:
 		hb.Healthy = httpOK(ctx, w.url+"/v1/models")
