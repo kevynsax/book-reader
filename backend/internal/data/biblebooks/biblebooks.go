@@ -112,7 +112,7 @@ var enBooks = []bookDef{
 
 var ptBooks = []bookDef{
 	{"gênesis", []string{"gênesis", "gn", "gen"}},
-	{"êxodo", []string{"êxodo", "ex", "exo"}},
+	{"êxodo", []string{"êxodo", "êx", "êxo", "ex", "exo"}},
 	{"levítico", []string{"levítico", "lv", "lev"}},
 	{"números", []string{"números", "nm", "num"}},
 	{"deuteronômio", []string{"deuteronômio", "dt", "deut"}},
